@@ -65,6 +65,17 @@ class LiveTradingEngine:
     
     async def analyze_and_trade(self):
         """Analyze with OpenClaw + Polymarket for best signals"""
+        from src.allocation_manager import get_allocation_manager
+        from src.options.scanner import OptionsScanner
+        from src.config import settings
+        
+        # Initialize allocation manager
+        alloc = get_allocation_manager(self.state['balance'])
+        if not alloc:
+            alloc = get_allocation_manager(self.state['balance'])
+        
+        options_scanner = OptionsScanner(self.ibkr) if settings.options_enabled else None
+        
         for symbol in self.symbols:
             try:
                 if symbol in self.state['positions']:
@@ -98,17 +109,27 @@ class LiveTradingEngine:
                     poly_confidence = poly_analysis.get('confidence', 0)
                     
                     # STEP 3: Combined decision
-                    # Both must agree for trade
                     openclaw_bullish = trend_score > 0.55
                     poly_bullish = poly_prob > 0.55
-                    
-                    # Calculate combined confidence
                     combined_confidence = (trend_score * 0.6) + (poly_prob * 0.4)
                     
+                    # STEP 4: Decide stock vs options based on allocation
                     if openclaw_bullish and poly_bullish and combined_confidence > 0.60:
-                        print(f"✅ STRONG BUY {symbol}: OpenClaw {trend_score:.0%} + Polymarket {poly_prob:.0%} = {combined_confidence:.0%}")
-                        action = 'BUY' if change_pct > 0 else 'SELL'
-                        await self.execute_trade(symbol, action, current_price, combined_confidence * 100)
+                        # Check if bearish for put spreads
+                        is_bearish = change_pct < -1.0 and trend_score < 0.45
+                        
+                        if settings.options_enabled and is_bearish and options_scanner:
+                            # Try options (bear put spread)
+                            print(f"🎯 BEARISH {symbol}: Checking options...")
+                            spread = options_scanner.find_bear_put_spread(symbol, current_price, 5, 35)
+                            if spread:
+                                print(f"[OPTIONS] Bear put spread: {spread['upper_strike']}/{spread['lower_strike']} Max loss: ${spread['max_loss']:.0f}")
+                                # For now just log, actual execution needs IBKR options API
+                        else:
+                            # Stock trade
+                            print(f"✅ STRONG BUY {symbol}: OpenClaw {trend_score:.0%} + Polymarket {poly_prob:.0%} = {combined_confidence:.0%}")
+                            action = 'BUY' if change_pct > 0 else 'SELL'
+                            await self.execute_trade(symbol, action, current_price, combined_confidence * 100)
                     elif not openclaw_bullish or not poly_bullish:
                         print(f"⏭️  SKIP {symbol}: OpenClaw {trend_score:.0%}, Polymarket {poly_prob:.0%} (no consensus)")
                 
