@@ -151,11 +151,12 @@ class Backtester:
             return None
     
     def run_backtest(self, symbols: List[str], start_date: str, end_date: str) -> Dict:
-        """Run backtest on multiple symbols."""
+        """Run backtest with Sharpe ratio calculation."""
         print(f"\n🔬 Backtesting {len(symbols)} symbols from {start_date} to {end_date}")
         print(f"💰 Initial Capital: ${self.initial_capital:,.2f}\n")
         
         results = []
+        daily_returns = []
         
         for symbol in symbols:
             print(f"Testing {symbol}...", end=" ")
@@ -166,7 +167,6 @@ class Backtester:
             else:
                 print("✗ Failed")
         
-        # Calculate overall metrics
         total_trades = sum(r['trades'] for r in results)
         total_wins = sum(r['wins'] for r in results)
         overall_win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0
@@ -175,13 +175,21 @@ class Backtester:
         final_capital = self.capital
         total_return = ((final_capital - self.initial_capital) / self.initial_capital) * 100
         
-        # Calculate profit factor
         winning_trades = [t['pnl'] for t in self.trades if t['pnl'] > 0]
         losing_trades = [abs(t['pnl']) for t in self.trades if t['pnl'] < 0]
         
         total_wins_amount = sum(winning_trades) if winning_trades else 0
         total_losses_amount = sum(losing_trades) if losing_trades else 1
         profit_factor = total_wins_amount / total_losses_amount if total_losses_amount > 0 else 0
+        
+        # Calculate Sharpe ratio
+        if self.trades:
+            returns = [t['pnl'] / self.initial_capital for t in self.trades]
+            avg_return = np.mean(returns)
+            std_return = np.std(returns)
+            sharpe_ratio = (avg_return / std_return * np.sqrt(252)) if std_return > 0 else 0
+        else:
+            sharpe_ratio = 0
         
         print(f"\n{'='*60}")
         print(f"📊 BACKTEST RESULTS")
@@ -190,6 +198,7 @@ class Backtester:
         print(f"Wins: {total_wins} | Losses: {total_trades - total_wins}")
         print(f"Win Rate: {overall_win_rate:.1f}%")
         print(f"Profit Factor: {profit_factor:.2f}")
+        print(f"Sharpe Ratio: {sharpe_ratio:.2f} {'✅' if sharpe_ratio > 1.0 else '⚠️'}")
         print(f"\nInitial Capital: ${self.initial_capital:,.2f}")
         print(f"Final Capital: ${final_capital:,.2f}")
         print(f"Total Return: {total_return:+.2f}%")
@@ -200,6 +209,7 @@ class Backtester:
             'total_trades': total_trades,
             'win_rate': overall_win_rate,
             'profit_factor': profit_factor,
+            'sharpe_ratio': sharpe_ratio,
             'total_return': total_return,
             'final_capital': final_capital
         }

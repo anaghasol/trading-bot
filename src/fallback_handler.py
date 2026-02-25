@@ -98,28 +98,20 @@ class FallbackHandler:
         }
     
     def suggest_weight_adjustment(self) -> Dict[str, float]:
-        """
-        Analyze performance and suggest weight adjustments.
-        (Manual implementation for now - can be automated with ML later)
-        """
-        if len(self.performance_log) < 20:
-            return {'openclaw': 0.6, 'polymarket': 0.4}
+        """ML-lite: Adjust weights based on last 7 days accuracy."""
+        from src.audit_logger import get_audit_logger
         
-        # Calculate win rates by signal type
-        openclaw_wins = sum(1 for t in self.performance_log 
-                           if t.get('openclaw_score', 0) > 0.6 and t.get('pnl', 0) > 0)
-        poly_wins = sum(1 for t in self.performance_log 
-                       if t.get('poly_score', 0) > 0.6 and t.get('pnl', 0) > 0)
+        audit = get_audit_logger()
+        metrics = audit.get_performance_metrics(days=7)
         
-        total = len(self.performance_log)
-        openclaw_rate = openclaw_wins / total
-        poly_rate = poly_wins / total
+        openclaw_acc = metrics.get('openclaw_accuracy', 0.5)
+        poly_acc = metrics.get('polymarket_accuracy', 0.5)
         
-        # Adjust weights based on performance
-        if openclaw_rate > poly_rate + 0.1:
-            return {'openclaw': 0.7, 'polymarket': 0.3}
-        elif poly_rate > openclaw_rate + 0.1:
-            return {'openclaw': 0.5, 'polymarket': 0.5}
+        # Adjust weights: give +5% to better performer
+        if openclaw_acc > poly_acc + 0.1:
+            return {'openclaw': 0.65, 'polymarket': 0.35}
+        elif poly_acc > openclaw_acc + 0.1:
+            return {'openclaw': 0.55, 'polymarket': 0.45}
         else:
             return {'openclaw': 0.6, 'polymarket': 0.4}
 
