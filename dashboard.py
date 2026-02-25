@@ -197,6 +197,89 @@ def get_hot_stocks():
     except Exception as e:
         return jsonify({'stocks': hot_stocks_cache['data']})
 
+@app.route('/api/guru-trade', methods=['POST'])
+def guru_trade():
+    """Execute guru trade from Discord alert"""
+    import re
+    data = request.get_json()
+    alert = data.get('alert', '')
+    
+    # Parse alert
+    symbol_match = re.search(r'TRADE:\s*([A-Z]{1,5})', alert)
+    if not symbol_match:
+        return jsonify({'error': 'Could not find symbol'}), 400
+    
+    symbol = symbol_match.group(1)
+    
+    # Parse strategy
+    is_call = 'CALL' in alert.upper()
+    is_put = 'PUT' in alert.upper()
+    
+    # Parse strike/expiration (e.g., "4/17 $220c")
+    strike_match = re.search(r'(\d+/\d+)\s*\$?(\d+\.?\d*)([cp])', alert, re.IGNORECASE)
+    expiration = strike_match.group(1) if strike_match else 'N/A'
+    strike = float(strike_match.group(2)) if strike_match else 0
+    
+    # Parse price
+    price_match = re.search(r'\$(\d+\.\d+)', alert)
+    price = float(price_match.group(1)) if price_match else 0
+    
+    # Save to guru_trades.json
+    guru_file = Path('guru_trades.json')
+    guru_data = {'positions': []}
+    if guru_file.exists():
+        with open(guru_file, 'r') as f:
+            guru_data = json.load(f)
+    
+    guru_data['positions'].append({
+        'symbol': symbol,
+        'type': 'CALL' if is_call else 'PUT',
+        'strike': strike,
+        'expiration': expiration,
+        'entry_price': price,
+        'timestamp': datetime.now().isoformat(),
+        'status': 'OPEN',
+        'alert': alert
+    })
+    
+    with open(guru_file, 'w') as f:
+        json.dump(guru_data, f, indent=2)
+    
+    return jsonify({'success': True, 'symbol': symbol, 'price': price})
+
+@app.route('/api/guru-positions')
+def guru_positions():
+    """Get guru positions"""
+    guru_file = Path('guru_trades.json')
+    if guru_file.exists():
+        with open(guru_file, 'r') as f:
+            data = json.load(f)
+            return jsonify(data)
+    return jsonify({'positions': []})
+
+@app.route('/api/close-guru', methods=['POST'])
+def close_guru():
+    """Close guru position"""
+    data = request.get_json()
+    symbol = data.get('symbol')
+    
+    guru_file = Path('guru_trades.json')
+    if guru_file.exists():
+        with open(guru_file, 'r') as f:
+            guru_data = json.load(f)
+        
+        for pos in guru_data['positions']:
+            if pos['symbol'] == symbol and pos['status'] == 'OPEN':
+                pos['status'] = 'CLOSED'
+                pos['close_time'] = datetime.now().isoformat()
+        
+        with open(guru_file, 'w') as f:
+            json.dump(guru_data, f, indent=2)
+        
+        return jsonify({'success': True})
+    
+    return jsonify({'error': 'Not found'}), 404
+
 def start_dashboard(port=8080):
     from threading import Thread
     def run():

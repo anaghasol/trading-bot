@@ -354,6 +354,46 @@
             </div>
         </div>
 
+        <!-- GURU TRADES SECTION -->
+        <div class="row mb-4">
+            <div class="col-lg-12">
+                <div class="card" style="border: 2px solid var(--accent-blue);">
+                    <div class="card-header" style="background-color: rgba(59, 130, 246, 0.1);">
+                        <h6 class="card-title" style="color: var(--accent-blue);"><i class="bi bi-star-fill"></i> Guru Trades (Discord)</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label" style="color: var(--text-light); font-weight: 600;">Paste Discord Alert:</label>
+                                <textarea class="form-control" id="guru-alert-input" rows="4" 
+                                    placeholder="Example:
+🚨 NEW OPEN TRADE: RTX 🚨
+STRATEGY: BUY CALL
+STO 4/17 $220c
+FILLED AT: $2.10 debit per contract
+Max Loss: $210"
+                                    style="background-color: var(--primary-bg); color: var(--text-light); border-color: var(--border-color);"></textarea>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label" style="color: var(--text-light); font-weight: 600;">Actions:</label>
+                                <button class="btn btn-primary w-100 mb-2" id="execute-guru-btn" style="background-color: var(--accent-blue); border: none;">
+                                    <i class="bi bi-play-fill"></i> Execute Trade
+                                </button>
+                                <div id="guru-status" class="mt-2" style="font-size: 0.9rem;"></div>
+                            </div>
+                        </div>
+                        
+                        <hr style="border-color: var(--border-color);">
+                        
+                        <h6 style="color: var(--accent-blue); margin-bottom: 1rem;">Active Guru Positions:</h6>
+                        <div id="guru-positions-container">
+                            <p class="text-muted text-center mb-0">No guru trades yet</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Trade History -->
         <div class="row mb-4">
             <div class="col-lg-12">
@@ -605,6 +645,110 @@
             const now = new Date();
             document.getElementById('last-update').textContent = formatTime(now);
         }, 1000);
+
+        // GURU TRADE FUNCTIONS
+        async function executeGuruTrade() {
+            const alertText = document.getElementById('guru-alert-input').value.trim();
+            const statusDiv = document.getElementById('guru-status');
+            const btn = document.getElementById('execute-guru-btn');
+            
+            if (!alertText) {
+                statusDiv.innerHTML = '<span style="color: var(--accent-red);">⚠️ Please paste a Discord alert</span>';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Executing...';
+            statusDiv.innerHTML = '<span style="color: var(--accent-blue);">⏳ Processing...</span>';
+            
+            try {
+                const response = await fetch('/api/guru-trade', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({alert: alertText})
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusDiv.innerHTML = `<span style="color: var(--accent-green);">✅ ${data.message}</span><br><small>${data.note}</small>`;
+                    document.getElementById('guru-alert-input').value = '';
+                    updateGuruPositions();
+                } else {
+                    statusDiv.innerHTML = `<span style="color: var(--accent-red);">❌ ${data.error}</span>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<span style="color: var(--accent-red);">❌ Error: ${error.message}</span>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-play-fill"></i> Execute Trade';
+            }
+        }
+        
+        async function updateGuruPositions() {
+            try {
+                const response = await fetch('/api/guru-positions');
+                const data = await response.json();
+                const container = document.getElementById('guru-positions-container');
+                
+                if (!data.positions || data.positions.length === 0) {
+                    container.innerHTML = '<p class="text-muted text-center mb-0">No guru trades yet</p>';
+                    return;
+                }
+                
+                let html = '';
+                data.positions.forEach(pos => {
+                    if (pos.status !== 'OPEN') return;
+                    
+                    const optionDisplay = `${pos.symbol} ${pos.expiration} $${pos.strike}${pos.right}`;
+                    html += `
+                        <div class="position-row" style="border: 1px solid var(--accent-blue);">
+                            <div>
+                                <div class="position-symbol" style="color: var(--accent-blue);">${optionDisplay}</div>
+                                <small class="text-muted">${pos.strategy}</small>
+                            </div>
+                            <div><strong>${pos.contracts}</strong> contracts</div>
+                            <div>Entry: <strong>$${pos.entry_price.toFixed(2)}</strong></div>
+                            <div>Max Loss: <strong style="color: var(--accent-red);">$${pos.max_loss}</strong></div>
+                            <div><small class="text-muted">${formatTime(pos.timestamp)}</small></div>
+                            <div>
+                                <button class="btn btn-sm btn-danger" onclick="closeGuruTrade('${pos.symbol}')">
+                                    <i class="bi bi-x-circle"></i> Close
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('Error updating guru positions:', error);
+            }
+        }
+        
+        async function closeGuruTrade(symbol) {
+            if (!confirm(`Close guru trade for ${symbol}?`)) return;
+            
+            try {
+                const response = await fetch('/api/close-guru-trade', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({symbol: symbol})
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    updateGuruPositions();
+                }
+            } catch (error) {
+                alert('Error closing trade: ' + error.message);
+            }
+        }
+        
+        document.getElementById('execute-guru-btn').addEventListener('click', executeGuruTrade);
+        
+        // Update guru positions every 5 seconds
+        setInterval(updateGuruPositions, 5000);
+        updateGuruPositions();
     </script>
 </body>
 </html>

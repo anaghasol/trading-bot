@@ -178,6 +178,69 @@ class TradingDashboard:
                 "timestamp": datetime.now().isoformat(),
                 "version": "1.0.0"
             })
+        
+        @self.app.route('/api/guru-trade', methods=['POST'])
+        def api_guru_trade():
+            """Execute guru trade from Discord alert."""
+            from flask import request
+            import re
+            import asyncio
+            
+            try:
+                data = request.get_json()
+                alert_text = data.get('alert', '')
+                
+                # Parse Discord alert
+                parsed = self._parse_guru_alert(alert_text)
+                if not parsed:
+                    return jsonify({"error": "Could not parse alert"}), 400
+                
+                # Execute trade
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(
+                    self._execute_guru_trade(parsed)
+                )
+                loop.close()
+                
+                return jsonify(result)
+            except Exception as e:
+                logger.error(f"Guru trade error: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/guru-positions')
+        def api_guru_positions():
+            """Get guru positions."""
+            try:
+                from pathlib import Path
+                guru_file = Path('guru_trades.json')
+                if guru_file.exists():
+                    with open(guru_file, 'r') as f:
+                        return jsonify(json.load(f))
+                return jsonify({"positions": []})
+            except Exception as e:
+                return jsonify({"positions": []}), 500
+        
+        @self.app.route('/api/close-guru-trade', methods=['POST'])
+        def api_close_guru_trade():
+            """Close guru trade manually."""
+            from flask import request
+            import asyncio
+            
+            try:
+                data = request.get_json()
+                symbol = data.get('symbol')
+                
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(
+                    self._close_guru_trade(symbol)
+                )
+                loop.close()
+                
+                return jsonify(result)
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
 
     def run(self, port=5000, debug=False):
         """Run the Flask app."""
@@ -188,6 +251,119 @@ class TradingDashboard:
         """Inject trading engine dependencies."""
         self.trade_executor = trade_executor
         self.risk_manager = risk_manager
+    
+    def _parse_guru_alert(self, text):
+        """Parse Discord guru alert."""
+        import re
+        
+        # Extract symbol
+        symbol_match = re.search(r'TRADE:\s*([A-Z]{1,5})', text)
+        if not symbol_match:
+            return None
+        symbol = symbol_match.group(1)
+        
+        # Extract strategy
+        strategy = "UNKNOWN"
+        if "BUY CALL" in text or "CALL" in text:
+            strategy = "BUY_CALL"
+        elif "CASH SECURED PUT" in text or "PUT" in text:
+            strategy = "SELL_PUT"
+        
+        # Extract expiration and strike (e.g., "4/17 $220c")
+        strike_match = re.search(r'(\d+/\d+)\s*\$?(\d+\.?\d*)([cp])', text, re.IGNORECASE)
+        expiration = strike_match.group(1) if strike_match else None
+        strike = float(strike_match.group(2)) if strike_match else None
+        right = strike_match.group(3).upper() if strike_match else 'C'
+        
+        # Extract price
+        price_match = re.search(r'\$(\d+\.\d+)\s*(debit|credit)', text, re.IGNORECASE)
+        price = float(price_match.group(1)) if price_match else None
+        
+        # Extract max loss
+        loss_match = re.search(r'Max Loss:\s*\$(\d+)', text)
+        max_loss = float(loss_match.group(1)) if loss_match else None
+        
+        return {
+            'symbol': symbol,
+            'strategy': strategy,
+            'expiration': expiration,
+            'strike': strike,
+            'right': right,
+            'price': price,
+            'max_loss': max_loss,
+            'raw_text': text
+        }
+    
+    async def _execute_guru_trade(self, parsed):
+        """Execute parsed guru trade."""
+        from pathlib import Path
+        
+        if not self.trade_executor or not self.trade_executor.ibkr_client:
+            return {"error": "IBKR not connected"}
+        
+        # Calculate contracts (use 5% of balance)
+        state_file = Path('trading_state.json')
+        balance = 1000000.0
+        if state_file.exists():
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+                balance = state.get('balance', 1000000.0)
+        
+        position_value = balance * 0.05
+        contracts = max(1, int(position_value / (parsed['price'] * 100))) if parsed['price'] else 1
+        
+        # Save to guru trades file
+        guru_file = Path('guru_trades.json')
+        guru_data = {"positions": []}
+        if guru_file.exists():
+            with open(guru_file, 'r') as f:
+                guru_data = json.load(f)
+        
+        guru_data['positions'].append({
+            'symbol': parsed['symbol'],
+            'strategy': parsed['strategy'],
+            'strike': parsed['strike'],
+            'right': parsed['right'],
+            'expiration': parsed['expiration'],
+            'contracts': contracts,
+            'entry_price': parsed['price'],
+            'max_loss': parsed['max_loss'],
+            'timestamp': datetime.now().isoformat(),
+            'status': 'OPEN',
+            'source': 'GURU'
+        })
+        
+        with open(guru_file, 'w') as f:
+            json.dump(guru_data, f, indent=2)
+        
+        return {
+            "success": True,
+            "message": f"Logged {parsed['symbol']} {parsed['strategy']}",
+            "contracts": contracts,
+            "note": "Trade logged - execute manually in IBKR or enable auto-execution"
+        }
+    
+    async def _close_guru_trade(self, symbol):
+        """Close guru trade."""
+        from pathlib import Path
+        
+        guru_file = Path('guru_trades.json')
+        if not guru_file.exists():
+            return {"error": "No guru trades found"}
+        
+        with open(guru_file, 'r') as f:
+            guru_data = json.load(f)
+        
+        for pos in guru_data['positions']:
+            if pos['symbol'] == symbol and pos['status'] == 'OPEN':
+                pos['status'] = 'CLOSED'
+                pos['close_time'] = datetime.now().isoformat()
+                break
+        
+        with open(guru_file, 'w') as f:
+            json.dump(guru_data, f, indent=2)
+        
+        return {"success": True, "message": f"Closed {symbol}"}
 
 
 # Global dashboard instance

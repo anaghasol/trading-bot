@@ -267,6 +267,33 @@
             </div>
         </div>
         
+        <!-- GURU TRADES SECTION -->
+        <div class="card" style="border: 2px solid #3b82f6; margin-top: 15px;">
+            <h2 style="color: #3b82f6;">⭐ Guru Trades (Discord Alerts)</h2>
+            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 15px; margin-bottom: 15px;">
+                <div>
+                    <label style="display: block; margin-bottom: 8px; font-size: 0.9em; opacity: 0.8;">Paste Discord Alert:</label>
+                    <textarea id="guruAlert" rows="4" placeholder="Example:
+🚨 NEW OPEN TRADE: RTX 🚨
+STRATEGY: BUY CALL
+STO 4/17 $220c
+FILLED AT: $2.10 debit per contract
+Max Loss: $210" style="width: 100%; padding: 10px; background: #0f172a; color: #fff; border: 1px solid #334155; border-radius: 6px; font-family: inherit; resize: vertical;"></textarea>
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 8px; font-size: 0.9em; opacity: 0.8;">Actions:</label>
+                    <button id="executeGuruBtn" onclick="executeGuruTrade()" style="width: 100%; padding: 12px; background: #3b82f6; color: #fff; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-bottom: 10px;">▶️ Execute Trade</button>
+                    <div id="guruStatus" style="font-size: 0.85em; padding: 8px; border-radius: 4px; display: none;"></div>
+                </div>
+            </div>
+            <div style="border-top: 1px solid #334155; padding-top: 15px;">
+                <h3 style="font-size: 1em; margin-bottom: 10px; color: #3b82f6;">Active Guru Positions:</h3>
+                <div id="guruPositions" class="positions-grid">
+                    <div class="loading">No guru trades yet...</div>
+                </div>
+            </div>
+        </div>
+        
         <div class="timestamp" id="timestamp"></div>
     </div>
     
@@ -416,13 +443,118 @@
             fetchPositions();
             fetchTrades();
             fetchHotStocks();
+            fetchGuruPositions();
             
             setInterval(() => {
                 fetchBalance();
                 fetchPositions();
                 fetchTrades();
                 fetchHotStocks();
+                fetchGuruPositions();
             }, 2000);
+        }
+        
+        // GURU TRADE FUNCTIONS
+        async function executeGuruTrade() {
+            const alert = document.getElementById('guruAlert').value.trim();
+            const statusDiv = document.getElementById('guruStatus');
+            const btn = document.getElementById('executeGuruBtn');
+            
+            if (!alert) {
+                statusDiv.style.display = 'block';
+                statusDiv.style.background = '#ef4444';
+                statusDiv.textContent = '⚠️ Please paste a Discord alert';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Executing...';
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = '#3b82f6';
+            statusDiv.textContent = 'Processing...';
+            
+            try {
+                const response = await fetch('/api/guru-trade', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({alert: alert})
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusDiv.style.background = '#10b981';
+                    statusDiv.textContent = `✅ Logged ${data.symbol} @ ${formatCurrency(data.price)}`;
+                    document.getElementById('guruAlert').value = '';
+                    fetchGuruPositions();
+                } else {
+                    statusDiv.style.background = '#ef4444';
+                    statusDiv.textContent = '❌ ' + data.error;
+                }
+            } catch (error) {
+                statusDiv.style.background = '#ef4444';
+                statusDiv.textContent = '❌ Error: ' + error.message;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '▶️ Execute Trade';
+            }
+        }
+        
+        async function fetchGuruPositions() {
+            try {
+                const response = await fetch('/api/guru-positions');
+                const data = await response.json();
+                const container = document.getElementById('guruPositions');
+                
+                if (!data.positions || data.positions.length === 0) {
+                    container.innerHTML = '<div class="loading">No guru trades yet...</div>';
+                    return;
+                }
+                
+                const openPositions = data.positions.filter(p => p.status === 'OPEN');
+                
+                if (openPositions.length === 0) {
+                    container.innerHTML = '<div class="loading">No open guru trades...</div>';
+                    return;
+                }
+                
+                container.innerHTML = openPositions.map(pos => `
+                    <div class="position-card" style="border-left-color: #3b82f6;">
+                        <div class="position-header">
+                            <span class="position-symbol">${pos.symbol} ${pos.expiration} $${pos.strike} ${pos.type}</span>
+                            <button onclick="closeGuruTrade('${pos.symbol}')" style="padding: 4px 12px; background: #ef4444; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em;">❌ Close</button>
+                        </div>
+                        <div class="position-details">
+                            <span>Entry: ${formatCurrency(pos.entry_price)}</span>
+                            <span>${formatTime(pos.timestamp)}</span>
+                            <span style="opacity: 0.6; font-size: 0.8em;">Guru Trade</span>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Guru positions error:', error);
+            }
+        }
+        
+        async function closeGuruTrade(symbol) {
+            if (!confirm(`Close guru trade for ${symbol}?`)) return;
+            
+            try {
+                const response = await fetch('/api/close-guru', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({symbol: symbol})
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    fetchGuruPositions();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error closing trade: ' + error.message);
+            }
         }
         
         window.addEventListener('load', startAutoRefresh);
