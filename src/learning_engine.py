@@ -225,3 +225,7 @@ class TradingLearningEngine:
 
 # Global instance
 learning_engine = TradingLearningEngine()
+
+def get_learning_engine():
+    """Get singleton learning engine."""
+    return learning_engine

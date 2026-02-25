@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     # Logging Configuration
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_file_path: str = os.getenv("LOG_FILE_PATH", "./logs/trading_bot.log")
+    
+    # Options Trading Configuration
+    options_enabled: bool = os.getenv("OPTIONS_ENABLED", "false").lower() == "true"
+    alloc_split_mode: str = os.getenv("ALLOC_SPLIT_MODE", "dynamic")
+    stock_alloc_pct: float = float(os.getenv("STOCK_ALLOC_PCT", "70"))
+    options_alloc_pct: float = float(os.getenv("OPTIONS_ALLOC_PCT", "30"))
+    random_select: bool = os.getenv("RANDOM_SELECT", "true").lower() == "true"
+    options_max_positions: int = int(os.getenv("OPTIONS_MAX_POSITIONS", "3"))
+    options_spread_width_pct: float = float(os.getenv("OPTIONS_SPREAD_WIDTH_PCT", "7.5"))
+    options_min_iv: float = float(os.getenv("OPTIONS_MIN_IV", "30"))
+    options_max_debit_pct: float = float(os.getenv("OPTIONS_MAX_DEBIT_PCT", "5"))
+    options_take_profit_pct: float = float(os.getenv("OPTIONS_TAKE_PROFIT_PCT", "75"))
+    options_stop_loss_pct: float = float(os.getenv("OPTIONS_STOP_LOSS_PCT", "50"))
 
     class Config:
         env_file = ".env"
