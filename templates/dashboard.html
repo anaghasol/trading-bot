@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Trading Bot</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #fff;
+            padding: 15px;
+        }
+        
+        .container { max-width: 1800px; margin: 0 auto; }
+        
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+        }
+        
+        .header h1 { font-size: 1.8em; }
+        
+        .stats {
+            display: flex;
+            gap: 30px;
+            font-size: 0.9em;
+        }
+        
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+        
+        .stat-label { opacity: 0.8; font-size: 0.85em; }
+        .stat-value { font-size: 1.3em; font-weight: bold; }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .card {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 15px;
+            border: 1px solid #334155;
+        }
+        
+        .card h2 {
+            font-size: 1.1em;
+            margin-bottom: 12px;
+            color: #94a3b8;
+        }
+        
+        .positions-grid {
+            display: grid;
+            gap: 10px;
+        }
+        
+        .position-card {
+            background: #0f172a;
+            padding: 12px;
+            border-radius: 8px;
+            border-left: 3px solid;
+            transition: all 0.3s ease;
+        }
+        
+        .position-card.profit { border-left-color: #10b981; }
+        .position-card.loss { border-left-color: #ef4444; }
+        
+        .position-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        
+        .position-symbol {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        
+        .position-pnl {
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+        
+        .position-details {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            font-size: 0.85em;
+            opacity: 0.8;
+        }
+        
+        .hot-stocks {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .stock-card {
+            background: #0f172a;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 3px solid;
+        }
+        
+        .stock-card.buy { border-left-color: #10b981; }
+        .stock-card.sell { border-left-color: #ef4444; }
+        
+        .stock-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+        
+        .stock-symbol {
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+        
+        .stock-action {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: bold;
+        }
+        
+        .stock-action.buy { background: #10b981; }
+        .stock-action.sell { background: #ef4444; }
+        
+        .stock-details {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8em;
+            opacity: 0.8;
+        }
+        
+        .confidence-bar {
+            height: 3px;
+            background: #334155;
+            border-radius: 2px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+        
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981, #3b82f6);
+            transition: width 0.3s;
+        }
+        
+        .trades-log {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .trade-item {
+            background: #0f172a;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            border-left: 3px solid;
+        }
+        
+        .trade-item.buy { border-left-color: #10b981; }
+        .trade-item.sell { border-left-color: #ef4444; }
+        .trade-item.closed { opacity: 0.6; }
+        
+        .trade-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }
+        
+        .trade-symbol {
+            font-weight: bold;
+            font-size: 1.05em;
+        }
+        
+        .trade-details {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8em;
+            opacity: 0.8;
+        }
+        
+        .timestamp {
+            text-align: center;
+            opacity: 0.5;
+            font-size: 0.8em;
+            margin-top: 15px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            opacity: 0.5;
+        }
+        
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Live Trading Bot</h1>
+            <div class="stats">
+                <div class="stat-item">
+                    <span class="stat-label">Today Start</span>
+                    <span class="stat-value" id="startBalance">$0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Current Balance</span>
+                    <span class="stat-value" id="currentBalance">$0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Daily P&L</span>
+                    <span class="stat-value" id="dailyPnl">$0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Positions</span>
+                    <span class="stat-value" id="posCount">0</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <!-- Current Positions -->
+            <div class="card">
+                <h2>📊 Current Positions</h2>
+                <div id="positions" class="positions-grid">
+                    <div class="loading">No positions yet...</div>
+                </div>
+            </div>
+            
+            <!-- Hot Stocks -->
+            <div class="card">
+                <h2>🔥 Market Analysis</h2>
+                <div id="hotStocks" class="hot-stocks">
+                    <div class="loading">Analyzing...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Trade Log -->
+        <div class="card">
+            <h2>📝 Today's Trade Log (All Trades)</h2>
+            <div id="trades" class="trades-log">
+                <div class="loading">No trades yet...</div>
+            </div>
+        </div>
+        
+        <div class="timestamp" id="timestamp"></div>
+    </div>
+    
+    <script>
+        function formatCurrency(value) {
+            return '$' + value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+
+        function formatTime(date) {
+            return new Date(date).toLocaleTimeString();
+        }
+
+        async function fetchBalance() {
+            try {
+                const response = await fetch('/api/balance');
+                const data = await response.json();
+                
+                document.getElementById('startBalance').textContent = formatCurrency(data.balance || 0);
+                document.getElementById('currentBalance').textContent = formatCurrency(data.current_balance || 0);
+                
+                const pnl = data.daily_pnl || 0;
+                const pnlEl = document.getElementById('dailyPnl');
+                pnlEl.textContent = (pnl >= 0 ? '+' : '') + formatCurrency(Math.abs(pnl));
+                pnlEl.style.color = pnl >= 0 ? '#10b981' : '#ef4444';
+                
+                updateTimestamp();
+            } catch (error) {
+                console.error('Balance error:', error);
+            }
+        }
+        
+        async function fetchPositions() {
+            try {
+                const response = await fetch('/api/positions');
+                const data = await response.json();
+                const positionsDiv = document.getElementById('positions');
+                
+                document.getElementById('posCount').textContent = data.count || 0;
+                
+                if (!data.positions || data.positions.length === 0) {
+                    positionsDiv.innerHTML = '<div class="loading">No positions yet...</div>';
+                    return;
+                }
+                
+                positionsDiv.innerHTML = '';
+                
+                data.positions.forEach(pos => {
+                    const pnl = pos.pnl || 0;
+                    const pnlPct = pos.pnl_pct || 0;
+                    
+                    positionsDiv.innerHTML += `
+                        <div class="position-card ${pnl >= 0 ? 'profit' : 'loss'}">
+                            <div class="position-header">
+                                <span class="position-symbol">${pos.symbol}</span>
+                                <span class="position-pnl" style="color: ${pnl >= 0 ? '#10b981' : '#ef4444'}">
+                                    ${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)} (${pnlPct.toFixed(2)}%)
+                                </span>
+                            </div>
+                            <div class="position-details">
+                                <span>${pos.type || 'STOCK'}</span>
+                                <span>Qty: ${Math.abs(pos.quantity || 0)}</span>
+                                <span>Entry: ${formatCurrency(pos.entry_price || 0)}</span>
+                                <span>Current: ${formatCurrency(pos.current_price || 0)}</span>
+                            </div>
+                        </div>
+                    `;
+                });
+            } catch (error) {
+                console.error('Positions error:', error);
+            }
+        }
+        
+        async function fetchTrades() {
+            try {
+                const response = await fetch('/api/trades');
+                const data = await response.json();
+                const tradesDiv = document.getElementById('trades');
+                
+                if (!data.trades || data.trades.length === 0) {
+                    tradesDiv.innerHTML = '<div class="loading">No trades yet...</div>';
+                    return;
+                }
+                
+                tradesDiv.innerHTML = data.trades.map(trade => {
+                    const pnl = trade.pnl || 0;
+                    return `
+                    <div class="trade-item ${trade.action.toLowerCase()} ${trade.status === 'CLOSED' ? 'closed' : ''}">
+                        <div class="trade-header">
+                            <span class="trade-symbol">${trade.action} ${trade.quantity} ${trade.symbol}</span>
+                            <span style="color: ${trade.status === 'CLOSED' && pnl >= 0 ? '#10b981' : trade.status === 'CLOSED' ? '#ef4444' : '#94a3b8'}; font-weight: bold;">
+                                ${trade.status === 'CLOSED' ? (pnl >= 0 ? '+' : '') + formatCurrency(pnl) : trade.status}
+                            </span>
+                        </div>
+                        <div class="trade-details">
+                            <span>${trade.type || 'STOCK'}</span>
+                            <span>Entry: ${formatCurrency(trade.price || 0)}</span>
+                            ${trade.status === 'CLOSED' ? `<span>Exit: ${formatCurrency(trade.exit_price || 0)}</span>` : ''}
+                            <span>${(trade.confidence || 0).toFixed(1)}% conf</span>
+                            <span>${formatTime(trade.timestamp)}</span>
+                        </div>
+                    </div>
+                `}).join('');
+            } catch (error) {
+                console.error('Trades error:', error);
+            }
+        }
+        
+        async function fetchHotStocks() {
+            try {
+                const response = await fetch('/api/hot-stocks');
+                const data = await response.json();
+                const hotStocksDiv = document.getElementById('hotStocks');
+                
+                if (!data.stocks || data.stocks.length === 0) {
+                    hotStocksDiv.innerHTML = '<div class="loading">Analyzing...</div>';
+                    return;
+                }
+                
+                hotStocksDiv.innerHTML = data.stocks.map(stock => `
+                    <div class="stock-card ${stock.action.toLowerCase()}">
+                        <div class="stock-header">
+                            <span class="stock-symbol">${stock.symbol}</span>
+                            <span class="stock-action ${stock.action.toLowerCase()}">${stock.action}</span>
+                        </div>
+                        <div class="stock-details">
+                            <span>${formatCurrency(stock.price)}</span>
+                            <span style="color: ${stock.change >= 0 ? '#10b981' : '#ef4444'}">${stock.change >= 0 ? '+' : ''}${stock.change}%</span>
+                            <span>${stock.confidence}%</span>
+                        </div>
+                        <div class="confidence-bar">
+                            <div class="confidence-fill" style="width: ${stock.confidence}%"></div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Hot stocks error:', error);
+            }
+        }
+        
+        function updateTimestamp() {
+            document.getElementById('timestamp').textContent = 
+                'Last updated: ' + new Date().toLocaleTimeString();
+        }
+        
+        function startAutoRefresh() {
+            fetchBalance();
+            fetchPositions();
+            fetchTrades();
+            fetchHotStocks();
+            
+            setInterval(() => {
+                fetchBalance();
+                fetchPositions();
+                fetchTrades();
+                fetchHotStocks();
+            }, 2000);
+        }
+        
+        window.addEventListener('load', startAutoRefresh);
+    </script>
+</body>
+</html>
