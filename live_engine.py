@@ -11,7 +11,7 @@ from src.config import settings
 import time
 from learning_engine import get_learning_engine
 from src.market_scanner import get_trending_scanner
-from src.strategy.daily_profit import DailyProfitStrategy
+from src.trading_engine.enhanced_risk import EnhancedRiskManager
 
 STATE_FILE = Path('trading_state.json')
 
@@ -26,7 +26,8 @@ class LiveTradingEngine:
         self.symbols = []  # Dynamic - updated every 15min
         self.trending_scanner = get_trending_scanner()
         self.learning = get_learning_engine()
-        self.position_entry_times = {}  # Track when positions opened
+        self.position_entry_times = {}
+        self.enhanced_risk = EnhancedRiskManager(max_daily_loss_pct=2.0)
         
     def load_state(self):
         if STATE_FILE.exists():
@@ -414,33 +415,41 @@ class LiveTradingEngine:
         print(f"📊 Daily profit logged: {symbol} ${pnl:.2f}")
     
     async def run(self):
-        """Main loop - stops at market close"""
-        print("🚀 Live Trading Started - SMART EXIT STRATEGY")
+        """Main loop - stops at market close with circuit breaker"""
+        print("🚀 Live Trading Started - ENHANCED RISK MANAGEMENT")
         print(f"💰 Balance: ${self.state['balance']:,.2f}")
         print(f"🎯 Max Positions: 8")
-        print(f"📈 STOCKS: +1.5% take profit | -1% stop loss")
+        print(f"📈 STOCKS: ATR-based stops | 2:1 reward:risk")
         print(f"🎯 OPTIONS: +3% take profit | -2% stop loss")
+        print(f"🛑 Circuit Breaker: -2% daily loss limit")
         print(f"⏰ Auto-close all at 3:45 PM ET")
         print(f"🛑 Bot stops at 4:00 PM ET (market close)")
+        
+        # Reset daily tracking
+        self.enhanced_risk.reset_daily(self.state['balance'])
         
         scan_count = 0
         while True:
             try:
-                # Check if market is closed
+                # Check circuit breaker
+                if self.enhanced_risk.check_circuit_breaker(self.state['balance']):
+                    print("\n🚨 CIRCUIT BREAKER TRIGGERED: -2% daily loss limit hit")
+                    await self._close_all_positions("Circuit breaker")
+                    print("Bot stopped for today. Restart tomorrow.")
+                    break
+                
                 if self._is_market_closed():
                     print("\n🛑 Market closed - shutting down bot")
                     await self._close_all_positions("Market closed")
                     break
                 
-                # Close all positions 15min before market close
                 if self._is_near_market_close():
                     print("\n⏰ 3:45 PM - Closing all positions before market close")
                     await self._close_all_positions("End of day")
                     print("✅ All positions closed - waiting for market close")
-                    await asyncio.sleep(900)  # Wait 15min until market close
+                    await asyncio.sleep(900)
                     continue
                 
-                # Refresh trending stocks every 15min
                 if scan_count % 10 == 0:
                     print(f"\n🔄 Refreshing trending stocks...")
                     self.symbols = await self.trending_scanner.get_trending_stocks(top_n=10)
