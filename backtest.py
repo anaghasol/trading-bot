@@ -12,12 +12,14 @@ from typing import Dict, List
 class Backtester:
     """Backtest trading strategy on historical data."""
     
-    def __init__(self, initial_capital: float = 100000):
+    def __init__(self, initial_capital: float = 100000, slippage_pct: float = 0.1, commission_per_trade: float = 1.0):
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.positions = {}
         self.trades = []
         self.daily_returns = []
+        self.slippage_pct = slippage_pct / 100  # 0.1% default
+        self.commission = commission_per_trade
         
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         """Calculate Average True Range."""
@@ -90,14 +92,19 @@ class Backtester:
                     shares = int(risk_amount / stop_distance) if stop_distance > 0 else 0
                     
                     if shares > 0:
-                        position = {
-                            'entry_price': current_price,
-                            'shares': shares,
-                            'stop_loss': current_price - stop_distance,
-                            'take_profit': current_price + (stop_distance * 2),  # 2:1 ratio
-                            'entry_date': df.index[i]
-                        }
-                        trades_count += 1
+                        # Apply slippage on entry
+                        entry_price_with_slippage = current_price * (1 + self.slippage_pct)
+                        entry_cost = (entry_price_with_slippage * shares) + self.commission
+                        
+                        if entry_cost < self.capital:
+                            position = {
+                                'entry_price': entry_price_with_slippage,
+                                'shares': shares,
+                                'stop_loss': entry_price_with_slippage - stop_distance,
+                                'take_profit': entry_price_with_slippage + (stop_distance * 2),  # 2:1 ratio
+                                'entry_date': df.index[i]
+                            }
+                            trades_count += 1
                 
                 # Exit logic
                 elif position is not None:
@@ -123,15 +130,19 @@ class Backtester:
                             wins += 1
                     
                     if exit_trade:
-                        pnl = (current_price - position['entry_price']) * position['shares']
-                        self.capital += pnl
+                        # Apply slippage on exit
+                        exit_price_with_slippage = current_price * (1 - self.slippage_pct)
+                        gross_pnl = (exit_price_with_slippage - position['entry_price']) * position['shares']
+                        net_pnl = gross_pnl - self.commission  # Exit commission
+                        
+                        self.capital += net_pnl
                         
                         self.trades.append({
                             'symbol': symbol,
                             'entry': position['entry_price'],
-                            'exit': current_price,
+                            'exit': exit_price_with_slippage,
                             'shares': position['shares'],
-                            'pnl': pnl,
+                            'pnl': net_pnl,
                             'reason': exit_reason
                         })
                         
@@ -198,7 +209,8 @@ class Backtester:
         print(f"Wins: {total_wins} | Losses: {total_trades - total_wins}")
         print(f"Win Rate: {overall_win_rate:.1f}%")
         print(f"Profit Factor: {profit_factor:.2f}")
-        print(f"Sharpe Ratio: {sharpe_ratio:.2f} {'✅' if sharpe_ratio > 1.0 else '⚠️'}")
+        print(f"Sharpe Ratio: {sharpe_ratio:.2f} {'✅' if sharpe_ratio > 1.2 else '⚠️ (Target: >1.2)'}")
+        print(f"Slippage: {self.slippage_pct*100:.1f}% | Commission: ${self.commission:.2f}/trade")
         print(f"\nInitial Capital: ${self.initial_capital:,.2f}")
         print(f"Final Capital: ${final_capital:,.2f}")
         print(f"Total Return: {total_return:+.2f}%")
@@ -241,6 +253,11 @@ def run_quick_backtest():
         print("⚠️  Profit factor low - tighten stops or widen targets")
     else:
         print("✅ Profit factor good")
+    
+    if results['sharpe_ratio'] < 1.2:
+        print("⚠️  Sharpe ratio below 1.2 - improve risk-adjusted returns")
+    else:
+        print("✅ Sharpe ratio excellent (>1.2)")
     
     if results['total_return'] < 5:
         print("⚠️  Returns low for 6 months - increase position sizing or trade frequency")

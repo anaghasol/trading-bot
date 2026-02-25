@@ -2,7 +2,7 @@
 Enhanced audit logging for detailed trade metrics and post-mortem analysis.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any
 
@@ -37,7 +37,8 @@ class AuditLogger:
             'sector': trade_data.get('sector'),
             'atr': trade_data.get('atr'),
             'volume_ratio': trade_data.get('volume_ratio'),
-            'signal_mode': trade_data.get('signal_mode', 'DUAL')
+            'signal_mode': trade_data.get('signal_mode', 'DUAL'),
+            'regime': trade_data.get('regime', 'FLAT')
         }
         
         # Append to JSONL file
@@ -79,7 +80,8 @@ class AuditLogger:
             'polymarket_wins': 0,
             'polymarket_total': 0,
             'total_trades': 0,
-            'avg_return': 0
+            'avg_return': 0,
+            'regime_performance': {'BULL': 0, 'BEAR': 0, 'FLAT': 0}
         }
         
         # Read last N days of audit logs
@@ -108,6 +110,11 @@ class AuditLogger:
                             if pnl > 0:
                                 metrics['polymarket_wins'] += 1
                         
+                        # Track regime performance
+                        regime = trade.get('regime', 'FLAT')
+                        if regime in metrics['regime_performance']:
+                            metrics['regime_performance'][regime] += pnl
+                        
                         metrics['total_trades'] += 1
                         
                     except:
@@ -116,9 +123,13 @@ class AuditLogger:
         # Calculate accuracies
         if metrics['openclaw_total'] > 0:
             metrics['openclaw_accuracy'] = metrics['openclaw_wins'] / metrics['openclaw_total']
+        else:
+            metrics['openclaw_accuracy'] = 0.5
         
         if metrics['polymarket_total'] > 0:
             metrics['polymarket_accuracy'] = metrics['polymarket_wins'] / metrics['polymarket_total']
+        else:
+            metrics['polymarket_accuracy'] = 0.5
         
         return metrics
 
@@ -132,6 +143,3 @@ def get_audit_logger():
     if _audit_logger is None:
         _audit_logger = AuditLogger()
     return _audit_logger
-
-
-from datetime import timedelta

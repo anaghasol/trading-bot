@@ -101,9 +101,9 @@ class EnhancedRiskManager:
         
         return False
     
-    def check_volume_filter(self, current_volume: float, avg_volume: float) -> bool:
-        """Only trade if volume > 1.5x average to confirm trends."""
-        return current_volume > (avg_volume * 1.5)
+    def check_volume_filter(self, current_volume: float, avg_volume: float, min_multiplier: float = 2.0) -> bool:
+        """Only trade if volume > 2x average (stricter than 1.5x) to confirm high-quality setups."""
+        return current_volume > (avg_volume * min_multiplier)
     
     def reset_daily(self, starting_balance: float):
         """Reset daily tracking at market open."""

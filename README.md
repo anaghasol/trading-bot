@@ -37,6 +37,20 @@ Dashboard: http://localhost:8080
 
 ## How It Works
 
+### Professional Features
+
+✅ **Regime Detection** - Adapts to bull/bear/flat markets  
+✅ **ATR-Based Stops** - Dynamic 2x ATR stops (not fixed %)  
+✅ **1% Position Sizing** - Never risk >1% per trade  
+✅ **Circuit Breaker** - Auto-stop at -2% daily loss  
+✅ **Volume Filter** - Only trade 2x average volume  
+✅ **Diversification** - Max 2 per sector, <0.6 correlation  
+✅ **Fallback Handler** - Works if Polymarket/OpenClaw fails  
+✅ **News Monitor** - Pauses 30min around economic events  
+✅ **Alert Escalation** - Email/SMS on critical issues  
+✅ **ML-Lite** - Auto-adjusts weights based on 7-day accuracy  
+✅ **Backtesting** - Sharpe >1.2 validation with slippage  
+
 ### Trading Hours
 - **9:30 AM - 3:45 PM ET**: Active trading
 - **3:45 PM**: Close all positions
@@ -44,29 +58,33 @@ Dashboard: http://localhost:8080
 
 ### Every 90 Seconds
 
-1. **Scan** 10 trending stocks
-2. **Update** existing positions
-3. **Analyze** new opportunities:
-   - OpenClaw technical analysis (60%)
-   - Polymarket crowd sentiment (40%)
+1. **Detect Regime** - Classify market (bull/bear/flat)
+2. **Scan** 10 trending stocks with 2x volume
+3. **Update** existing positions with ATR stops
+4. **Analyze** new opportunities:
+   - OpenClaw technical analysis (60-70% adaptive)
+   - Polymarket crowd sentiment (30-40% adaptive)
    - Trade only if BOTH agree (>55% each)
-4. **Execute** trades with consensus
+5. **Execute** trades with 1% position sizing
+6. **Monitor** circuit breaker and latency
 
 ### Exit Strategy
 
-**Stop-Loss:**
-- Stocks: -1%
-- Options: -2%
+**ATR-Based Stops:**
+- Stop: Entry - (2x ATR)
+- Target: Entry + (3x ATR) for 2:1 reward:risk
 
-**Take-Profit:**
-- Stocks: +1.5%
-- Options: +3%
+**Circuit Breaker:**
+- Auto-stop all trading at -2% daily loss
 
 **Trailing Stop:**
 - Peak 2%+ → don't drop below 1%
 
 **Trend Reversal:**
 - Trend < 45% → exit before loss
+
+**Time-Based:**
+- Close all positions at 3:45 PM ET
 
 ## Files
 
@@ -83,32 +101,69 @@ Dashboard: http://localhost:8080
 - `src/market_scanner/` - Trending stock scanner
 - `src/trading_engine/` - Trade execution & risk
 - `src/strategy/` - Exit strategies
+- `src/regime_detector.py` - Market regime detection
+- `src/alert_escalation.py` - Email/SMS alerts
+- `src/fallback_handler.py` - Dependency fallback
+- `src/diversification_checker.py` - Sector/correlation limits
+- `src/news_monitor.py` - Economic event pauses
+- `src/latency_monitor.py` - Performance tracking
+- `src/audit_logger.py` - Enhanced trade logging
 - `src/config.py` - Configuration
 
 ### Logs
 - `logs/trading_bot.log` - Execution log
+- `logs/audit_YYYY-MM-DD.jsonl` - Detailed trade metrics
+- `logs/summary_YYYY-MM-DD.json` - Daily summaries
 - `logs/daily_profits_YYYY-MM-DD.txt` - Daily P&L
+
+### Validation
+- `backtest.py` - Historical backtesting with slippage
+- `LAUNCH_CHECKLIST.md` - Pre-launch validation steps
 
 ## Configuration
 
-Edit `src/config.py`:
+Copy `.env.example` to `.env` and configure:
 
-```python
+```bash
 # IBKR Connection
-IBKR_HOST = "127.0.0.1"
-IBKR_PORT = 7497  # 7497=paper, 7496=live
-IBKR_CLIENT_ID = 1
+IBKR_HOST=127.0.0.1
+IBKR_PORT=7497  # 7497=paper, 7496=live
+IBKR_CLIENT_ID=1
 
 # Risk Management
-STOP_LOSS_STOCK = 1.0      # -1%
-STOP_LOSS_OPTION = 2.0     # -2%
-TAKE_PROFIT_STOCK = 1.5    # +1.5%
-TAKE_PROFIT_OPTION = 3.0   # +3%
+MAX_DAILY_LOSS_PERCENT=2.0  # Circuit breaker
+MAX_POSITION_SIZE_PERCENT=1.0  # 1% rule
+ATR_STOP_MULTIPLIER=2.0
+ATR_TARGET_MULTIPLIER=3.0
 
-# Position Sizing
-MAX_POSITIONS = 8
-POSITION_SIZE_PCT = 12     # 12% per position
+# Filters
+MIN_VOLUME_MULTIPLIER=2.0  # 2x average volume
+MAX_POSITIONS_PER_SECTOR=2
+MAX_CORRELATION=0.6
+
+# Alerts (optional)
+ALERT_EMAIL_ENABLED=false
+ALERT_RECIPIENT_EMAIL=your@email.com
 ```
+
+## Validation
+
+### Before Live Trading
+
+1. **Backtest** (6 months historical):
+```bash
+python backtest.py
+```
+Target: Sharpe >1.2, Win Rate >50%, Profit Factor >1.5
+
+2. **Paper Trade** (10-20 sessions):
+- Monitor dashboard daily
+- Verify circuit breaker works
+- Check clean shutdown at 4 PM
+- Review audit logs
+
+3. **Launch Checklist**:
+See [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) for complete validation.
 
 ## Daily Flow
 
