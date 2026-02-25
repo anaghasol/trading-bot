@@ -23,22 +23,26 @@ class Backtester:
         
     def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
         """Calculate Average True Range."""
-        high = df['High']
-        low = df['Low']
-        close = df['Close']
+        high = df['High'].values
+        low = df['Low'].values
+        close = df['Close'].values
         
-        tr1 = high - low
-        tr2 = abs(high - close.shift())
-        tr3 = abs(low - close.shift())
+        tr_list = [high[0] - low[0]]  # First TR
+        for i in range(1, len(high)):
+            tr = max(
+                high[i] - low[i],
+                abs(high[i] - close[i-1]),
+                abs(low[i] - close[i-1])
+            )
+            tr_list.append(tr)
         
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean()
-        
+        atr = pd.Series(tr_list, index=df.index).rolling(window=period).mean()
         return atr
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """Generate buy/sell signals based on strategy."""
         # Calculate indicators
+        df = df.copy()
         df['SMA_5'] = df['Close'].rolling(window=5).mean()
         df['SMA_20'] = df['Close'].rolling(window=20).mean()
         df['ATR'] = self.calculate_atr(df)
@@ -46,9 +50,9 @@ class Backtester:
         
         # Trend score (simplified OpenClaw logic)
         df['Trend_Score'] = 0.0
-        df.loc[df['Close'] > df['SMA_5'], 'Trend_Score'] += 0.3
-        df.loc[df['SMA_5'] > df['SMA_20'], 'Trend_Score'] += 0.3
-        df.loc[df['Volume'] > df['Volume_Avg'] * 1.5, 'Trend_Score'] += 0.2
+        df.loc[df['Close'] > df['SMA_5'], 'Trend_Score'] = df.loc[df['Close'] > df['SMA_5'], 'Trend_Score'] + 0.3
+        df.loc[df['SMA_5'] > df['SMA_20'], 'Trend_Score'] = df.loc[df['SMA_5'] > df['SMA_20'], 'Trend_Score'] + 0.3
+        df.loc[df['Volume'] > df['Volume_Avg'] * 1.5, 'Trend_Score'] = df.loc[df['Volume'] > df['Volume_Avg'] * 1.5, 'Trend_Score'] + 0.2
         
         # Simulate Polymarket sentiment (random for backtest)
         np.random.seed(42)
@@ -59,7 +63,8 @@ class Backtester:
         
         # Generate signals
         df['Signal'] = 0
-        df.loc[(df['Trend_Score'] > 0.55) & (df['Poly_Score'] > 0.55) & (df['Combined_Confidence'] > 0.60), 'Signal'] = 1
+        mask = (df['Trend_Score'] > 0.55) & (df['Poly_Score'] > 0.55) & (df['Combined_Confidence'] > 0.60)
+        df.loc[mask, 'Signal'] = 1
         
         return df
     
