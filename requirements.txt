@@ -13,5 +13,5 @@ flask==3.0.0
 flask-cors==4.0.0
 werkzeug==3.0.0
 yfinance==0.2.40
-pandas-ta==0.3.14b
+ta-lib
 backtrader==1.9.78.123
