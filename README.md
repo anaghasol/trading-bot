@@ -17,23 +17,26 @@ pip install -r requirements.txt
 ```
 
 ### 3. Configure
-Edit `src/config.py`:
-```python
-IBKR_HOST = "127.0.0.1"
-IBKR_PORT = 7497  # Paper trading
-IBKR_CLIENT_ID = 1
+Copy `.env.example` to `.env` and edit:
+```bash
+cp .env.example .env
+# Edit IBKR_HOST, IBKR_PORT, etc.
 ```
 
-### 4. Run
+### 4. Validate Setup
 ```bash
-# Start bot
-python live_engine.py
+python validate_setup.py
+```
 
-# Or with dashboard
+### 5. Run
+```bash
+# Start bot with dashboard
 python start_live_trading.py
 ```
 
 Dashboard: http://localhost:8080
+
+**Quick Reference:** See [QUICK_REFERENCE.md](QUICK_REFERENCE.md) for testing & tuning.
 
 ## How It Works
 
