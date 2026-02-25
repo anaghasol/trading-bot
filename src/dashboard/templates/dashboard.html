@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Bot Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-bg: #0f1419;
+            --secondary-bg: #1a1f2e;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-blue: #3b82f6;
+            --text-light: #e5e7eb;
+            --border-color: #374151;
+        }
+
+        body {
+            background-color: var(--primary-bg);
+            color: var(--text-light);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow-x: hidden;
+        }
+
+        .navbar {
+            background-color: var(--secondary-bg);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .navbar-brand {
+            font-weight: bold;
+            color: var(--accent-green) !important;
+            font-size: 1.3rem;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.35rem 0.65rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            background-color: var(--accent-green);
+            color: white;
+        }
+
+        .status-badge.paper {
+            background-color: var(--accent-blue);
+        }
+
+        .card {
+            background-color: var(--secondary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            background-color: rgba(16, 185, 129, 0.1);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem;
+        }
+
+        .card-title {
+            margin: 0;
+            font-weight: 600;
+            color: var(--accent-green);
+        }
+
+        .metric-box {
+            background-color: var(--primary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1.5rem;
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+
+        .metric-value {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: var(--accent-green);
+            margin: 0.5rem 0;
+        }
+
+        .metric-label {
+            font-size: 0.85rem;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .position-row {
+            background-color: var(--primary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            display: grid;
+            grid-template-columns: 1.5fr 1fr 1fr 1fr 1fr 1fr;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .position-symbol {
+            font-weight: bold;
+            font-size: 1.1rem;
+            color: var(--accent-blue);
+        }
+
+        .position-action {
+            padding: 0.35rem 0.65rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: inline-block;
+        }
+
+        .position-action.buy {
+            background-color: rgba(16, 185, 129, 0.2);
+            color: var(--accent-green);
+        }
+
+        .position-action.sell {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .log-viewer {
+            background-color: var(--primary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.85rem;
+        }
+
+        .log-line {
+            padding: 0.35rem 0;
+            border-bottom: 1px solid rgba(55, 65, 81, 0.3);
+            color: #d1d5db;
+        }
+
+        .log-line.info {
+            color: var(--accent-blue);
+        }
+
+        .log-line.success {
+            color: var(--accent-green);
+        }
+
+        .log-line.error {
+            color: var(--accent-red);
+        }
+
+        .log-line.warning {
+            color: #f59e0b;
+        }
+
+        .progress-bar {
+            background-color: var(--accent-green);
+        }
+
+        .trade-history-row {
+            background-color: var(--primary-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.5rem;
+            display: grid;
+            grid-template-columns: 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 0.6fr;
+            gap: 1rem;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+
+        .trade-symbol {
+            font-weight: bold;
+            color: var(--accent-blue);
+        }
+
+        .trade-price {
+            color: var(--accent-green);
+        }
+
+        .confidence-badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .confidence-badge.high {
+            background-color: rgba(16, 185, 129, 0.2);
+            color: var(--accent-green);
+        }
+
+        .confidence-badge.medium {
+            background-color: rgba(59, 130, 246, 0.2);
+            color: var(--accent-blue);
+        }
+
+        .confidence-badge.low {
+            background-color: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .updating {
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .container-fluid {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+        }
+
+        @media (max-width: 1200px) {
+            .position-row, .trade-history-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark sticky-top">
+        <div class="container-fluid">
+            <span class="navbar-brand">
+                <i class="bi bi-graph-up"></i> Trading Bot Dashboard
+            </span>
+            <span class="ms-auto">
+                <span class="status-badge paper" id="status-badge">PAPER TRADING</span>
+                <span class="status-badge" style="margin-left: 0.5rem; cursor: pointer;" id="refresh-button" title="Click to refresh">
+                    <i class="bi bi-arrow-clockwise"></i> <span id="last-update">Just now</span>
+                </span>
+            </span>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <!-- Account Overview -->
+        <div class="row mb-4">
+            <div class="col-md-2">
+                <div class="metric-box">
+                    <div class="metric-label">Account Balance</div>
+                    <div class="metric-value" id="metric-balance">$0.00</div>
+                    <small class="text-muted" id="metric-account">---</small>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="metric-box">
+                    <div class="metric-label">Cash Available</div>
+                    <div class="metric-value" id="metric-cash">$0.00</div>
+                    <small class="text-muted">Available for trading</small>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="metric-box">
+                    <div class="metric-label">Total P&L</div>
+                    <div class="metric-value" id="metric-pnl" style="color: var(--accent-green);">$0.00</div>
+                    <small class="text-muted">Unrealized profit/loss</small>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="metric-box">
+                    <div class="metric-label">Active Trades</div>
+                    <div class="metric-value" id="metric-active-trades">0</div>
+                    <div style="font-size: 0.75rem; color: #9ca3af; margin-top: 0.5rem;">
+                        <span id="active-trade-count">0</span> / <span id="max-trade-count">5</span> concurrent
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="metric-box">
+                    <div class="metric-label">Max Position</div>
+                    <div class="metric-value" id="metric-position-size">80%</div>
+                    <small class="text-muted">Per trade</small>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="metric-box">
+                    <div class="metric-label">Stop Loss</div>
+                    <div class="metric-value" id="metric-stop-loss" style="font-size: 1.5rem;">3%</div>
+                    <small class="text-muted">Risk per trade</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- Risk Metrics -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h6 class="card-title">Risk Configuration</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-6">
+                                <p class="mb-2">
+                                    <small class="text-muted">Stop Loss</small><br>
+                                    <strong id="risk-stop-loss">3%</strong>
+                                </p>
+                            </div>
+                            <div class="col-6">
+                                <p class="mb-2">
+                                    <small class="text-muted">Trailing Stop</small><br>
+                                    <strong id="risk-trailing-stop">15%</strong>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h6 class="card-title">Trade Capacity</h6>
+                    </div>
+                    <div class="card-body">
+                        <div style="margin-bottom: 1rem;">
+                            <small class="text-muted d-block mb-2">Concurrent Trades: <span id="capacity-active">0</span>/<span id="capacity-max">5</span></small>
+                            <div class="progress" style="height: 8px;">
+                                <div class="progress-bar" id="capacity-bar" role="progressbar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <small id="can-trade-message" style="color: var(--accent-green);"><i class="bi bi-check-circle"></i> Ready to trade</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Open Positions -->
+        <div class="row mb-4">
+            <div class="col-lg-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h6 class="card-title"><i class="bi bi-diagram-3"></i> Open Positions</h6>
+                    </div>
+                    <div class="card-body">
+                        <div id="positions-container">
+                            <p class="text-muted text-center mb-0">No open positions</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trade History -->
+        <div class="row mb-4">
+            <div class="col-lg-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h6 class="card-title"><i class="bi bi-clock-history"></i> Recent Trades</h6>
+                    </div>
+                    <div class="card-body">
+                        <div id="trade-history-container">
+                            <p class="text-muted text-center mb-0">No recent trades</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Live Logs -->
+        <div class="row">
+            <div class="col-lg-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h6 class="card-title"><i class="bi bi-file-text"></i> Live Logs</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="log-viewer" id="log-viewer">
+                            <div class="log-line text-muted">Waiting for bot logs...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auto-refresh data every 2 seconds
+        const REFRESH_INTERVAL = 2000;
+
+        function formatCurrency(value) {
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 2
+            }).format(value);
+        }
+
+        function formatTime(date) {
+            return new Intl.DateTimeFormat('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            }).format(new Date(date));
+        }
+
+        function getConfidenceBadge(confidence) {
+            if (confidence === undefined || confidence === null) return '';
+            const pct = parseFloat(confidence) * 100;
+            const level = pct >= 70 ? 'high' : pct >= 50 ? 'medium' : 'low';
+            return `<span class="confidence-badge ${level}">${pct.toFixed(0)}%</span>`;
+        }
+
+        function getLogClass(line) {
+            if (line.includes('ERROR')) return 'error';
+            if (line.includes('WARNING')) return 'warning';
+            if (line.includes('✅') || line.includes('SUCCESS')) return 'success';
+            if (line.includes('INFO')) return 'info';
+            return '';
+        }
+
+        async function updateAccount() {
+            try {
+                const response = await fetch('/api/account');
+                const data = await response.json();
+                
+                document.getElementById('metric-balance').textContent = formatCurrency(data.balance || 0);
+                document.getElementById('metric-cash').textContent = formatCurrency(data.cash || 0);
+                document.getElementById('metric-account').textContent = data.account_id || '---';
+                document.getElementById('metric-position-size').textContent = `${data.position_size_percent || 80}%`;
+            } catch (error) {
+                console.error('Error updating account:', error);
+            }
+        }
+
+        async function updatePositions() {
+            try {
+                const response = await fetch('/api/positions');
+                const data = await response.json();
+                const container = document.getElementById('positions-container');
+
+                if (!data.positions || data.positions.length === 0) {
+                    container.innerHTML = '<p class="text-muted text-center mb-0">No open positions</p>';
+                    // Update total P&L to 0
+                    document.getElementById('metric-pnl').textContent = '$0.00';
+                    document.getElementById('metric-pnl').style.color = 'var(--text-light)';
+                    return;
+                }
+
+                // Update total P&L
+                const totalPnl = data.total_pnl || 0;
+                document.getElementById('metric-pnl').textContent = formatCurrency(totalPnl);
+                document.getElementById('metric-pnl').style.color = totalPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+
+                let html = '';
+                data.positions.forEach(pos => {
+                    const pnl = pos.unrealized_pnl || 0;
+                    const pnlColor = pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+                    const pnlSign = pnl >= 0 ? '+' : '';
+                    
+                    // Format symbol with option details if applicable
+                    let symbolDisplay = pos.symbol;
+                    if (pos.contract_type === 'OPTION' && pos.strike && pos.right) {
+                        symbolDisplay += ` ${pos.expiration} $${pos.strike}${pos.right}`;
+                    }
+                    
+                    html += `
+                        <div class="position-row">
+                            <div class="position-symbol">${symbolDisplay}</div>
+                            <div><strong>${pos.quantity || 0}</strong> ${pos.contract_type === 'OPTION' ? 'contracts' : 'shares'}</div>
+                            <div>Avg: <strong>$${(pos.avg_cost || 0).toFixed(2)}</strong></div>
+                            <div>Current: <strong>$${(pos.current_price || 0).toFixed(2)}</strong></div>
+                            <div>Value: <strong>${formatCurrency(pos.market_value || 0)}</strong></div>
+                            <div style="color: ${pnlColor}; font-weight: bold;">${pnlSign}${formatCurrency(pnl)}</div>
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('Error updating positions:', error);
+            }
+        }
+
+        async function updateTrades() {
+            try {
+                const response = await fetch('/api/trades');
+                const data = await response.json();
+                const container = document.getElementById('trade-history-container');
+
+                if (!data.trades || data.trades.length === 0) {
+                    container.innerHTML = '<p class="text-muted text-center mb-0">No recent trades</p>';
+                    return;
+                }
+
+                // Show total count
+                const totalCount = data.total_count || data.trades.length;
+                let html = `<div style="margin-bottom: 1rem; color: var(--text-light);"><strong>Total Trades: ${totalCount}</strong></div>`;
+                
+                // Show all trades (most recent first)
+                data.trades.reverse().forEach(trade => {
+                    const action = trade.action.toUpperCase();
+                    const actionClass = action === 'BUY' || action === 'BTO' ? 'buy' : 'sell';
+                    html += `
+                        <div class="trade-history-row">
+                            <div class="trade-symbol">${trade.symbol}</div>
+                            <div><span class="position-action ${actionClass}">${action}</span></div>
+                            <div class="trade-price">$${(trade.price || 0).toFixed(2)} x ${trade.quantity || 0}</div>
+                            <div><small class="text-muted">${formatTime(trade.timestamp)}</small></div>
+                            <div>${getConfidenceBadge(trade.confidence)}</div>
+                            <div><small class="text-muted">${trade.status}</small></div>
+                        </div>
+                    `;
+                });
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('Error updating trades:', error);
+            }
+        }
+
+        async function updateRiskMetrics() {
+            try {
+                const response = await fetch('/api/risk-metrics');
+                const data = await response.json();
+
+                document.getElementById('metric-active-trades').textContent = data.active_trades || 0;
+                document.getElementById('metric-stop-loss').textContent = `${data.stop_loss_percent || 3}%`;
+                document.getElementById('risk-stop-loss').textContent = `${data.stop_loss_percent || 3}%`;
+                document.getElementById('risk-trailing-stop').textContent = `${data.trailing_stop_percent || 15}%`;
+                
+                document.getElementById('active-trade-count').textContent = data.active_trades || 0;
+                document.getElementById('max-trade-count').textContent = data.max_concurrent || 5;
+                document.getElementById('capacity-active').textContent = data.active_trades || 0;
+                document.getElementById('capacity-max').textContent = data.max_concurrent || 5;
+
+                const barPercent = ((data.active_trades || 0) / (data.max_concurrent || 5)) * 100;
+                document.getElementById('capacity-bar').style.width = barPercent + '%';
+
+                const canTradeMsg = data.can_trade
+                    ? '<i class="bi bi-check-circle"></i> Ready to trade'
+                    : '<i class="bi bi-exclamation-circle" style="color: var(--accent-red);"></i> Max trades reached';
+                document.getElementById('can-trade-message').innerHTML = canTradeMsg;
+            } catch (error) {
+                console.error('Error updating risk metrics:', error);
+            }
+        }
+
+        async function updateLogs() {
+            try {
+                const response = await fetch('/api/logs');
+                const data = await response.json();
+                const viewer = document.getElementById('log-viewer');
+
+                if (!data.logs || data.logs.length === 0) {
+                    viewer.innerHTML = '<div class="log-line text-muted">No logs available</div>';
+                    return;
+                }
+
+                let html = '';
+                data.logs.forEach(log => {
+                    const logClass = getLogClass(log);
+                    html += `<div class="log-line ${logClass}">${escapeHtml(log)}</div>`;
+                });
+                viewer.innerHTML = html;
+                viewer.scrollTop = viewer.scrollHeight;
+            } catch (error) {
+                console.error('Error updating logs:', error);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function updateAll() {
+            document.getElementById('refresh-button').classList.add('updating');
+            
+            await Promise.all([
+                updateAccount(),
+                updatePositions(),
+                updateTrades(),
+                updateRiskMetrics(),
+                updateLogs()
+            ]);
+
+            document.getElementById('refresh-button').classList.remove('updating');
+            const now = new Date();
+            document.getElementById('last-update').textContent = formatTime(now);
+        }
+
+        // Refresh button click
+        document.getElementById('refresh-button').addEventListener('click', updateAll);
+
+        // Initial update and auto-refresh
+        updateAll();
+        setInterval(updateAll, REFRESH_INTERVAL);
+
+        // Update relative time continuously
+        setInterval(() => {
+            const now = new Date();
+            document.getElementById('last-update').textContent = formatTime(now);
+        }, 1000);
+    </script>
+</body>
+</html>
