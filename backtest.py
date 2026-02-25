@@ -48,13 +48,17 @@ class Backtester:
         df['ATR'] = self.calculate_atr(df)
         df['Volume_Avg'] = df['Volume'].rolling(window=20).mean()
         
-        # Trend score (simplified OpenClaw logic)
+        # Trend score
         df['Trend_Score'] = 0.0
-        df.loc[df['Close'] > df['SMA_5'], 'Trend_Score'] = df.loc[df['Close'] > df['SMA_5'], 'Trend_Score'] + 0.3
-        df.loc[df['SMA_5'] > df['SMA_20'], 'Trend_Score'] = df.loc[df['SMA_5'] > df['SMA_20'], 'Trend_Score'] + 0.3
-        df.loc[df['Volume'] > df['Volume_Avg'] * 1.5, 'Trend_Score'] = df.loc[df['Volume'] > df['Volume_Avg'] * 1.5, 'Trend_Score'] + 0.2
+        close_gt_sma5 = (df['Close'] > df['SMA_5']).fillna(False)
+        sma5_gt_sma20 = (df['SMA_5'] > df['SMA_20']).fillna(False)
+        vol_gt_avg = (df['Volume'] > df['Volume_Avg'] * 1.5).fillna(False)
         
-        # Simulate Polymarket sentiment (random for backtest)
+        df.loc[close_gt_sma5, 'Trend_Score'] += 0.3
+        df.loc[sma5_gt_sma20, 'Trend_Score'] += 0.3
+        df.loc[vol_gt_avg, 'Trend_Score'] += 0.2
+        
+        # Polymarket sentiment
         np.random.seed(42)
         df['Poly_Score'] = np.random.uniform(0.4, 0.7, len(df))
         
