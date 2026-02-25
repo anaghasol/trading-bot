@@ -343,11 +343,12 @@ Max Loss: $210" style="width: 100%; padding: 10px; background: #0f172a; color: #
                 data.positions.forEach(pos => {
                     const pnl = pos.pnl || 0;
                     const pnlPct = pos.pnl_pct || 0;
+                    const sourceBadge = pos.source === 'GURU' ? '<span style="background: #3b82f6; padding: 2px 6px; border-radius: 3px; font-size: 0.7em; margin-left: 8px;">GURU</span>' : '';
                     
                     positionsDiv.innerHTML += `
                         <div class="position-card ${pnl >= 0 ? 'profit' : 'loss'}">
                             <div class="position-header">
-                                <span class="position-symbol">${pos.symbol}</span>
+                                <span class="position-symbol">${pos.symbol}${sourceBadge}</span>
                                 <span class="position-pnl" style="color: ${pnl >= 0 ? '#10b981' : '#ef4444'}">
                                     ${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)} (${pnlPct.toFixed(2)}%)
                                 </span>
@@ -379,10 +380,11 @@ Max Loss: $210" style="width: 100%; padding: 10px; background: #0f172a; color: #
                 
                 tradesDiv.innerHTML = data.trades.map(trade => {
                     const pnl = trade.pnl || 0;
+                    const sourceBadge = trade.source === 'GURU' ? '<span style="background: #3b82f6; padding: 2px 6px; border-radius: 3px; font-size: 0.7em; margin-left: 5px;">GURU</span>' : '';
                     return `
                     <div class="trade-item ${trade.action.toLowerCase()} ${trade.status === 'CLOSED' ? 'closed' : ''}">
                         <div class="trade-header">
-                            <span class="trade-symbol">${trade.action} ${trade.quantity} ${trade.symbol}</span>
+                            <span class="trade-symbol">${trade.action} ${trade.quantity} ${trade.symbol}${sourceBadge}</span>
                             <span style="color: ${trade.status === 'CLOSED' && pnl >= 0 ? '#10b981' : trade.status === 'CLOSED' ? '#ef4444' : '#94a3b8'}; font-weight: bold;">
                                 ${trade.status === 'CLOSED' ? (pnl >= 0 ? '+' : '') + formatCurrency(pnl) : trade.status}
                             </span>
@@ -484,7 +486,7 @@ Max Loss: $210" style="width: 100%; padding: 10px; background: #0f172a; color: #
                 
                 if (data.success) {
                     statusDiv.style.background = '#10b981';
-                    statusDiv.textContent = `✅ Logged ${data.symbol} @ ${formatCurrency(data.price)}`;
+                    statusDiv.textContent = `✅ Executed ${data.contracts} contracts of ${data.symbol} in IBKR @ ${formatCurrency(data.price)}`;
                     document.getElementById('guruAlert').value = '';
                     fetchGuruPositions();
                 } else {
@@ -525,9 +527,10 @@ Max Loss: $210" style="width: 100%; padding: 10px; background: #0f172a; color: #
                             <button onclick="closeGuruTrade('${pos.symbol}')" style="padding: 4px 12px; background: #ef4444; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em;">❌ Close</button>
                         </div>
                         <div class="position-details">
+                            <span>${pos.contracts} contracts</span>
                             <span>Entry: ${formatCurrency(pos.entry_price)}</span>
                             <span>${formatTime(pos.timestamp)}</span>
-                            <span style="opacity: 0.6; font-size: 0.8em;">Guru Trade</span>
+                            <span style="opacity: 0.6; font-size: 0.8em;">IBKR Live</span>
                         </div>
                     </div>
                 `).join('');

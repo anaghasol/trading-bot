@@ -90,10 +90,11 @@ def get_balance():
 
 @app.route('/api/positions')
 def get_positions():
-    """Get positions from state file (synced with IBKR)"""
+    """Get positions from state file + guru trades"""
     state = load_state()
     positions = []
     
+    # Add regular positions
     for symbol, pos in state['positions'].items():
         positions.append({
             'symbol': pos.get('option_symbol', symbol),
@@ -102,8 +103,27 @@ def get_positions():
             'current_price': pos.get('current_price', 0),
             'pnl': pos.get('pnl', 0),
             'pnl_pct': pos.get('pnl_pct', 0),
-            'type': pos.get('type', 'STOCK')
+            'type': pos.get('type', 'STOCK'),
+            'source': 'BOT'
         })
+    
+    # Add guru positions
+    guru_file = Path('guru_trades.json')
+    if guru_file.exists():
+        with open(guru_file, 'r') as f:
+            guru_data = json.load(f)
+            for pos in guru_data.get('positions', []):
+                if pos.get('status') == 'OPEN':
+                    positions.append({
+                        'symbol': f"{pos['symbol']} {pos['expiration']} ${pos['strike']}{pos['type'][0]}",
+                        'quantity': pos.get('contracts', 0),
+                        'entry_price': pos.get('entry_price', 0),
+                        'current_price': pos.get('entry_price', 0),  # TODO: Get live price
+                        'pnl': 0,  # TODO: Calculate from current price
+                        'pnl_pct': 0,
+                        'type': 'OPTION',
+                        'source': 'GURU'
+                    })
     
     return jsonify({
         'positions': positions,
@@ -113,7 +133,7 @@ def get_positions():
 
 @app.route('/api/trades')
 def get_trades():
-    """Get ALL today's trades with P&L breakdown"""
+    """Get ALL today's trades with P&L breakdown + guru trades"""
     state = load_state()
     from datetime import datetime
     
@@ -124,6 +144,25 @@ def get_trades():
         if t.get('timestamp', '').startswith(today)
     ]
     
+    # Add guru trades
+    guru_file = Path('guru_trades.json')
+    if guru_file.exists():
+        with open(guru_file, 'r') as f:
+            guru_data = json.load(f)
+            for pos in guru_data.get('positions', []):
+                if pos.get('timestamp', '').startswith(today):
+                    today_trades.append({
+                        'symbol': f"{pos['symbol']} {pos['expiration']} ${pos['strike']}{pos['type'][0]}",
+                        'action': 'BUY',
+                        'quantity': pos.get('contracts', 0),
+                        'price': pos.get('entry_price', 0),
+                        'timestamp': pos.get('timestamp', ''),
+                        'status': pos.get('status', 'OPEN'),
+                        'confidence': 95,  # Guru trade
+                        'type': 'OPTION',
+                        'source': 'GURU'
+                    })
+    
     # Sort by timestamp (newest first)
     today_trades.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
     
@@ -132,7 +171,7 @@ def get_trades():
     open_trades = [t for t in today_trades if t.get('status') == 'OPEN']
     
     closed_pnl = sum(t.get('pnl', 0) for t in closed_trades)
-    open_pnl = sum(state['positions'].get(t['symbol'], {}).get('pnl', 0) for t in open_trades)
+    open_pnl = sum(state['positions'].get(t['symbol'], {}).get('pnl', 0) for t in open_trades if t.get('source') != 'GURU')
     
     return jsonify({
         'trades': today_trades,
@@ -199,8 +238,12 @@ def get_hot_stocks():
 
 @app.route('/api/guru-trade', methods=['POST'])
 def guru_trade():
-    """Execute guru trade from Discord alert"""
+    """Execute guru trade LIVE in IBKR"""
     import re
+    import asyncio
+    from src.ibkr_client import IBKRClient
+    from src.config import settings
+    
     data = request.get_json()
     alert = data.get('alert', '')
     
@@ -214,38 +257,100 @@ def guru_trade():
     # Parse strategy
     is_call = 'CALL' in alert.upper()
     is_put = 'PUT' in alert.upper()
+    right = 'C' if is_call else 'P'
     
     # Parse strike/expiration (e.g., "4/17 $220c")
-    strike_match = re.search(r'(\d+/\d+)\s*\$?(\d+\.?\d*)([cp])', alert, re.IGNORECASE)
-    expiration = strike_match.group(1) if strike_match else 'N/A'
-    strike = float(strike_match.group(2)) if strike_match else 0
+    strike_match = re.search(r'(\d+)/(\d+)\s*\$?(\d+\.?\d*)([cp])', alert, re.IGNORECASE)
+    if not strike_match:
+        return jsonify({'error': 'Could not parse strike/expiration'}), 400
+    
+    month = int(strike_match.group(1))
+    day = int(strike_match.group(2))
+    strike = float(strike_match.group(3))
+    
+    # Build expiration string (YYYYMMDD)
+    from datetime import datetime
+    year = datetime.now().year
+    if month < datetime.now().month:
+        year += 1
+    expiration = f"{year}{month:02d}{day:02d}"
     
     # Parse price
     price_match = re.search(r'\$(\d+\.\d+)', alert)
     price = float(price_match.group(1)) if price_match else 0
     
-    # Save to guru_trades.json
-    guru_file = Path('guru_trades.json')
-    guru_data = {'positions': []}
-    if guru_file.exists():
-        with open(guru_file, 'r') as f:
-            guru_data = json.load(f)
+    # Get current balance and calculate position size
+    state = load_state()
+    balance = state.get('balance', 1000000.0)
     
-    guru_data['positions'].append({
-        'symbol': symbol,
-        'type': 'CALL' if is_call else 'PUT',
-        'strike': strike,
-        'expiration': expiration,
-        'entry_price': price,
-        'timestamp': datetime.now().isoformat(),
-        'status': 'OPEN',
-        'alert': alert
-    })
+    # 50/50 allocation: Use 50% of balance for options
+    options_allocation = balance * 0.50
     
-    with open(guru_file, 'w') as f:
-        json.dump(guru_data, f, indent=2)
+    # Calculate contracts: divide allocation by option cost
+    option_cost = price * 100  # Each contract = 100 shares
+    contracts = max(1, int(options_allocation / option_cost / 10))  # Divide by 10 for safety
     
-    return jsonify({'success': True, 'symbol': symbol, 'price': price})
+    # Execute in IBKR
+    async def execute_option():
+        client = IBKRClient(
+            host=settings.IBKR_HOST,
+            port=settings.IBKR_PORT,
+            client_id=settings.IBKR_CLIENT_ID + 200
+        )
+        await client.connect()
+        
+        # Place options order
+        order = await client.place_options_order(
+            symbol=symbol,
+            expiration=expiration,
+            strike=strike,
+            right=right,
+            quantity=contracts,
+            action='BUY',
+            order_type='MKT'
+        )
+        
+        client.disconnect()
+        return order
+    
+    try:
+        order = asyncio.run(execute_option())
+        
+        if not order:
+            return jsonify({'error': 'IBKR order failed'}), 500
+        
+        # Save to guru_trades.json
+        guru_file = Path('guru_trades.json')
+        guru_data = {'positions': []}
+        if guru_file.exists():
+            with open(guru_file, 'r') as f:
+                guru_data = json.load(f)
+        
+        guru_data['positions'].append({
+            'symbol': symbol,
+            'type': 'CALL' if is_call else 'PUT',
+            'strike': strike,
+            'expiration': expiration,
+            'contracts': contracts,
+            'entry_price': price,
+            'timestamp': datetime.now().isoformat(),
+            'status': 'OPEN',
+            'alert': alert,
+            'ibkr_order_id': order.get('orderId') if order else None
+        })
+        
+        with open(guru_file, 'w') as f:
+            json.dump(guru_data, f, indent=2)
+        
+        return jsonify({
+            'success': True, 
+            'symbol': symbol, 
+            'price': price,
+            'contracts': contracts,
+            'message': f'Executed {contracts} contracts in IBKR'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Execution failed: {str(e)}'}), 500
 
 @app.route('/api/guru-positions')
 def guru_positions():
@@ -259,26 +364,66 @@ def guru_positions():
 
 @app.route('/api/close-guru', methods=['POST'])
 def close_guru():
-    """Close guru position"""
+    """Close guru position in IBKR"""
+    import asyncio
+    from src.ibkr_client import IBKRClient
+    from src.config import settings
+    
     data = request.get_json()
     symbol = data.get('symbol')
     
     guru_file = Path('guru_trades.json')
-    if guru_file.exists():
-        with open(guru_file, 'r') as f:
-            guru_data = json.load(f)
+    if not guru_file.exists():
+        return jsonify({'error': 'No guru trades found'}), 404
+    
+    with open(guru_file, 'r') as f:
+        guru_data = json.load(f)
+    
+    position = None
+    for pos in guru_data['positions']:
+        if pos['symbol'] == symbol and pos['status'] == 'OPEN':
+            position = pos
+            break
+    
+    if not position:
+        return jsonify({'error': 'Position not found'}), 404
+    
+    # Close in IBKR
+    async def close_option():
+        client = IBKRClient(
+            host=settings.IBKR_HOST,
+            port=settings.IBKR_PORT,
+            client_id=settings.IBKR_CLIENT_ID + 201
+        )
+        await client.connect()
         
-        for pos in guru_data['positions']:
-            if pos['symbol'] == symbol and pos['status'] == 'OPEN':
-                pos['status'] = 'CLOSED'
-                pos['close_time'] = datetime.now().isoformat()
+        # Place SELL order to close
+        order = await client.place_options_order(
+            symbol=position['symbol'],
+            expiration=position['expiration'],
+            strike=position['strike'],
+            right='C' if position['type'] == 'CALL' else 'P',
+            quantity=position['contracts'],
+            action='SELL',
+            order_type='MKT'
+        )
+        
+        client.disconnect()
+        return order
+    
+    try:
+        order = asyncio.run(close_option())
+        
+        # Update status
+        position['status'] = 'CLOSED'
+        position['close_time'] = datetime.now().isoformat()
         
         with open(guru_file, 'w') as f:
             json.dump(guru_data, f, indent=2)
         
-        return jsonify({'success': True})
-    
-    return jsonify({'error': 'Not found'}), 404
+        return jsonify({'success': True, 'message': f'Closed {symbol} in IBKR'})
+    except Exception as e:
+        return jsonify({'error': f'Close failed: {str(e)}'}), 500
 
 def start_dashboard(port=8080):
     from threading import Thread

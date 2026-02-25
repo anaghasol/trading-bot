@@ -1,0 +1,27 @@
+{
+  "positions": [
+    {
+      "symbol": "RTX",
+      "type": "CALL",
+      "strike": 220.0,
+      "expiration": "4/17",
+      "entry_price": 2.1,
+      "timestamp": "2026-02-25T11:56:33.713118",
+      "status": "CLOSED",
+      "alert": "\ud83d\udea8 NEW OPEN TRADE: RTX \ud83d\udea8\n\nSTRATEGY: BUY CALL\n\nSTO 4/17 $220c\n\nFILLED AT: $2.10 debit per contract\nPremium Paid: $210 per contract\nMax Loss: $210",
+      "close_time": "2026-02-25T12:00:13.586955"
+    },
+    {
+      "symbol": "RTX",
+      "type": "CALL",
+      "strike": 220.0,
+      "expiration": "20260417",
+      "contracts": 214,
+      "entry_price": 2.1,
+      "timestamp": "2026-02-25T12:01:09.324766",
+      "status": "OPEN",
+      "alert": "\ud83d\udea8 NEW OPEN TRADE: RTX \ud83d\udea8\n\nSTRATEGY: BUY CALL\n\nSTO 4/17 $220c\n\nFILLED AT: $2.10 debit per contract\nPremium Paid: $210 per contract\nMax Loss: $210",
+      "ibkr_order_id": null
+    }
+  ]
+}

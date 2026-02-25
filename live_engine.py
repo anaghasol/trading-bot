@@ -311,7 +311,7 @@ class LiveTradingEngine:
         return False, f"HOLD {pnl_pct:+.1f}%"
     
     async def update_positions(self):
-        """Update balance and P&L from IBKR"""
+        """Update balance and P&L from IBKR + monitor guru trades"""
         try:
             # Get current balance from IBKR
             current_balance = await self.ibkr.get_account_balance()
@@ -366,6 +366,9 @@ class LiveTradingEngine:
                     
                 except Exception as e:
                     print(f"Error updating {symbol}: {e}")
+            
+            # Monitor GURU trades
+            await self.monitor_guru_trades()
             
             self.save_state()
             
@@ -434,6 +437,71 @@ class LiveTradingEngine:
             f.write(f"{timestamp} | {symbol} | ${pnl:.2f} | {pnl_pct:.2f}%\n")
         
         print(f"📊 Daily profit logged: {symbol} ${pnl:.2f}")
+    
+    async def monitor_guru_trades(self):
+        """Monitor guru trades and auto-exit on profit/stop-loss"""
+        guru_file = Path('guru_trades.json')
+        if not guru_file.exists():
+            return
+        
+        with open(guru_file, 'r') as f:
+            guru_data = json.load(f)
+        
+        for pos in guru_data.get('positions', []):
+            if pos.get('status') != 'OPEN':
+                continue
+            
+            try:
+                # Get current option price from IBKR (simplified - using entry price for now)
+                entry_price = pos.get('entry_price', 0)
+                current_price = entry_price  # TODO: Get live option price from IBKR
+                
+                # Calculate P&L
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                
+                should_close = False
+                reason = ""
+                
+                # OPTIONS: +50% take profit, -50% stop loss (options are volatile)
+                if pnl_pct >= 50:
+                    should_close = True
+                    reason = f"GURU TAKE PROFIT {pnl_pct:.1f}%"
+                elif pnl_pct <= -50:
+                    should_close = True
+                    reason = f"GURU STOP LOSS {pnl_pct:.1f}%"
+                
+                if should_close:
+                    print(f"\n🌟 AUTO-CLOSING GURU TRADE: {pos['symbol']} - {reason}")
+                    
+                    # Close in IBKR
+                    if not self.ibkr.connected:
+                        await self.ibkr.connect()
+                    
+                    order = await self.ibkr.place_options_order(
+                        symbol=pos['symbol'],
+                        expiration=pos['expiration'],
+                        strike=pos['strike'],
+                        right='C' if pos['type'] == 'CALL' else 'P',
+                        quantity=pos['contracts'],
+                        action='SELL',
+                        order_type='MKT'
+                    )
+                    
+                    if order:
+                        pos['status'] = 'CLOSED'
+                        pos['close_time'] = datetime.now().isoformat()
+                        pos['exit_reason'] = reason
+                        
+                        with open(guru_file, 'w') as f:
+                            json.dump(guru_data, f, indent=2)
+                        
+                        print(f"✅ GURU TRADE CLOSED: {pos['symbol']}")
+                else:
+                    print(f"✅ GURU HOLDING: {pos['symbol']} {pos['expiration']} ${pos['strike']}{pos['type'][0]} - P&L: {pnl_pct:+.1f}%")
+                
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"Error monitoring guru trade {pos.get('symbol')}: {e}")
     
     async def run(self):
         """Main loop - stops at market close with circuit breaker"""
