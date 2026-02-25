@@ -94,7 +94,7 @@ class LiveTradingEngine:
                 prev_price = float(hist['Close'].iloc[-2])
                 change_pct = ((current_price - prev_price) / prev_price) * 100
                 
-                if abs(change_pct) > 0.5:
+                if abs(change_pct) > 0.3:
                     # STEP 1: OpenClaw technical analysis
                     from src.openclaw_agent import OpenClawAgent
                     agent = OpenClawAgent()
@@ -108,15 +108,15 @@ class LiveTradingEngine:
                     poly_prob = poly_analysis.get('probability', 0.5)
                     poly_confidence = poly_analysis.get('confidence', 0)
                     
-                    # STEP 3: Combined decision
-                    openclaw_bullish = trend_score > 0.55
-                    poly_bullish = poly_prob > 0.55
+                    # STEP 3: Combined decision (AGGRESSIVE)
+                    openclaw_bullish = trend_score > 0.50
+                    poly_bullish = poly_prob > 0.50
                     combined_confidence = (trend_score * 0.6) + (poly_prob * 0.4)
                     
                     # STEP 4: Decide stock vs options based on allocation
-                    if openclaw_bullish and poly_bullish and combined_confidence > 0.60:
-                        # Check if bearish for put spreads
-                        is_bearish = change_pct < -1.0 and trend_score < 0.45
+                    if openclaw_bullish and poly_bullish and combined_confidence > 0.55:
+                        # Check if bearish for put spreads (AGGRESSIVE)
+                        is_bearish = change_pct < -0.5 and trend_score < 0.50
                         
                         if settings.options_enabled and is_bearish and options_scanner:
                             # Try options (bear put spread)

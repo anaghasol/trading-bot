@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     options_max_debit_pct: float = float(os.getenv("OPTIONS_MAX_DEBIT_PCT", "5"))
     options_take_profit_pct: float = float(os.getenv("OPTIONS_TAKE_PROFIT_PCT", "75"))
     options_stop_loss_pct: float = float(os.getenv("OPTIONS_STOP_LOSS_PCT", "50"))
+    
+    # Aggressive Trading Thresholds
+    min_openclaw_confidence: float = float(os.getenv("MIN_OPENCLAW_CONFIDENCE", "50"))
+    min_polymarket_confidence: float = float(os.getenv("MIN_POLYMARKET_CONFIDENCE", "50"))
+    min_combined_confidence: float = float(os.getenv("MIN_COMBINED_CONFIDENCE", "55"))
+    min_volume_multiplier: float = float(os.getenv("MIN_VOLUME_MULTIPLIER", "1.5"))
+    options_min_drop_pct: float = float(os.getenv("OPTIONS_MIN_DROP_PCT", "0.5"))
+    options_min_trend: float = float(os.getenv("OPTIONS_MIN_TREND", "50"))
 
     class Config:
         env_file = ".env"

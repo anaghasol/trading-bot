@@ -50,11 +50,15 @@ class TrendingStocksScanner:
                 opening = float(hist['Open'].iloc[0])
                 change_pct = ((current - opening) / opening) * 100
                 
-                # Volume surge (today vs 5-day avg)
+                # Volume surge (today vs 5-day avg) - AGGRESSIVE
                 volume_today = hist['Volume'].sum()
                 hist_5d = ticker.history(period='5d')
                 avg_volume = hist_5d['Volume'].mean() if len(hist_5d) > 0 else 1
                 volume_ratio = volume_today / avg_volume if avg_volume > 0 else 1
+                
+                # Skip if volume too low (1.5x minimum instead of 2x)
+                if volume_ratio < 1.5:
+                    continue
                 
                 # Momentum score = price change + volume surge
                 momentum = abs(change_pct) * (1 + volume_ratio * 0.5)
