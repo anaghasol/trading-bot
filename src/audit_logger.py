@@ -10,14 +10,21 @@ from typing import Dict, Any
 class AuditLogger:
     """Enhanced logging for trade metrics and diversification stats."""
     
-    def __init__(self):
+    def __init__(self, max_log_size_mb: float = 1.0):
         self.log_dir = Path('logs')
         self.log_dir.mkdir(exist_ok=True)
+        self.max_log_size = max_log_size_mb * 1024 * 1024  # Convert to bytes
         
     def log_trade(self, trade_data: Dict[str, Any]):
         """Log detailed trade information."""
         today = datetime.now().strftime('%Y-%m-%d')
         log_file = self.log_dir / f'audit_{today}.jsonl'
+        
+        # Rotate if file too large
+        if log_file.exists() and log_file.stat().st_size > self.max_log_size:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            rotated_file = self.log_dir / f'audit_{today}_{timestamp}.jsonl'
+            log_file.rename(rotated_file)
         
         # Enhanced trade record
         record = {

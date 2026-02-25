@@ -1,0 +1,7 @@
+# Daily Data Directory
+This folder stores daily logs and learning data for the trading bot.
+Automatically pushed to GitHub daily for historical tracking.
+
+## Structure
+- logs/ - Daily audit logs and summaries
+- learning/ - ML-lite performance metrics and weight adjustments

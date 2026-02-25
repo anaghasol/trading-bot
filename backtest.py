@@ -229,9 +229,9 @@ class Backtester:
 
 def run_quick_backtest():
     """Run a quick backtest on recent data."""
-    # Test on last 6 months
+    # Test on last 2 years for regime robustness
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=180)
+    start_date = end_date - timedelta(days=730)  # 2 years
     
     symbols = ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMD', 'META', 'GOOGL', 'AMZN', 'SPY', 'QQQ']
     

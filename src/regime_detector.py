@@ -11,9 +11,25 @@ RegimeType = Literal["BULL", "BEAR", "FLAT"]
 class RegimeDetector:
     """Detect market regime and adjust strategy weights."""
     
-    def __init__(self):
+    def __init__(self, bull_atr_threshold: float = 0.03, bear_atr_threshold: float = 0.03, 
+                 flat_atr_threshold: float = 0.015, trend_threshold: float = 0.02):
         self.current_regime: RegimeType = "FLAT"
         self.regime_confidence = 0.0
+        
+        # Configurable thresholds (can override via env)
+        import os
+        self.bull_atr_threshold = float(os.getenv("REGIME_BULL_ATR", str(bull_atr_threshold)))
+        self.bear_atr_threshold = float(os.getenv("REGIME_BEAR_ATR", str(bear_atr_threshold)))
+        self.flat_atr_threshold = float(os.getenv("REGIME_FLAT_ATR", str(flat_atr_threshold)))
+        self.trend_threshold = float(os.getenv("REGIME_TREND_THRESHOLD", str(trend_threshold)))
+        
+        # Weight overrides
+        self.bull_openclaw = float(os.getenv("REGIME_BULL_OPENCLAW_WEIGHT", "0.70"))
+        self.bull_poly = float(os.getenv("REGIME_BULL_POLY_WEIGHT", "0.30"))
+        self.bear_openclaw = float(os.getenv("REGIME_BEAR_OPENCLAW_WEIGHT", "0.50"))
+        self.bear_poly = float(os.getenv("REGIME_BEAR_POLY_WEIGHT", "0.50"))
+        self.flat_openclaw = float(os.getenv("REGIME_FLAT_OPENCLAW_WEIGHT", "0.55"))
+        self.flat_poly = float(os.getenv("REGIME_FLAT_POLY_WEIGHT", "0.45"))
     
     def detect_regime(
         self, 
@@ -47,26 +63,23 @@ class RegimeDetector:
         volume_ratio = volume / avg_volume if avg_volume > 0 else 1.0
         
         # Classify regime
-        if volatility > 0.03 and abs(trend_strength) > 0.02:
+        if volatility > self.bull_atr_threshold and abs(trend_strength) > self.trend_threshold:
             # High volatility + strong trend = BULL or BEAR
             if trend_strength > 0:
                 regime = "BULL"
-                # In bull markets, trust technical analysis more
-                openclaw_weight = 0.70
-                polymarket_weight = 0.30
+                openclaw_weight = self.bull_openclaw
+                polymarket_weight = self.bull_poly
             else:
                 regime = "BEAR"
-                # In bear markets, trust sentiment more (avoid falling knives)
-                openclaw_weight = 0.50
-                polymarket_weight = 0.50
+                openclaw_weight = self.bear_openclaw
+                polymarket_weight = self.bear_poly
             confidence = min(abs(trend_strength) * 20, 1.0)
         
-        elif volatility < 0.015:
+        elif volatility < self.flat_atr_threshold:
             # Low volatility = FLAT (mean-reversion mode)
             regime = "FLAT"
-            # In flat markets, balance both signals
-            openclaw_weight = 0.55
-            polymarket_weight = 0.45
+            openclaw_weight = self.flat_openclaw
+            polymarket_weight = self.flat_poly
             confidence = 0.6
         
         else:
