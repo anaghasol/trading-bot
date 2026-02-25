@@ -9,7 +9,7 @@ import yfinance as yf
 from src.ibkr_client import IBKRClient
 from src.config import settings
 import time
-from learning_engine import get_learning_engine
+from src.learning_engine import get_learning_engine
 from src.market_scanner import get_trending_scanner
 from src.trading_engine.enhanced_risk import EnhancedRiskManager
 
