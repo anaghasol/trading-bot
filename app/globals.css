@@ -1,0 +1,249 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
+
+/* ── Design-system tokens (MyTrade) ──────────────────────── */
+:root {
+  --bg-0:        #0b0f17;
+  --bg-1:        #0f1419;
+  --bg-2:        #1a1f2e;
+  --bg-3:        #1e293b;
+  --inset:       #0f172a;
+  --border:      #374151;
+  --border-soft: #334155;
+  --divider:     rgba(55, 65, 81, 0.30);
+  --fg-1:        #e5e7eb;
+  --fg-2:        #9ca3af;
+  --fg-3:        #6b7280;
+  --green:       #10b981;
+  --green-dim:   rgba(16, 185, 129, 0.20);
+  --green-faint: rgba(16, 185, 129, 0.10);
+  --red:         #ef4444;
+  --red-dim:     rgba(239, 68, 68, 0.20);
+  --blue:        #3b82f6;
+  --blue-dim:    rgba(59, 130, 246, 0.20);
+  --blue-faint:  rgba(59, 130, 246, 0.10);
+  --amber:       #f59e0b;
+  --amber-dim:   rgba(245, 158, 11, 0.20);
+  --grad-conf:   linear-gradient(90deg, #10b981, #3b82f6);
+  --font-sans:   'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:   'IBM Plex Mono', 'Monaco', 'Courier New', monospace;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-xl: 12px; --r-pill: 20px;
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-pop:  0 8px 24px rgba(0,0,0,0.55);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Shared utilities ─────────────────────────────────────── */
+.tabular { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.muted   { color: var(--fg-2); }
+.faint   { color: var(--fg-3); }
+
+/* ── Card ─────────────────────────────────────────────────── */
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+}
+.card.blue-border { border: 2px solid var(--blue); }
+
+.card-head {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--green-faint);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-head.blue { background: var(--blue-faint); }
+
+.card-title {
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--green);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  white-space: nowrap;
+}
+.card-title.blue { color: var(--blue); }
+.card-body { padding: 16px; }
+
+/* ── Metric box ───────────────────────────────────────────── */
+.metric-box {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 16px 14px;
+  text-align: center;
+}
+.metric-label {
+  font-size: 0.72rem;
+  color: var(--fg-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.metric-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: var(--green);
+  margin: 8px 0 4px;
+}
+.metric-sub { color: var(--fg-3); font-size: 0.72rem; }
+
+/* ── Data row (positions / trades) ───────────────────────── */
+.data-row {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  display: grid;
+  gap: 12px;
+  align-items: center;
+  font-size: 0.9rem;
+}
+.data-row:last-child { margin-bottom: 0; }
+
+/* ── Action chips / badges ────────────────────────────────── */
+.action {
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  display: inline-block;
+}
+.action.buy  { background: var(--green-dim); color: var(--green); }
+.action.sell { background: var(--red-dim);   color: var(--red);   }
+.action.info { background: var(--blue-dim);  color: var(--blue);  }
+
+.conf-badge {
+  padding: 4px 9px;
+  border-radius: var(--r-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+.conf-badge.high   { background: var(--green-dim); color: var(--green); }
+.conf-badge.medium { background: var(--blue-dim);  color: var(--blue);  }
+.conf-badge.low    { background: var(--red-dim);   color: var(--red);   }
+
+/* ── Scan card ────────────────────────────────────────────── */
+.scan-card {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-left: 3px solid;
+  border-radius: var(--r-md);
+  padding: 11px 12px;
+}
+.scan-card.buy  { border-left-color: var(--green); }
+.scan-card.sell { border-left-color: var(--red);   }
+.conf-bar  { height: 4px; background: var(--border-soft); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+.conf-fill { height: 100%; background: var(--grad-conf); transition: width .3s; }
+
+/* ── Status pills ─────────────────────────────────────────── */
+.status-pill {
+  border-radius: var(--r-pill);
+  padding: 6px 13px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.status-pill.live   { background: var(--green); }
+.status-pill.paper  { background: var(--blue); }
+.status-pill.closed { background: var(--fg-3); }
+
+/* ── Log viewer ───────────────────────────────────────────── */
+.log-viewer {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.log-line { padding: 4px 0; border-bottom: 1px solid var(--divider); color: var(--fg-1); }
+.log-line.success { color: var(--green); }
+.log-line.info    { color: var(--blue);  }
+.log-line.warning { color: var(--amber); }
+.log-line.error   { color: var(--red);   }
+
+/* ── Buttons ──────────────────────────────────────────────── */
+.btn {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: none;
+  border-radius: var(--r-md);
+  padding: 10px 16px;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: filter .15s;
+}
+.btn:hover   { filter: brightness(1.08); }
+.btn:active  { filter: brightness(.92);  }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn.green { background: var(--green); }
+.btn.blue  { background: var(--blue);  }
+.btn.red   { background: var(--red);   }
+.btn.sm    { padding: 5px 11px; font-size: 0.8rem; }
+.btn.full  { width: 100%; justify-content: center; }
+
+/* ── Inputs ───────────────────────────────────────────────── */
+.field-input {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--inset);
+  color: var(--fg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+.field-input:focus { outline: none; border-color: var(--green); }
+.field-label { display: block; margin-bottom: 6px; font-size: 0.85rem; font-weight: 500; color: var(--fg-1); }
+
+/* ── Meter track ──────────────────────────────────────────── */
+.track { height: 8px; background: var(--border-soft); border-radius: 4px; overflow: hidden; }
+.fill  { height: 100%; background: var(--green); transition: width .4s; }
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-2); }
+::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+
+/* ── Pulse animation ──────────────────────────────────────── */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.dot-live { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 1.4s ease-in-out infinite; }
+.updating { animation: pulse 1s infinite; }
+
+/* ── Meter top ────────────────────────────────────────────── */
+.meter-top { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--fg-2); margin-bottom: 7px; font-family: var(--font-mono); }

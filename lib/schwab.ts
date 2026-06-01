@@ -1,0 +1,333 @@
+/**
+ * Schwab API client for Vercel serverless environment.
+ * Tokens stored in Supabase public.tb_schwab_tokens; auto-refreshed before each call.
+ */
+import { createServiceClient } from './supabase-server'
+
+const TOKEN_URL   = 'https://api.schwabapi.com/v1/oauth/token'
+const API_BASE    = 'https://api.schwabapi.com/trader/v1'
+const MARKET_BASE = 'https://api.schwabapi.com/marketdata/v1'
+
+const CLIENT_ID     = process.env.SCHWAB_CLIENT_ID!
+const CLIENT_SECRET = process.env.SCHWAB_CLIENT_SECRET!
+const REDIRECT_URI  = process.env.SCHWAB_REDIRECT_URI!
+
+export interface Position {
+  symbol: string
+  quantity: number
+  avg_cost: number
+  current_price: number
+  market_value: number
+  unrealized_pnl: number
+  pnl_pct: number
+  peak_pnl: number
+  asset_type: 'EQUITY' | 'OPTION'
+}
+
+export interface Quote {
+  symbol: string
+  price: number
+  change_pct: number
+  volume: number
+}
+
+export interface OrderResult {
+  symbol: string
+  quantity: number
+  action: string
+  status: 'PLACED' | 'FAILED'
+  order_id?: string
+}
+
+// ── Token Management ──────────────────────────────────────────────────────────
+
+async function getStoredTokens() {
+  const db = createServiceClient()
+  const { data } = await db
+    .from('tb_schwab_tokens')
+    .select('*')
+    .eq('id', 1)
+    .single()
+  return data
+}
+
+async function saveTokens(tokens: {
+  access_token: string
+  refresh_token: string
+  account_hash: string
+  expiry: string
+}) {
+  const db = createServiceClient()
+  await db.from('tb_schwab_tokens').upsert({
+    id: 1,
+    ...tokens,
+    updated_at: new Date().toISOString(),
+  })
+}
+
+async function refreshAccessToken(refreshToken: string, currentHash: string): Promise<string | null> {
+  const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${creds}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+  })
+
+  if (!res.ok) {
+    console.error(`[schwab] Token refresh failed: ${res.status}`)
+    return null
+  }
+
+  const data = await res.json()
+  const expiry = new Date(Date.now() + (data.expires_in - 60) * 1000).toISOString()
+
+  await saveTokens({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token || refreshToken,
+    account_hash: currentHash,
+    expiry,
+  })
+
+  return data.access_token
+}
+
+async function getAccessToken(): Promise<string | null> {
+  const stored = await getStoredTokens()
+  if (!stored) return null
+
+  const expiry = new Date(stored.expiry)
+  const expiresIn5Min = new Date(Date.now() + 5 * 60 * 1000)
+
+  if (expiry <= expiresIn5Min) {
+    return refreshAccessToken(stored.refresh_token, stored.account_hash)
+  }
+
+  return stored.access_token
+}
+
+// ── HTTP Helpers ──────────────────────────────────────────────────────────────
+
+async function apiGet<T>(path: string): Promise<T | null> {
+  const token = await getAccessToken()
+  if (!token) return null
+
+  const res = await fetch(path, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    cache: 'no-store',
+  })
+
+  if (res.status === 401) {
+    const stored = await getStoredTokens()
+    if (!stored) return null
+    const newToken = await refreshAccessToken(stored.refresh_token, stored.account_hash)
+    if (!newToken) return null
+    const retry = await fetch(path, {
+      headers: { Authorization: `Bearer ${newToken}`, Accept: 'application/json' },
+      cache: 'no-store',
+    })
+    return retry.ok ? retry.json() : null
+  }
+
+  if (!res.ok) return null
+  return res.json()
+}
+
+async function apiPost<T>(path: string, body: object): Promise<T | null> {
+  const token = await getAccessToken()
+  if (!token) return null
+
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (res.ok) {
+    try { return await res.json() } catch { return { status: 'ok' } as T }
+  }
+  return null
+}
+
+// ── Account ───────────────────────────────────────────────────────────────────
+
+export async function getAccountHash(): Promise<string | null> {
+  const stored = await getStoredTokens()
+  return stored?.account_hash || null
+}
+
+export async function getAccountBalance(): Promise<number | null> {
+  const hash = await getAccountHash()
+  if (!hash) return null
+
+  const data = await apiGet<Record<string, unknown>>(
+    `${API_BASE}/accounts/${hash}?fields=positions`
+  )
+  if (!data) return null
+
+  const balances = (data.securitiesAccount as Record<string, unknown>)?.currentBalances as Record<string, number>
+  return balances?.liquidationValue ?? null
+}
+
+export async function getPositions(): Promise<Position[]> {
+  const hash = await getAccountHash()
+  if (!hash) return []
+
+  const data = await apiGet<Record<string, unknown>>(
+    `${API_BASE}/accounts/${hash}?fields=positions`
+  )
+  if (!data) return []
+
+  const rawPositions =
+    ((data.securitiesAccount as Record<string, unknown>)?.positions as Record<string, unknown>[]) ?? []
+
+  return rawPositions.map((pos) => {
+    const instrument = pos.instrument as Record<string, unknown>
+    const symbol = instrument.symbol as string
+    const assetType: 'EQUITY' | 'OPTION' = (instrument.assetType as string) === 'OPTION' ? 'OPTION' : 'EQUITY'
+    const longQty = (pos.longQuantity as number) || 0
+    const shortQty = (pos.shortQuantity as number) || 0
+    const quantity = longQty - shortQty
+    const avg_cost = (pos.averagePrice as number) || 0
+    const market_value = (pos.marketValue as number) || 0
+    const current_price = quantity !== 0 ? market_value / Math.abs(quantity) : avg_cost
+    const pnl_pct =
+      avg_cost > 0
+        ? ((current_price - avg_cost) / avg_cost) * 100 * (quantity < 0 ? -1 : 1)
+        : 0
+
+    return {
+      symbol,
+      quantity,
+      avg_cost,
+      current_price,
+      market_value,
+      unrealized_pnl: (pos.unrealizedProfitLoss as number) || 0,
+      pnl_pct: Math.round(pnl_pct * 100) / 100,
+      peak_pnl: 0,
+      asset_type: assetType,
+    }
+  }).filter((p) => p.quantity !== 0)
+}
+
+// ── Orders ────────────────────────────────────────────────────────────────────
+
+export async function placeOrder(
+  symbol: string,
+  quantity: number,
+  action: 'BUY' | 'SELL',
+  orderType: 'MARKET' | 'LIMIT' = 'MARKET',
+  limitPrice?: number
+): Promise<OrderResult> {
+  const hash = await getAccountHash()
+  if (!hash) return { symbol, quantity, action, status: 'FAILED' }
+
+  const payload: Record<string, unknown> = {
+    orderType,
+    session: 'NORMAL',
+    duration: 'DAY',
+    orderStrategyType: 'SINGLE',
+    orderLegCollection: [
+      {
+        instruction: action,
+        quantity,
+        instrument: { symbol, assetType: 'EQUITY' },
+      },
+    ],
+  }
+
+  if (orderType === 'LIMIT' && limitPrice) {
+    payload.price = limitPrice.toFixed(2)
+  }
+
+  const result = await apiPost<{ orderId?: string }>(
+    `${API_BASE}/accounts/${hash}/orders`,
+    payload
+  )
+
+  return {
+    symbol,
+    quantity,
+    action,
+    status: result !== null ? 'PLACED' : 'FAILED',
+    order_id: result?.orderId,
+  }
+}
+
+// ── Market Data ───────────────────────────────────────────────────────────────
+
+export async function getQuote(symbol: string): Promise<Quote | null> {
+  const data = await apiGet<Record<string, unknown>>(
+    `${MARKET_BASE}/quotes?symbols=${symbol}&fields=quote`
+  )
+  if (!data || !data[symbol]) return null
+
+  const q = (data[symbol] as Record<string, unknown>).quote as Record<string, number>
+  return {
+    symbol,
+    price: q.lastPrice || 0,
+    change_pct: q.netPercentChangeInDouble || 0,
+    volume: q.totalVolume || 0,
+  }
+}
+
+// ── OAuth Flow ────────────────────────────────────────────────────────────────
+
+export function getAuthUrl(): string {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+  })
+  return `https://api.schwabapi.com/v1/oauth/authorize?${params}`
+}
+
+export async function exchangeAuthCode(code: string): Promise<boolean> {
+  const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${creds}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: `grant_type=authorization_code&code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`,
+  })
+
+  if (!res.ok) return false
+
+  const data = await res.json()
+  const expiry = new Date(Date.now() + (data.expires_in - 60) * 1000).toISOString()
+
+  await saveTokens({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    account_hash: '',
+    expiry,
+  })
+
+  await fetchAndSaveAccountHash(data.access_token)
+  return true
+}
+
+async function fetchAndSaveAccountHash(token: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/accounts/accountNumbers`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) return
+
+  const accounts: Array<{ accountNumber: string; hashValue: string }> = await res.json()
+  const accountId = process.env.SCHWAB_ACCOUNT_ID!
+  const match = accounts.find((a) => a.accountNumber === accountId)
+  if (!match) return
+
+  const stored = await getStoredTokens()
+  if (stored) {
+    await saveTokens({ ...stored, account_hash: match.hashValue })
+  }
+}

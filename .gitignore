@@ -1,33 +1,31 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-ENV/
+# Next.js
+.next/
+out/
+node_modules/
+npm-debug.log*
 
-# Sensitive files
+# Secrets — NEVER commit these
 .env
+.env.local
+.env*.local
 .schwab_token.json
-trading_state.json
-trading_state.json.backup
+
+# OS
+.DS_Store
+*.pem
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
 
 # Logs
 logs/
 *.log
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Certificates
-*.pem
-*.key
+# Python legacy
+__pycache__/
+*.pyc
+venv/
