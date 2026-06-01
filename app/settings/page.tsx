@@ -22,10 +22,14 @@ export default function SettingsPage() {
     setBalanceLoading(false)
   }
 
+  const cronHeaders = {
+    'Authorization': 'Bearer tradebot-cron-2026-secure',
+  }
+
   async function triggerScan() {
     setScanning(true)
     setScanResult('')
-    const res = await fetch('/api/cron/scan')
+    const res = await fetch('/api/cron/scan', { headers: cronHeaders })
     const data = await res.json()
     setScanResult(JSON.stringify(data, null, 2))
     setScanning(false)
@@ -34,7 +38,7 @@ export default function SettingsPage() {
   async function triggerMonitor() {
     setMonitoring(true)
     setScanResult('')
-    const res = await fetch('/api/cron/monitor')
+    const res = await fetch('/api/cron/monitor', { headers: cronHeaders })
     const data = await res.json()
     setScanResult(JSON.stringify(data, null, 2))
     setMonitoring(false)
@@ -43,7 +47,7 @@ export default function SettingsPage() {
   async function triggerClose() {
     setClosing(true)
     setScanResult('')
-    const res = await fetch('/api/cron/close')
+    const res = await fetch('/api/cron/close', { headers: cronHeaders })
     const data = await res.json()
     setScanResult(JSON.stringify(data, null, 2))
     setClosing(false)

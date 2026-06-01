@@ -363,17 +363,26 @@ export async function getOrders(daysBack = 10): Promise<SchwabOrder[]> {
   const hash = await getAccountHash()
   if (!hash) return []
 
-  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
-  const to   = new Date()
-  const fmt  = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z')
+  // Schwab requires ISO 8601 with milliseconds
+  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
+  const to   = new Date().toISOString()
 
+  // Get all orders (no status filter — filter client side so we get everything)
   const data = await apiGet<unknown[]>(
-    `${API_BASE}/accounts/${hash}/orders?fromEnteredTime=${fmt(from)}&toEnteredTime=${fmt(to)}&status=FILLED`
+    `${API_BASE}/accounts/${hash}/orders?fromEnteredTime=${from}&toEnteredTime=${to}&maxResults=100`
   )
   if (!data || !Array.isArray(data)) return []
 
   return (data as Record<string, unknown>[]).flatMap((o) => {
+    if (o.status !== 'FILLED') return []     // only filled orders
+
     const legs = (o.orderLegCollection as Record<string, unknown>[]) ?? []
+
+    // Get actual fill price from executionLegs (not the limit price)
+    const actColl = o.orderActivityCollection as Record<string, unknown>[] | undefined
+    const execLegs = actColl?.[0]?.executionLegs as Record<string, unknown>[] | undefined
+    const fillPrice = Number(execLegs?.[0]?.price ?? o.price ?? 0)
+
     return legs.map((leg) => {
       const inst = leg.instrument as Record<string, unknown>
       return {
@@ -383,9 +392,9 @@ export async function getOrders(daysBack = 10): Promise<SchwabOrder[]> {
         instruction:     (leg.instruction as 'BUY' | 'SELL') ?? 'BUY',
         quantity:        Number(o.quantity ?? 0),
         filled_quantity: Number(o.filledQuantity ?? 0),
-        price:           Number(o.price ?? 0),
+        price:           fillPrice,
         status:          String(o.status ?? ''),
-        entered_time:    String(o.enteredTime ?? ''),
+        entered_time:    String(o.enteredTime ?? o.closeTime ?? ''),
         close_time:      o.closeTime ? String(o.closeTime) : null,
         order_type:      String(o.orderType ?? 'MARKET'),
       }

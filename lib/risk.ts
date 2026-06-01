@@ -1,105 +1,184 @@
 /**
- * Risk management rules.
- * Max 5% daily loss hard stop. Trailing stop protects profits.
+ * Core risk engine — Robinhood-style trailing stop + position sizing.
+ *
+ * Rules:
+ * - Position size: risk 1.2% of equity per trade
+ * - Initial stop: 2.5% below entry (tight, protect capital)
+ * - Trailing stop: 5% from peak (locks in profits as price rises)
+ * - Partial exit: sell 50% at 2:1 reward (5% gain), let rest ride
+ * - Max hold: 5 trading days
+ * - Daily loss limit: -4% of account stops all trading
  */
-import { type Position } from './schwab'
 
-export const STOP_LOSS_PCT   = -5.0  // Hard stop
-export const MAX_DAILY_LOSS  = -5.0  // Stop all trading for the day
-export const MAX_POSITIONS   =  3    // Max concurrent positions
-export const POSITION_SIZE   =  0.15 // 15% of balance per trade (reduced in CAUTION)
+import type { Position } from './schwab'
 
-interface ExitDecision {
-  shouldExit: boolean
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+export const RISK_PCT         = 0.012   // 1.2% equity per trade
+export const INITIAL_STOP_PCT = 0.025   // 2.5% below entry
+export const TRAIL_PCT        = 0.05    // 5% trailing from peak
+export const PARTIAL_EXIT_RR  = 2.0     // Take partial at 2:1 reward:risk = 5%
+export const MAX_POSITIONS    = 3
+export const MAX_HOLD_DAYS    = 5
+export const DAILY_LOSS_PCT   = 0.04    // -4% daily hard stop
+
+// ── Position Sizing ───────────────────────────────────────────────────────────
+
+export interface PositionSizing {
+  qty: number
+  risk_dollars: number
+  initial_stop: number
+  target_price: number   // 2:1 reward = 5%
+  max_loss: number       // dollars at risk
+}
+
+export function calculatePositionSize(
+  equity: number,
+  entry_price: number,
+  stop_pct = INITIAL_STOP_PCT
+): PositionSizing {
+  const risk_dollars  = equity * RISK_PCT
+  const stop_distance = entry_price * stop_pct
+  const qty           = Math.max(1, Math.floor(risk_dollars / stop_distance))
+  const initial_stop  = entry_price * (1 - stop_pct)
+  const target_price  = entry_price * (1 + stop_pct * PARTIAL_EXIT_RR)
+
+  return {
+    qty,
+    risk_dollars: Math.round(risk_dollars * 100) / 100,
+    initial_stop: Math.round(initial_stop * 100) / 100,
+    target_price: Math.round(target_price * 100) / 100,
+    max_loss: Math.round(qty * stop_distance * 100) / 100,
+  }
+}
+
+// ── Exit Decision ─────────────────────────────────────────────────────────────
+
+export interface ExitDecision {
+  should_exit: boolean
+  exit_type: 'NONE' | 'INITIAL_STOP' | 'TRAILING_STOP' | 'TIME_STOP' | 'TARGET'
   reason: string
-  updatedPeakPnl: number
+  new_peak_price: number
+  trailing_stop_price: number
+  pnl_pct: number
 }
 
 export function checkExitCondition(
-  position: Position,
-  storedPeakPnl: number
+  current_price: number,
+  entry_price: number,
+  peak_price: number,
+  initial_stop_price: number,
+  hold_days: number,
+  partial_exit_done: boolean
 ): ExitDecision {
-  const pnl_pct = position.pnl_pct
-  const peak = Math.max(storedPeakPnl, pnl_pct)
+  const new_peak          = Math.max(peak_price, current_price)
+  const trailing_stop     = new_peak * (1 - TRAIL_PCT)
+  const pnl_pct           = ((current_price - entry_price) / entry_price) * 100
 
-  // Hard stop loss — no exceptions
-  if (pnl_pct <= STOP_LOSS_PCT) {
+  // 1. Initial tight stop (before any meaningful profit) — always check
+  if (current_price <= initial_stop_price) {
     return {
-      shouldExit: true,
-      reason: `STOP LOSS ${pnl_pct.toFixed(1)}%`,
-      updatedPeakPnl: peak,
+      should_exit: true,
+      exit_type: 'INITIAL_STOP',
+      reason: `STOP: ${pnl_pct.toFixed(1)}% (initial stop $${initial_stop_price.toFixed(2)} hit)`,
+      new_peak_price: new_peak,
+      trailing_stop_price: trailing_stop,
+      pnl_pct,
     }
   }
 
-  // Trailing stop — tightens as gains grow
-  let trailPct: number | null = null
-  if (peak >= 10.0)     trailPct = 1.5
-  else if (peak >= 5.0) trailPct = 2.5
-  else if (peak >= 3.0) trailPct = 3.5
-
-  if (trailPct !== null && pnl_pct <= peak - trailPct) {
+  // 2. Trailing stop — kicks in once price has moved up meaningfully
+  if (new_peak > entry_price * 1.02 && current_price <= trailing_stop) {
     return {
-      shouldExit: true,
-      reason: `TRAILING STOP (peak ${peak.toFixed(1)}% → now ${pnl_pct.toFixed(1)}%, trail ${trailPct}%)`,
-      updatedPeakPnl: peak,
+      should_exit: true,
+      exit_type: 'TRAILING_STOP',
+      reason: `TRAIL: peak $${new_peak.toFixed(2)} → trail $${trailing_stop.toFixed(2)} → now $${current_price.toFixed(2)} (${pnl_pct.toFixed(1)}%)`,
+      new_peak_price: new_peak,
+      trailing_stop_price: trailing_stop,
+      pnl_pct,
+    }
+  }
+
+  // 3. Time stop — held too long without profit target
+  if (hold_days >= MAX_HOLD_DAYS) {
+    return {
+      should_exit: true,
+      exit_type: 'TIME_STOP',
+      reason: `TIME: held ${hold_days} days, ${pnl_pct >= 0 ? '+' : ''}${pnl_pct.toFixed(1)}%`,
+      new_peak_price: new_peak,
+      trailing_stop_price: trailing_stop,
+      pnl_pct,
     }
   }
 
   return {
-    shouldExit: false,
-    reason: `HOLD ${pnl_pct >= 0 ? '+' : ''}${pnl_pct.toFixed(1)}% (peak ${peak.toFixed(1)}%)`,
-    updatedPeakPnl: peak,
+    should_exit: false,
+    exit_type: 'NONE',
+    reason: `HOLD ${pnl_pct >= 0 ? '+' : ''}${pnl_pct.toFixed(1)}% | peak +${(((new_peak - entry_price) / entry_price) * 100).toFixed(1)}% | trail $${trailing_stop.toFixed(2)}`,
+    new_peak_price: new_peak,
+    trailing_stop_price: trailing_stop,
+    pnl_pct,
   }
 }
 
-export function isDailyLossExceeded(dailyPnl: number, balance: number): boolean {
-  if (balance === 0) return false
-  const dailyLossPct = (dailyPnl / balance) * 100
-  return dailyLossPct <= MAX_DAILY_LOSS
+// Should we take partial profit? (sell 50% at 2:1 reward)
+export function shouldTakePartial(
+  current_price: number,
+  entry_price: number,
+  target_price: number,
+  partial_exit_done: boolean
+): boolean {
+  return !partial_exit_done && current_price >= target_price
 }
 
+// ── Market Hours ──────────────────────────────────────────────────────────────
+
 export function isMarketOpen(): boolean {
-  const now = new Date()
-  const et = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric',
-    minute: 'numeric',
-    weekday: 'short',
-    hour12: false,
-  }).formatToParts(now)
+  try {
+    // Convert to ET time reliably
+    const etStr = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
+    const etDate = new Date(etStr)
+    const day     = etDate.getDay()   // 0=Sun, 6=Sat
+    const hours   = etDate.getHours()
+    const minutes = etDate.getMinutes()
 
-  const weekday = et.find((p) => p.type === 'weekday')?.value
-  const hour = parseInt(et.find((p) => p.type === 'hour')?.value || '0', 10)
-  const minute = parseInt(et.find((p) => p.type === 'minute')?.value || '0', 10)
+    if (day === 0 || day === 6) return false
 
-  if (weekday === 'Sat' || weekday === 'Sun') return false
+    const mins = hours * 60 + minutes
+    return mins >= 9 * 60 + 30 && mins < 16 * 60  // 9:30 AM – 4:00 PM ET
+  } catch {
+    return false
+  }
+}
 
-  const minutesSinceMidnight = hour * 60 + minute
-  const marketOpen  = 9 * 60 + 30   // 9:30 AM ET
-  const marketClose = 16 * 60        // 4:00 PM ET
+export function isMarketOpenET(etHours: number, etMinutes: number, weekday: number): boolean {
+  if (weekday === 0 || weekday === 6) return false
+  const mins = etHours * 60 + etMinutes
+  return mins >= 9 * 60 + 30 && mins < 16 * 60
+}
 
-  return minutesSinceMidnight >= marketOpen && minutesSinceMidnight < marketClose
+export function getETHour(): number {
+  const etStr  = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
+  return new Date(etStr).getHours()
 }
 
 export function isNearClose(): boolean {
-  const now = new Date()
-  const et = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric',
-    minute: 'numeric',
-    hour12: false,
-  }).formatToParts(now)
-
-  const hour = parseInt(et.find((p) => p.type === 'hour')?.value || '0', 10)
-  const minute = parseInt(et.find((p) => p.type === 'minute')?.value || '0', 10)
-
-  // Within 20 minutes of close (3:40 PM ET)
-  const minutesSinceMidnight = hour * 60 + minute
-  const closeWindow = 15 * 60 + 40
-  return minutesSinceMidnight >= closeWindow
+  const etStr  = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
+  const etDate = new Date(etStr)
+  const mins   = etDate.getHours() * 60 + etDate.getMinutes()
+  return mins >= 15 * 60 + 30 && mins < 16 * 60  // 3:30-4:00 PM
 }
 
-export function getPositionSize(balance: number, price: number, sizePct: number): number {
-  const dollars = balance * sizePct
+// ── Daily Loss Guard ──────────────────────────────────────────────────────────
+
+export function isDailyLossExceeded(daily_pnl: number, balance: number): boolean {
+  if (balance === 0) return false
+  return (daily_pnl / balance) <= -DAILY_LOSS_PCT
+}
+
+// ── Convenience ───────────────────────────────────────────────────────────────
+
+export function getPositionSize(balance: number, price: number, size_pct: number): number {
+  const dollars = balance * size_pct
   return Math.max(1, Math.floor(dollars / price))
 }
