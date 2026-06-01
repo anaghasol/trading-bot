@@ -7,6 +7,12 @@ import {
 } from 'recharts'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
+interface PdtStatus {
+  day_trades_used: number; day_trades_remaining: number; can_day_trade: boolean
+  is_swing_mode: boolean; balance: number; is_pdt_protected: boolean
+  today_trades: string[]
+}
+
 interface DashboardData {
   account: { balance: number; daily_pnl: number; total_pnl: number } | null
   trades: Trade[]
@@ -267,21 +273,24 @@ function CronStatus({ log }: { log: CronEntry[] }) {
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(null)
+  const [data, setData]         = useState<DashboardData | null>(null)
   const [positions, setPositions] = useState<Position[]>([])
-  const [loading, setLoading] = useState(true)
+  const [pdt, setPdt]           = useState<PdtStatus | null>(null)
+  const [loading, setLoading]   = useState(true)
   const [lastUpdate, setLastUpdate] = useState('')
   const [updating, setUpdating] = useState(false)
 
   const loadData = useCallback(async () => {
     setUpdating(true)
     try {
-      const [dash, pos] = await Promise.all([
+      const [dash, pos, hist] = await Promise.all([
         fetch('/api/dashboard').then((r) => r.json()),
         fetch('/api/schwab/positions').then((r) => r.json()),
+        fetch('/api/schwab/history?days=7').then((r) => r.json()),
       ])
       setData(dash)
       setPositions(pos.positions ?? [])
+      if (hist?.pdt) setPdt(hist.pdt)
       setLastUpdate(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }))
     } catch {
       // keep previous data
@@ -344,14 +353,70 @@ export default function DashboardPage() {
         ) : (
           <>
             {/* ── Metrics row ── */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 14, marginBottom: 22 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 14, marginBottom: 14 }}>
               <MetricBox label="Account Balance" value={fmt(balance)} sub="Schwab live" />
               <MetricBox label="Daily P&L" value={pnlStr(dayPnl)} sub="today" color={pnlColor(dayPnl)} />
               <MetricBox label="All-Time P&L" value={pnlStr(totPnl)} sub="realized" color={pnlColor(totPnl)} />
-              <MetricBox label="Open Trades" value={`${positions.length} / 3`} sub="max 3" color="var(--fg-1)" />
-              <MetricBox label="Win Rate" value={`${winRate.toFixed(0)}%`} sub="today" color={winRate >= 50 ? 'var(--green)' : 'var(--red)'} />
-              <MetricBox label="Stop Loss" value="−5.0%" sub="per trade" color="var(--fg-1)" />
+              <MetricBox label="Open Positions" value={`${positions.length} / 3`} sub="max 3" color="var(--fg-1)" />
+              <MetricBox label="Win Rate" value={`${winRate.toFixed(0)}%`} sub="7-day" color={winRate >= 50 ? 'var(--green)' : 'var(--red)'} />
+              <MetricBox label="Goal $25K" value={`${fmt(25000 - balance)}`} sub="~${Math.ceil((25000 - balance) / 150)}d @ $150/d" color="var(--fg-1)" />
             </div>
+
+            {/* ── PDT Status bar ── */}
+            {pdt && (
+              <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr', gap: 14, marginBottom: 14 }}>
+                <div className="card">
+                  <div className="card-head blue" style={{ padding: '10px 16px' }}>
+                    <h3 className="card-title blue" style={{ fontSize: '0.95rem' }}>
+                      PDT Status — {pdt.is_pdt_protected ? 'Swing Mode (under $25K)' : 'Unlimited'}
+                    </h3>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--fg-2)' }}>
+                      {pdt.is_pdt_protected ? `${pdt.day_trades_remaining} day-trade slots left this week` : 'No PDT restrictions'}
+                    </span>
+                  </div>
+                  <div className="card-body" style={{ padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}>
+                        <div className="meter-top">
+                          <span>Day trades used (rolling 5 days)</span>
+                          <span style={{ color: pdt.day_trades_used >= 3 ? 'var(--red)' : 'var(--fg-1)' }}>{pdt.day_trades_used} / 3</span>
+                        </div>
+                        <div className="track" style={{ height: 10 }}>
+                          <div className="fill" style={{
+                            width: `${(pdt.day_trades_used / 3) * 100}%`,
+                            background: pdt.day_trades_used >= 3 ? 'var(--red)' : pdt.day_trades_used >= 2 ? 'var(--amber)' : 'var(--green)'
+                          }} />
+                        </div>
+                        {pdt.today_trades.length > 0 && (
+                          <div style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--amber)' }}>
+                            Entered today (hold overnight): {pdt.today_trades.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.82rem', color: 'var(--fg-2)', maxWidth: 260 }}>
+                        Strategy: Buy setups → hold 1-5 nights → sell at +{10}% target or -{5}% stop.
+                        Never same-day sell unless emergency -{7}%.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="card">
+                  <div className="card-head" style={{ padding: '10px 16px' }}>
+                    <h3 className="card-title" style={{ fontSize: '0.95rem' }}>Daily Goal</h3>
+                  </div>
+                  <div className="card-body" style={{ padding: '12px 16px', textAlign: 'center' }}>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '2rem', fontWeight: 700, color: 'var(--green)', marginBottom: 4 }}>
+                      $150
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--fg-2)' }}>target per day</div>
+                    <div style={{ marginTop: 10, fontSize: '0.82rem', color: dayPnl >= 150 ? 'var(--green)' : 'var(--fg-2)' }}>
+                      Today: {pnlStr(dayPnl)}
+                      {dayPnl >= 150 && ' ✓ Goal reached!'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* ── Row 2: Positions (wide) + Alerts ── */}
             <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: 14, marginBottom: 14 }}>

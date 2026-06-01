@@ -39,6 +39,31 @@ export interface OrderResult {
   order_id?: string
 }
 
+export interface SchwabOrder {
+  order_id: string
+  symbol: string
+  asset_type: string
+  instruction: 'BUY' | 'SELL'
+  quantity: number
+  filled_quantity: number
+  price: number
+  status: string
+  entered_time: string
+  close_time: string | null
+  order_type: string
+}
+
+export interface SchwabTransaction {
+  transaction_id: string
+  type: string
+  symbol: string
+  description: string
+  amount: number
+  quantity: number
+  price: number
+  date: string
+}
+
 // ── Token Management ──────────────────────────────────────────────────────────
 
 async function getStoredTokens() {
@@ -330,4 +355,69 @@ async function fetchAndSaveAccountHash(token: string): Promise<void> {
   if (stored) {
     await saveTokens({ ...stored, account_hash: match.hashValue })
   }
+}
+
+// ── Order & Transaction History (source of truth for dashboard) ───────────────
+
+export async function getOrders(daysBack = 10): Promise<SchwabOrder[]> {
+  const hash = await getAccountHash()
+  if (!hash) return []
+
+  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000)
+  const to   = new Date()
+  const fmt  = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+  const data = await apiGet<unknown[]>(
+    `${API_BASE}/accounts/${hash}/orders?fromEnteredTime=${fmt(from)}&toEnteredTime=${fmt(to)}&status=FILLED`
+  )
+  if (!data || !Array.isArray(data)) return []
+
+  return (data as Record<string, unknown>[]).flatMap((o) => {
+    const legs = (o.orderLegCollection as Record<string, unknown>[]) ?? []
+    return legs.map((leg) => {
+      const inst = leg.instrument as Record<string, unknown>
+      return {
+        order_id:        String(o.orderId ?? ''),
+        symbol:          String(inst?.symbol ?? ''),
+        asset_type:      String(inst?.assetType ?? 'EQUITY'),
+        instruction:     (leg.instruction as 'BUY' | 'SELL') ?? 'BUY',
+        quantity:        Number(o.quantity ?? 0),
+        filled_quantity: Number(o.filledQuantity ?? 0),
+        price:           Number(o.price ?? 0),
+        status:          String(o.status ?? ''),
+        entered_time:    String(o.enteredTime ?? ''),
+        close_time:      o.closeTime ? String(o.closeTime) : null,
+        order_type:      String(o.orderType ?? 'MARKET'),
+      }
+    })
+  }).filter((o) => o.symbol && o.filled_quantity > 0)
+}
+
+export async function getTransactions(daysBack = 30): Promise<SchwabTransaction[]> {
+  const hash = await getAccountHash()
+  if (!hash) return []
+
+  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  const to   = new Date().toISOString().split('T')[0]
+
+  const data = await apiGet<unknown[]>(
+    `${API_BASE}/accounts/${hash}/transactions?startDate=${from}&endDate=${to}&types=TRADE`
+  )
+  if (!data || !Array.isArray(data)) return []
+
+  return (data as Record<string, unknown>[]).map((t) => {
+    const inst = t.transferItems as Record<string, unknown>[] | undefined
+    const item = inst?.[0]
+    const instr = item?.instrument as Record<string, unknown> | undefined
+    return {
+      transaction_id: String(t.activityId ?? t.transactionId ?? ''),
+      type:           String(t.type ?? ''),
+      symbol:         String(instr?.symbol ?? ''),
+      description:    String(t.description ?? ''),
+      amount:         Number(t.netAmount ?? 0),
+      quantity:       Number(item?.amount ?? 0),
+      price:          Number(item?.price ?? 0),
+      date:           String(t.tradeDate ?? t.settleDate ?? ''),
+    }
+  }).filter((t) => t.symbol)
 }
