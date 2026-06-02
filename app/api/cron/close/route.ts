@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server'
 import { getPositions, getAccountBalance, placeOrder, getOrders } from '@/lib/broker'
 import { analyzePdtStatus, SWING_CONFIG } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
+import { alertEODSummary } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 
 export const runtime = 'nodejs'
@@ -169,6 +170,14 @@ export async function GET(req: Request) {
         win_rate: (wins + losses) > 0 ? Math.round(wins / (wins + losses) * 100) : 0,
         updated_at: new Date().toISOString(),
       }, { onConflict: 'date' })
+
+      // SMS EOD summary to owner phone
+      await alertEODSummary({
+        daily_pnl: dailyPnl,
+        balance: activeBalance,
+        wins, losses,
+        trades: wins + losses,
+      })
     }
 
     await db.from('tb_cron_log').insert({

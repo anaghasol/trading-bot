@@ -17,6 +17,7 @@ import * as AlpacaBroker from '@/lib/alpaca'
 import { getRecommendations } from '@/lib/ai-advisor'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { isMarketOpen, isDailyLossExceeded } from '@/lib/risk'
+import { alertTradeEntered, alertPreMarket } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 import { profileFor } from '@/lib/strategy-profiles'
 import { getCategoryMomentum, biasForSymbol, categoryLabel, type RotationResult } from '@/lib/category-rotation'
@@ -133,7 +134,28 @@ async function runScan(
       }
       const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
       if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
+
+      // SMS alert for real-money Schwab trades with 80%+ dual confidence
+      await alertTradeEntered({
+        broker: broker as 'schwab' | 'alpaca_paper',
+        symbol: rec.symbol, qty: sizing.qty, price: quote.price,
+        claude_conf: rec.claude_conf, openai_conf: rec.openai_conf,
+        ema_score: rec.ema_score, reason: rec.reason,
+        stop: initialStop, target,
+      })
     }
+  }
+
+  // Pre-market alert: surface top setup found (even if not entered yet)
+  if (tradesMade === 0 && ranked.length > 0) {
+    const top = ranked[0].rec
+    await alertPreMarket({
+      setups_found: candidates,
+      top_symbol: top.symbol,
+      top_score: top.ema_score ?? 0,
+      regime: regime.regime,
+      vix: regime.vix,
+    })
   }
 
   const hot = rotation.hottest ? ` Hot:${rotation.hottest}` : ''

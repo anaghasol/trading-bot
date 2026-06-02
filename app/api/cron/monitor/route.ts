@@ -8,6 +8,7 @@ import * as AlpacaBroker from '@/lib/alpaca'
 import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceeded, INITIAL_STOP_PCT } from '@/lib/risk'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
+import { alertStopHit } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 
 export const runtime = 'nodejs'
@@ -148,6 +149,13 @@ async function monitorBroker(
       const alertRow = { type: pnl >= 0 ? 'SELL' : 'STOP_LOSS', message: `[${broker}] ${exit.exit_type} ${pos.symbol} | ${exit.reason} | $${pnl.toFixed(2)}`, symbol: pos.symbol, pnl }
       const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
       if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
+
+      // SMS alert for real Schwab exits
+      await alertStopHit({
+        broker: broker as 'schwab' | 'alpaca_paper',
+        symbol: pos.symbol, qty: Math.abs(pos.quantity),
+        pnl, pnl_pct: exit.pnl_pct, exit_type: exit.exit_type,
+      })
 
       statuses.push(`${pos.symbol}: CLOSED ${exit.exit_type} $${pnl.toFixed(2)}`)
     }
