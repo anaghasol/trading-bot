@@ -60,11 +60,11 @@ export interface MarketRegime {
 const YF_CHART = 'https://query1.finance.yahoo.com/v8/finance/chart'
 const YF_QUOTE = 'https://query1.finance.yahoo.com/v7/finance/quote'
 
-// Schwab live — core liquid names, good EMA behavior
+// Schwab live — liquid names with strong EMA behaviour (expanded)
 export const WATCHLIST = {
-  TECH:     ['NVDA', 'AMD', 'MSFT', 'AAPL', 'PLTR'],
-  CONSUMER: ['TSLA', 'AMZN', 'SHOP', 'NFLX'],
-  FINANCE:  ['COIN', 'SOFI'],
+  TECH:     ['NVDA', 'AMD', 'MSFT', 'AAPL', 'PLTR', 'AVGO', 'ARM'],
+  CONSUMER: ['TSLA', 'AMZN', 'SHOP', 'NFLX', 'UBER'],
+  FINANCE:  ['COIN', 'SOFI', 'HOOD'],
   COMM:     ['META', 'GOOGL'],
   ETF:      ['SPY', 'QQQ'],
 }

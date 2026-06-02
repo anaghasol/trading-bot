@@ -111,8 +111,8 @@ async function runScan(
 
       const initialStop = quote.price * (1 - sizing.stop_pct)
       const target      = quote.price * (1 + sizing.stop_pct * 2)
-      const cat         = categoryLabel(rec.symbol)
-      const riskNote = ` | sleeve=${sleeve} cat=${cat} stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}`
+      const cat      = categoryLabel(rec.symbol)
+      const riskNote = ` | sleeve=${sleeve} cat=${cat} ema=${rec.ema_score}/10 claude=${rec.claude_conf}% oai=${rec.openai_conf}% stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}`
 
       const tradeRow: Record<string, unknown> = {
         symbol: rec.symbol, action: 'BUY', quantity: sizing.qty,
