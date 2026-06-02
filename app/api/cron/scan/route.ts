@@ -75,8 +75,10 @@ async function runScan(
   const heldSymbols = positions.map((p) => p.symbol)
   const alloc       = await getSleeveAllocation(db)
 
+  // Pass broker so EMA scanner uses correct watchlist (core vs wide)
+  // and Claude gets the right confidence gate (78% live, 68% paper)
   const { recommendations, regime, scanned, candidates } =
-    await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining)
+    await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining, broker)
 
   // Rotation overlay: drop picks in COLD themes (bias 0), then rank by
   // confidence × category bias so hot themes win the open slots.
