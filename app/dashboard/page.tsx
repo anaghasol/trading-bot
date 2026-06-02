@@ -9,7 +9,7 @@ const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/growth', 'Growth'], 
 
 type Broker = 'schwab' | 'alpaca_paper'
 interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string }
-interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number }
+interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number }
 interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
@@ -79,21 +79,28 @@ export default function DashboardPage() {
   const profile = PROFILES[broker]
 
   const load = useCallback(async (b: Broker) => {
+    const paper = b === 'alpaca_paper'
+    // Each tab fetches ONLY from its own broker — no cross-contamination
     const [d, p, s, q, h, o, r] = await Promise.allSettled([
       fetch(`/api/dashboard?broker=${b}`).then((r) => r.json()),
-      fetch('/api/schwab/positions').then((r) => r.json()),
-      b === 'schwab' ? fetch('/api/schwab/account').then((r) => r.json()) : Promise.resolve(null),
+      paper ? fetch('/api/alpaca/positions').then((r) => r.json())
+            : fetch('/api/schwab/positions').then((r) => r.json()),
+      paper ? fetch('/api/alpaca/account').then((r) => r.json())
+            : fetch('/api/schwab/account').then((r) => r.json()),
       fetch(`/api/schwab/quotes?symbols=${UNIVERSE.join(',')}`).then((r) => r.json()),
-      b === 'schwab' ? fetch('/api/schwab/history?days=7').then((r) => r.json()) : Promise.resolve(null),
-      b === 'schwab' ? fetch('/api/schwab/activity?days=3').then((r) => r.json()) : Promise.resolve(null),
+      paper ? Promise.resolve(null)  // Alpaca PDT = unlimited
+            : fetch('/api/schwab/history?days=7').then((r) => r.json()),
+      paper ? fetch('/api/alpaca/orders?days=5').then((r) => r.json())
+            : fetch('/api/schwab/activity?days=3').then((r) => r.json()),
       fetch('/api/rotation').then((r) => r.json()),
     ])
     if (d.status === 'fulfilled') setDash((prev) => ({ ...prev, [b]: d.value }))
     if (p.status === 'fulfilled') setPos(Array.isArray(p.value) ? p.value : (p.value?.positions ?? []))
-    if (s.status === 'fulfilled' && s.value && !s.value.error) setSummary(s.value); else if (b !== 'schwab') setSummary(null)
+    if (s.status === 'fulfilled' && s.value && !s.value.error) setSummary(s.value)
     if (q.status === 'fulfilled') { const m: Record<string, Quote> = {}; for (const x of (q.value?.quotes ?? [])) m[x.symbol] = x; setQmap(m) }
     if (h.status === 'fulfilled' && h.value?.pdt) setPdt(h.value.pdt)
-    if (o.status === 'fulfilled' && o.value?.orders) setOrders(o.value.orders); else if (b !== 'schwab') setOrders([])
+    if (o.status === 'fulfilled' && o.value?.orders) setOrders(o.value.orders)
+    else setOrders([])
     if (r.status === 'fulfilled' && r.value?.categories) setCats(r.value.categories)
     setStamp(new Date().toLocaleTimeString('en-US', { hour12: false }))
   }, [])
@@ -108,8 +115,13 @@ export default function DashboardPage() {
 
   const data = dash[broker]
   const isPaper = broker === 'alpaca_paper'
-  const acctValue = (isPaper ? data?.account?.balance : summary?.account_value ?? data?.account?.balance) ?? DEFAULT_BAL[broker]
-  const dayPnl = data?.account?.daily_pnl ?? 0
+
+  // Account value: always from live broker API (summary), never from stale Supabase
+  const acctValue = summary?.account_value ?? DEFAULT_BAL[broker]
+
+  // Day P/L: from live broker API — Alpaca has day_pnl, Schwab uses summary equity change
+  const dayPnl = (summary as Record<string, number> | null)?.day_pnl ?? 0
+
   const unreal = pos.reduce((s, p) => s + p.unrealized_pnl, 0)
   const netLiq = pos.reduce((s, p) => s + Math.abs(p.market_value), 0)
   const dayPct = acctValue ? (dayPnl / acctValue) * 100 : 0
