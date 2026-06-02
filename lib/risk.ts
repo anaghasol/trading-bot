@@ -40,14 +40,15 @@ export function calculatePositionSize(
   equity: number,
   entry_price: number,
   stop_pct = INITIAL_STOP_PCT,
-  risk_pct  = RISK_PCT
+  risk_pct  = RISK_PCT,
+  exposure_cap = 0.25    // 25% live, 30% paper (passed by caller)
 ): PositionSizing {
   const risk_dollars  = equity * risk_pct
   const stop_distance = entry_price * stop_pct
   const stop_qty      = stop_distance > 0 ? Math.floor(risk_dollars / stop_distance) : 1
 
-  // Capital exposure cap: never put more than 25% of account in one position
-  const max_exposure_qty = entry_price > 0 ? Math.floor((equity * 0.25) / entry_price) : 999
+  // Capital exposure cap per position
+  const max_exposure_qty = entry_price > 0 ? Math.floor((equity * exposure_cap) / entry_price) : 999
   const qty = Math.max(1, Math.min(stop_qty, max_exposure_qty))
 
   const initial_stop = entry_price * (1 - stop_pct)

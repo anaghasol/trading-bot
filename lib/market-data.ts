@@ -69,14 +69,14 @@ export const WATCHLIST = {
   ETF:      ['SPY', 'QQQ'],
 }
 
-// Alpaca paper — wider universe, more EMA setup chances daily
+// Alpaca paper — wide aggressive universe (high-beta, EMA-responsive)
 export const ALPACA_WATCHLIST = {
-  MEGA:         ['NVDA', 'AMD', 'MSFT', 'AAPL', 'TSLA', 'META', 'GOOGL', 'AMZN'],
-  GROWTH:       ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP'],
-  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT'],
-  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY'],
-  ETF:          ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ'],
-  CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK'],
+  MEGA:         ['NVDA', 'AMD', 'MSFT', 'AAPL', 'TSLA', 'META', 'GOOGL', 'AMZN', 'AVGO'],
+  GROWTH:       ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP', 'CRWD'],
+  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT', 'TSLL'],
+  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY', 'LUNR'],
+  ETF:          ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ', 'LABU'],
+  CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK', 'IBIT'],
 }
 
 export const ALL_SYMBOLS        = Object.values(WATCHLIST).flat()
