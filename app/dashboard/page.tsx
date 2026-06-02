@@ -1,22 +1,31 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import { Card, CardHead, Metric, Chip, Meter, LiveDot, Seg, Empty, money, signed, pct, pnlColor } from '@/components/ui/kit'
+import Link from 'next/link'
+import { money, signed, pnlColor } from '@/components/ui/kit'
 import { PROFILES } from '@/lib/strategy-profiles'
+
+const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/trades', 'Trades'], ['/learning', 'Learning'], ['/settings', 'Settings']]
 
 type Broker = 'schwab' | 'alpaca_paper'
 interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string }
 interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number }
 interface Quote { symbol: string; price: number; change_pct: number }
-interface Trade { id: number; symbol: string; action: string; confidence: number; strategy: string; status: string }
+interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
-interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; pnl_chart: { hour: number; daily_pnl: number }[]; market_open: boolean }
+interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string }
+interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; market_open: boolean }
 interface Pdt { day_trades_remaining: number; is_pdt_protected: boolean; balance: number }
+interface Cat { key: string; label: string; leader: string; change_5d: number; change_1d: number; rsi: number; score: number; rank: number; temp: 'HOT' | 'WARM' | 'COOL' | 'COLD'; bias: number }
 
 const WATCH = ['NVDA', 'AMD', 'MSFT', 'PLTR', 'TSLA', 'AMZN', 'META', 'COIN']
+const UNIVERSE = ['SPY', 'QQQ', 'NVDA', 'AMD', 'MSFT', 'AAPL', 'PLTR', 'TSLA', 'AMZN', 'META', 'GOOGL', 'COIN', 'SOFI', 'NFLX', 'SHOP']
 const GOAL = 25000
 const DEFAULT_BAL: Record<Broker, number> = { schwab: 2000, alpaca_paper: 100000 }
+
+const p2 = (n: number) => (n >= 0 ? '+' : '−') + Math.abs(n ?? 0).toFixed(2) + '%'
+const num = (n: number) => Math.abs(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const hhmmss = (iso: string) => { try { return new Date(iso).toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/New_York' }) } catch { return '—' } }
 
 // ── flashing number cell ────────────────────────────────────────────────────
 function Flash({ value, fmt, className = '' }: { value: number; fmt: (n: number) => string; className?: string }) {
@@ -43,7 +52,7 @@ function useMarketClock() {
       const o = new Date(et); o.setHours(9, 30, 0, 0)
       const c = new Date(et); c.setHours(16, 0, 0, 0)
       const day = et.getDay()
-      const fmt = (ms: number) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 3600)}:${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` }
+      const fmt = (ms: number) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}:${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` }
       if (day === 0 || day === 6) { setOpen(false); setTxt('Market closed · weekend') }
       else if (et >= o && et < c) { setOpen(true); setTxt(`Market open · ${fmt(c.getTime() - et.getTime())} left`) }
       else if (et < o) { setOpen(false); setTxt(`${fmt(o.getTime() - et.getTime())} until open`) }
@@ -59,25 +68,33 @@ export default function DashboardPage() {
   const [dash, setDash] = useState<Record<Broker, Dash | null>>({ schwab: null, alpaca_paper: null })
   const [pos, setPos] = useState<Position[]>([])
   const [summary, setSummary] = useState<Summary | null>(null)
-  const [quotes, setQuotes] = useState<Quote[]>([])
+  const [qmap, setQmap] = useState<Record<string, Quote>>({})
   const [pdt, setPdt] = useState<Pdt | null>(null)
+  const [orders, setOrders] = useState<SchwabOrder[]>([])
+  const [cats, setCats] = useState<Cat[]>([])
+  const [tab, setTab] = useState<'working' | 'filled' | 'canceled'>('filled')
   const [stamp, setStamp] = useState('')
+  const [alertOn, setAlertOn] = useState(true)
   const market = useMarketClock()
   const profile = PROFILES[broker]
 
   const load = useCallback(async (b: Broker) => {
-    const [d, p, s, q, h] = await Promise.allSettled([
+    const [d, p, s, q, h, o, r] = await Promise.allSettled([
       fetch(`/api/dashboard?broker=${b}`).then((r) => r.json()),
       fetch('/api/schwab/positions').then((r) => r.json()),
       b === 'schwab' ? fetch('/api/schwab/account').then((r) => r.json()) : Promise.resolve(null),
-      fetch(`/api/schwab/quotes?symbols=${WATCH.join(',')}`).then((r) => r.json()),
+      fetch(`/api/schwab/quotes?symbols=${UNIVERSE.join(',')}`).then((r) => r.json()),
       b === 'schwab' ? fetch('/api/schwab/history?days=7').then((r) => r.json()) : Promise.resolve(null),
+      b === 'schwab' ? fetch('/api/schwab/activity?days=3').then((r) => r.json()) : Promise.resolve(null),
+      fetch('/api/rotation').then((r) => r.json()),
     ])
     if (d.status === 'fulfilled') setDash((prev) => ({ ...prev, [b]: d.value }))
     if (p.status === 'fulfilled') setPos(Array.isArray(p.value) ? p.value : (p.value?.positions ?? []))
     if (s.status === 'fulfilled' && s.value && !s.value.error) setSummary(s.value); else if (b !== 'schwab') setSummary(null)
-    if (q.status === 'fulfilled') setQuotes(q.value?.quotes ?? [])
+    if (q.status === 'fulfilled') { const m: Record<string, Quote> = {}; for (const x of (q.value?.quotes ?? [])) m[x.symbol] = x; setQmap(m) }
     if (h.status === 'fulfilled' && h.value?.pdt) setPdt(h.value.pdt)
+    if (o.status === 'fulfilled' && o.value?.orders) setOrders(o.value.orders); else if (b !== 'schwab') setOrders([])
+    if (r.status === 'fulfilled' && r.value?.categories) setCats(r.value.categories)
     setStamp(new Date().toLocaleTimeString('en-US', { hour12: false }))
   }, [])
 
@@ -90,148 +107,244 @@ export default function DashboardPage() {
   }, [broker, market.open, load])
 
   const data = dash[broker]
-  const acctValue = summary?.account_value ?? data?.account?.balance ?? DEFAULT_BAL[broker]
+  const isPaper = broker === 'alpaca_paper'
+  const acctValue = (isPaper ? data?.account?.balance : summary?.account_value ?? data?.account?.balance) ?? DEFAULT_BAL[broker]
   const dayPnl = data?.account?.daily_pnl ?? 0
-  const totPnl = data?.account?.total_pnl ?? 0
+  const unreal = pos.reduce((s, p) => s + p.unrealized_pnl, 0)
+  const netLiq = pos.reduce((s, p) => s + Math.abs(p.market_value), 0)
   const dayPct = acctValue ? (dayPnl / acctValue) * 100 : 0
   const up = dayPnl >= 0
-  const totMV = pos.reduce((s, p) => s + Math.abs(p.market_value), 0)
-  const unreal = pos.reduce((s, p) => s + p.unrealized_pnl, 0)
-  const deployedPct = acctValue ? Math.min(100, (totMV / acctValue) * 100) : 0
-  const breakerUsed = dayPnl < 0 ? Math.min(100, (Math.abs(dayPnl) / (acctValue * profile.daily_loss_stop_pct)) * 100) : 3
+  const cash = summary?.cash ?? Math.max(0, acctValue - netLiq)
+  const deployedPct = acctValue ? Math.min(100, (netLiq / acctValue) * 100) : 0
+  const breakerUsed = dayPnl < 0 ? Math.min(100, (Math.abs(dayPnl) / (acctValue * profile.daily_loss_stop_pct)) * 100) : 2
   const goalPct = Math.min(100, (acctValue / GOAL) * 100)
-  const chart = (data?.pnl_chart ?? []).map((p) => ({ t: `${p.hour}:00`, v: Number((p.daily_pnl ?? 0).toFixed(2)) }))
+  const dtLeft = isPaper ? '∞' : (pdt?.day_trades_remaining ?? 0)
+
+  // per-position day change from live quotes
+  const dayChangeOf = (p: Position) => {
+    const q = qmap[p.symbol]; if (!q || !q.change_pct) return null
+    const prev = p.current_price / (1 + q.change_pct / 100)
+    return (p.current_price - prev) * p.quantity * (p.asset_type === 'OPTION' ? 100 : 1)
+  }
+  const totDay = pos.reduce((s, p) => s + (dayChangeOf(p) ?? 0), 0)
+  const totCost = pos.reduce((s, p) => s + p.avg_cost * p.quantity * (p.asset_type === 'OPTION' ? 100 : 1), 0)
+  const totDelta = pos.reduce((s, p) => s + (p.asset_type === 'OPTION' ? 0 : p.quantity), 0)
+
+  // indices + watchlist from quote map
+  const idx = (sym: string) => qmap[sym]
+  const watch = WATCH.map((s) => qmap[s]).filter(Boolean) as Quote[]
+
+  // activity rows (schwab → real order book; paper → recorded trades)
+  type Row = { time: string; side: string; symbol: string; qty: number; price: number; status: string }
+  const rows: Row[] = broker === 'schwab'
+    ? orders.map((o) => ({ time: o.entered_time, side: o.instruction, symbol: o.symbol, qty: o.filled_quantity || o.quantity, price: o.price, status: o.status }))
+    : (data?.trades ?? []).map((t) => ({ time: t.created_at, side: t.action, symbol: t.symbol, qty: t.quantity, price: t.status === 'CLOSED' ? (t.exit_price ?? t.entry_price) : t.entry_price, status: t.status === 'OPEN' ? 'FILLED' : t.status }))
+  const filled = rows.filter((r) => /FILLED|OPEN|CLOSED/i.test(r.status))
+  const working = rows.filter((r) => /WORK|PENDING|QUEUED|ACCEPTED|NEW/i.test(r.status))
+  const canceled = rows.filter((r) => /CANCEL|REJECT|EXPIRED/i.test(r.status))
+  const tabRows = tab === 'filled' ? filled : tab === 'working' ? working : canceled
+
+  // AI signal queue from open trades
   const signals = (data?.trades ?? []).filter((t) => t.status === 'OPEN').slice(0, 4)
-  const alerts = (data?.alerts ?? []).slice(0, 7)
-  const dtLeft = broker === 'alpaca_paper' ? '∞' : (pdt?.day_trades_remaining ?? 0)
 
   return (
     <div>
-      {/* ── top bar ── */}
-      <nav style={{ position: 'sticky', top: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: 'var(--bg-1)', borderBottom: '1px solid var(--border)', padding: '11px 26px', flexWrap: 'wrap' }}>
-        <Seg<Broker> value={broker} onChange={setBroker} options={[
-          { key: 'schwab', label: <><LiveDot color="var(--red)" /> Live · Schwab</>, on: 'red' },
-          { key: 'alpaca_paper', label: <><LiveDot color="var(--blue)" /> Paper · Alpaca</>, on: 'blue' },
-        ]} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <span className={`status-pill ${market.open ? 'live' : 'closed'}`}><LiveDot on={market.open} /> {market.txt}</span>
-          <span className="chip mut" style={{ fontFamily: 'var(--font-mono)' }}>↻ {stamp || '—'}</span>
+      {/* ════ TOP STRIP ════ */}
+      <header className="desk-top">
+        <div className="desk-brand">
+          <div className="bmark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></svg></div>
+          <div><div style={{ fontWeight: 700, fontSize: '0.95rem', lineHeight: 1 }}>MyTrade</div><div className="eyebrow" style={{ marginTop: 2 }}>Live Desk</div></div>
         </div>
-      </nav>
-
-      <div className="page">
-        {/* ── profile banner ── */}
-        <div className="rise" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px', borderRadius: 'var(--r-lg)', marginBottom: 14, background: profile.vibe === 'aggressive' ? 'var(--blue-faint)' : 'var(--green-faint)', border: `1px solid ${profile.vibe === 'aggressive' ? 'var(--blue)' : 'var(--green)'}`, flexWrap: 'wrap' }}>
-          <b style={{ color: profile.vibe === 'aggressive' ? 'var(--blue)' : 'var(--green)' }}>{profile.vibe === 'aggressive' ? '🧪 Aggressive Lab' : '🛡 Protected'}</b>
-          <span className="mut" style={{ fontSize: '0.82rem' }}>
-            {profile.label} · risk {(profile.risk_pct * 100).toFixed(1)}%/trade · up to {profile.max_positions} positions · {profile.allow_day_trades ? 'day-trades ON' : 'PDT-safe swing'} · breaker −{(profile.daily_loss_stop_pct * 100).toFixed(0)}% · AI gate {profile.min_confidence}%
-          </span>
-          {broker === 'alpaca_paper' && <span className="chip blue" style={{ marginLeft: 'auto' }}>big paper balance — test hard</span>}
+        <nav className="desk-nav">{NAV.map(([href, label]) => <Link key={href} href={href} className={href === '/dashboard' ? 'on' : ''}>{label}</Link>)}</nav>
+        <div className="desk-spacer" />
+        {idx('SPY') && <div className="desk-idx"><span className="lab">S&amp;P · SPY</span><span className="tabular">{num(idx('SPY')!.price)}</span><span className="tabular" style={{ fontSize: '0.72rem', color: pnlColor(idx('SPY')!.change_pct) }}>{p2(idx('SPY')!.change_pct)}</span></div>}
+        {idx('QQQ') && <div className="desk-idx"><span className="lab">NDQ · QQQ</span><span className="tabular">{num(idx('QQQ')!.price)}</span></div>}
+        <div className="desk-rt"><span className="dot live" style={{ background: 'var(--green)' }} /> Realtime data</div>
+        <span className={`countdown ${market.open ? 'open' : ''}`}>{market.open && <span className="dot live" style={{ background: 'var(--green)' }} />}⏱ {market.txt}</span>
+        <div className="seg">
+          <button className={`seg-btn ${broker === 'schwab' ? 'on-red' : ''}`} onClick={() => setBroker('schwab')}><span className="dot" style={{ background: broker === 'schwab' ? 'var(--red)' : 'var(--fg-3)' }} /> Live · Schwab</button>
+          <button className={`seg-btn ${isPaper ? 'on-blue' : ''}`} onClick={() => setBroker('alpaca_paper')}><span className="dot" style={{ background: isPaper ? 'var(--blue)' : 'var(--fg-3)' }} /> Paper · Alpaca</button>
         </div>
+        <button className="iconbtn" onClick={() => load(broker)}>↻ {stamp || '—'}</button>
+      </header>
 
-        {/* ── hero + chart ── */}
-        <div className="grid" style={{ gridTemplateColumns: '1.15fr 1fr', marginBottom: 14 }}>
-          <div className="hero">
-            <div className="hero-label">Account value · {broker === 'schwab' ? 'Schwab (real $)' : 'Alpaca (paper $)'}</div>
-            <div className="hero-value" style={{ margin: '6px 0 8px' }}><Flash value={acctValue} fmt={money} /></div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span className={`chip ${up ? 'up' : 'down'}`} style={{ fontSize: '0.92rem', padding: '5px 12px' }}>{up ? '▲' : '▼'} {signed(dayPnl)} ({pct(dayPct)}) today</span>
-              <span className="metric-label">your daily income</span>
+      <div className="desk-wrap">
+        {/* ════ LEFT RAIL ════ */}
+        <div className="desk-col">
+          {/* Account */}
+          <div className="card">
+            <div className="card-head plain"><h3 className="card-title neutral">💼 Account <span className="chip mut" style={{ fontSize: '0.6rem' }}>{isPaper ? 'Alpaca · Paper' : 'Schwab · Individual'}</span></h3><span className="eyebrow">{isPaper ? 'PAPER $' : 'REAL $'}</span></div>
+            <div className="card-body">
+              <div className="eyebrow">Account value</div>
+              <div className="acctval" style={{ margin: '4px 0 10px' }}><Flash value={acctValue} fmt={(n) => '$' + num(n)} /></div>
+              <div style={{ marginBottom: 12 }}><span className={`chip ${up ? 'up' : 'down'}`} style={{ fontSize: '0.76rem' }}>{up ? '▲' : '▼'} {signed(dayPnl)} ({p2(dayPct)}) day</span></div>
+              <div className="kv"><span className="k">Cash</span><span className="v">{money(cash)}</span></div>
+              <div className="kv"><span className="k">Stock buying power</span><span className="v">{money(summary?.stock_buying_power ?? cash)}</span></div>
+              <div className="kv"><span className="k">Option buying power</span><span className="v" style={{ color: (summary?.option_buying_power ?? 0) < 0 ? 'var(--red)' : undefined }}>{summary ? (summary.option_buying_power < 0 ? '−' : '') + '$' + num(summary.option_buying_power) : money(cash)}</span></div>
+              <div className="kv"><span className="k">Day-trade buying power</span><span className="v">{money(summary?.day_trade_buying_power ?? 0)}</span></div>
+              <div className="kv"><span className="k">Day trades left</span><span className="v" style={{ color: isPaper ? 'var(--green)' : (Number(dtLeft) > 0 ? 'var(--green)' : 'var(--amber)') }}>{dtLeft} <span className="faint" style={{ fontSize: '0.62rem' }}>{isPaper ? 'unlimited' : '/ 3'}</span></span></div>
+              <div className="kv"><span className="k">P/L Day</span><span className="v" style={{ color: pnlColor(dayPnl) }}>{signed(dayPnl)}</span></div>
+              <div className="kv"><span className="k">P/L Open</span><span className="v" style={{ color: pnlColor(unreal) }}>{signed(unreal)}</span></div>
             </div>
           </div>
-          <Card>
-            <CardHead title="Today's P&L" tone="plain" right={<span className="tabular" style={{ fontWeight: 700, color: pnlColor(dayPnl) }}>{signed(dayPnl)}</span>} />
-            <div className="card-body" style={{ paddingTop: 10 }}>
-              {chart.length < 2 ? <div style={{ height: 116, display: 'grid', placeItems: 'center', color: 'var(--fg-3)', fontSize: '0.85rem' }}>No intraday data yet</div>
-                : <ResponsiveContainer width="100%" height={116}><AreaChart data={chart} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                    <defs><linearGradient id="hg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={up ? '#10b981' : '#ef4444'} stopOpacity={0.3} /><stop offset="100%" stopColor={up ? '#10b981' : '#ef4444'} stopOpacity={0} /></linearGradient></defs>
-                    <XAxis dataKey="t" tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis tickFormatter={(v) => `$${v}`} tick={{ fill: '#6b7280', fontSize: 10 }} axisLine={false} tickLine={false} width={46} />
-                    <Tooltip contentStyle={{ background: '#1a1f2e', border: '1px solid #374151', borderRadius: 6, fontSize: 11, fontFamily: 'IBM Plex Mono' }} formatter={(v: number) => [signed(v), 'P&L']} />
-                    <Area type="monotone" dataKey="v" stroke={up ? '#10b981' : '#ef4444'} strokeWidth={2} fill="url(#hg)" />
-                  </AreaChart></ResponsiveContainer>}
+
+          {/* Protection & Goal */}
+          <div className="card">
+            <div className="card-head plain"><h3 className="card-title neutral">🛡 Protection &amp; Goal</h3><span className="chip up">ACTIVE</span></div>
+            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div><div className="meter-top"><span>Progress to $25K goal</span><span>{goalPct.toFixed(0)}%</span></div><div className="track"><div className="fill" style={{ width: `${goalPct}%`, background: 'var(--grad-conf)' }} /></div></div>
+              <div><div className="meter-top"><span>Daily loss breaker</span><span>{p2(dayPct)} / −{(profile.daily_loss_stop_pct * 100).toFixed(0)}%</span></div><div className="track"><div className="fill" style={{ width: `${breakerUsed}%`, background: breakerUsed > 70 ? 'var(--red)' : 'var(--green)' }} /></div></div>
+              <div className="spread" style={{ fontSize: '0.78rem' }}><span className="muted">Risk / trade</span><span className={`chip ${isPaper ? 'blue' : 'up'}`}>{(profile.risk_pct * 100).toFixed(1)}% equity · dynamic</span></div>
+              <div className="spread" style={{ fontSize: '0.78rem' }}><span className="muted">Profits recorded</span><span className="chip up"><span className="dot live" style={{ background: 'var(--green)' }} /> synced → Supabase</span></div>
             </div>
-          </Card>
+          </div>
+
+          {/* Watchlist */}
+          <div className="card">
+            <div className="card-head plain"><h3 className="card-title neutral">📈 Watchlist</h3><span className="eyebrow">Top movers</span></div>
+            <div className="card-body" style={{ paddingTop: 6, paddingBottom: 6 }}>
+              {watch.length === 0 ? <div className="desk-empty">Connect Schwab for live quotes</div>
+                : watch.map((q) => (
+                  <div key={q.symbol} className="spread" style={{ padding: '6px 0', borderBottom: '1px solid var(--divider)' }}>
+                    <span className="tabular" style={{ fontWeight: 600, fontSize: '0.8rem' }}>{q.symbol}</span>
+                    <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}><Flash value={q.price} fmt={num} className="" /><span className="tabular" style={{ fontSize: '0.74rem', color: pnlColor(q.change_pct), minWidth: 60, textAlign: 'right' }}>{p2(q.change_pct)}</span></span>
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          {/* Category Trends (rotation engine) */}
+          <div className="card">
+            <div className="card-head plain"><h3 className="card-title neutral">🧭 Category Trends</h3><span className="eyebrow">lean into heat</span></div>
+            <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+              {cats.length === 0 ? <div className="desk-empty">Rotation runs on the next scan</div>
+                : cats.map((c) => {
+                  const dn = c.change_5d < 0
+                  const w = Math.max(6, Math.min(100, ((c.score + 6) / 16) * 100))
+                  return (
+                    <div key={c.key} className="cat-row" style={{ opacity: c.bias === 0 ? 0.5 : 1 }}>
+                      <div className="cat-top"><span>{c.temp === 'HOT' ? '🔥 ' : ''}{c.label}</span><span className="tabular" style={{ fontSize: '0.72rem', color: dn ? 'var(--red)' : 'var(--green)' }}>{p2(c.change_5d)}</span></div>
+                      <div className="track" style={{ height: 6 }}><div className="fill" style={{ width: `${w}%`, background: dn ? 'var(--red)' : (c.temp === 'HOT' ? 'var(--grad-conf)' : 'var(--green)') }} /></div>
+                    </div>
+                  )
+                })}
+            </div>
+          </div>
         </div>
 
-        {/* ── metric grid (live balances) ── */}
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(6, 1fr)', marginBottom: 14 }}>
-          <Metric label="Account Value" value={<Flash value={acctValue} fmt={money} />} sub={broker === 'schwab' ? 'real $' : 'paper $'} color="var(--fg-1)" />
-          <Metric label="Cash" value={money(summary?.cash ?? (acctValue - totMV))} sub="available" color="var(--fg-1)" />
-          <Metric label="Stock BP" value={money(summary?.stock_buying_power ?? (acctValue - totMV))} sub="buying power" color="var(--fg-1)" />
-          <Metric label="Day Trades Left" value={`${dtLeft}`} sub={broker === 'alpaca_paper' ? 'no PDT cap' : '/ 3 · PDT'} color={broker === 'alpaca_paper' ? 'var(--green)' : (Number(dtLeft) > 0 ? 'var(--green)' : 'var(--amber)')} />
-          <Metric label="Today P&L" value={signed(dayPnl)} sub={pct(dayPct)} color={pnlColor(dayPnl)} />
-          <Metric label="Open P&L" value={signed(unreal)} sub={`${pos.length}/${profile.max_positions} pos`} color={pnlColor(unreal)} />
-        </div>
+        {/* ════ MAIN ════ */}
+        <div className="desk-col">
+          {/* profile banner */}
+          <div className="profile-banner" style={{ background: isPaper ? 'var(--blue-faint)' : 'var(--green-faint)', border: `1px solid ${isPaper ? 'var(--blue)' : 'var(--green)'}` }}>
+            <b style={{ color: isPaper ? 'var(--blue)' : 'var(--green)' }}>{isPaper ? '🧪 Aggressive Lab' : '🛡 Protected'}</b>
+            <span className="muted" style={{ fontSize: '0.78rem' }}>{isPaper ? 'Alpaca paper $' : 'Schwab real $'} · {(profile.risk_pct * 100).toFixed(1)}% risk/trade · up to {profile.max_positions} positions · {profile.allow_day_trades ? 'day-trades ON (no PDT)' : 'PDT-safe swing (1–5d holds)'} · −{(profile.daily_loss_stop_pct * 100).toFixed(0)}% daily breaker · {profile.min_confidence}% AI gate</span>
+            {isPaper && <span className="chip blue" style={{ marginLeft: 'auto' }}>big balance — test hard</span>}
+          </div>
 
-        {/* ── positions + rail ── */}
-        <div className="grid" style={{ gridTemplateColumns: '1.75fr 1fr' }}>
-          <div className="grid">
-            <Card>
-              <CardHead title="📊 Positions" right={<span className="faint" style={{ fontSize: '0.8rem' }}>{pos.length} open · net liq {money(totMV)}</span>} />
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
-                  <thead><tr style={{ color: 'var(--fg-3)', textAlign: 'right' }}>
-                    {['Symbol', 'Qty', 'Avg', 'Mark', 'Mkt Value', 'Open P&L', '%', 'Δ', ''].map((h, i) => <th key={h} style={{ padding: '9px 12px', borderBottom: '1px solid var(--border)', textAlign: i === 0 ? 'left' : 'right', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>{h}</th>)}
-                  </tr></thead>
-                  <tbody>
-                    {pos.length === 0 ? <tr><td colSpan={9}><Empty>No open positions — engine waiting for a {profile.min_confidence}%+ signal.</Empty></td></tr>
-                      : pos.map((p) => (
-                        <tr key={p.symbol} style={{ fontFamily: 'var(--font-mono)', textAlign: 'right' }}>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)', textAlign: 'left', fontWeight: 700, color: 'var(--blue)' }}>{p.symbol} <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: 4, background: 'var(--bg-3)', color: 'var(--fg-3)', marginLeft: 4 }}>{p.asset_type === 'OPTION' ? 'OPT' : 'EQ'}</span></td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)' }}>{p.quantity}</td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)', color: 'var(--fg-2)' }}>${p.avg_cost.toFixed(2)}</td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)' }}><Flash value={p.current_price} fmt={(n) => '$' + n.toFixed(2)} /></td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)' }}>{money(p.market_value)}</td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)', fontWeight: 700, color: pnlColor(p.unrealized_pnl) }}>{signed(p.unrealized_pnl)}</td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)', color: pnlColor(p.pnl_pct) }}>{pct(p.pnl_pct)}</td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)', color: 'var(--fg-2)' }}>{p.asset_type === 'OPTION' ? '—' : p.quantity.toFixed(2)}</td>
-                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--divider)' }}><button onClick={() => fetch('/api/schwab/trade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: p.symbol, quantity: Math.abs(p.quantity), action: 'SELL' }) }).then(() => setTimeout(() => load(broker), 1500))} className="btn red sm">Close</button></td>
+          {/* PDT equity-call alert (real money, protected) */}
+          {!isPaper && alertOn && pdt?.is_pdt_protected !== false && (
+            <div className="desk-alert">
+              <div className="ico">!</div>
+              <div><b>Day-Trade Equity Call · {money(acctValue)}</b><div className="muted" style={{ marginTop: 2 }}>Account under $25K — MyTrade is in <b style={{ color: 'var(--fg-1)' }}>SWING MODE</b> (1–5 day holds, no same-day round-trips) until equity clears $25K. Protection enforced automatically.</div></div>
+              <button className="x" onClick={() => setAlertOn(false)}>×</button>
+            </div>
+          )}
+
+          {/* Positions */}
+          <div className="card">
+            <div className="card-head plain"><h3 className="card-title neutral">📊 Positions <span className="chip mut" style={{ fontSize: '0.6rem' }}>{pos.length} open</span></h3><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span className="eyebrow">Net liq</span><span className="tabular" style={{ fontWeight: 700 }}>{money(netLiq)}</span></div></div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="ptbl">
+                <thead><tr>
+                  <th className="l">Symbol</th><th>Qty</th><th>P/L Day</th><th>P/L Open</th><th>P/L %</th><th>Cost</th><th>Net Liq</th><th>Mark</th><th>Δ</th><th>Γ</th><th>Θ</th><th>V</th><th></th>
+                </tr></thead>
+                <tbody>
+                  {pos.length === 0 ? <tr><td colSpan={13}><div className="desk-empty">No open positions — engine waiting for a {profile.min_confidence}%+ signal.</div></td></tr>
+                    : pos.map((p, i) => {
+                      const opt = p.asset_type === 'OPTION'
+                      const day = dayChangeOf(p)
+                      const cost = p.avg_cost * p.quantity * (opt ? 100 : 1)
+                      return (
+                        <tr key={p.symbol + i}>
+                          <td className="l"><span className="psym">{p.symbol}</span><span className={`pbadge ${opt ? 'opt' : 'eq'}`}>{opt ? 'OPT' : 'EQ'}</span></td>
+                          <td>{p.quantity > 0 ? '+' : ''}{p.quantity}</td>
+                          <td style={{ color: day == null ? 'var(--fg-3)' : pnlColor(day) }}>{day == null ? '—' : signed(day)}</td>
+                          <td style={{ color: pnlColor(p.unrealized_pnl) }}>{signed(p.unrealized_pnl)}</td>
+                          <td style={{ color: pnlColor(p.pnl_pct) }}>{p2(p.pnl_pct)}</td>
+                          <td className="muted">{money(cost)}</td>
+                          <td>{money(p.market_value)}</td>
+                          <td><Flash value={p.current_price} fmt={num} /></td>
+                          <td>{opt ? '—' : p.quantity.toFixed(2)}</td><td>{opt ? '—' : '0.00'}</td><td>{opt ? '—' : '0.00'}</td><td>{opt ? '—' : '0.00'}</td>
+                          <td><button className="closex" onClick={() => fetch('/api/schwab/trade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: p.symbol, quantity: Math.abs(p.quantity), action: 'SELL' }) }).then(() => setTimeout(() => load(broker), 1500))}>Close</button></td>
+                        </tr>
+                      )
+                    })}
+                </tbody>
+                {pos.length > 0 && (
+                  <tfoot><tr>
+                    <td className="l">Totals</td>
+                    <td>{pos.reduce((s, p) => s + p.quantity, 0)}</td>
+                    <td style={{ color: pnlColor(totDay) }}>{signed(totDay)}</td>
+                    <td style={{ color: pnlColor(unreal) }}>{signed(unreal)}</td>
+                    <td>—</td>
+                    <td>{money(totCost)}</td>
+                    <td>{money(netLiq)}</td>
+                    <td>—</td>
+                    <td>{totDelta.toFixed(2)}</td><td>0.00</td><td>0.00</td><td>0.00</td><td></td>
+                  </tr></tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+
+          <div className="section-row">
+            {/* Activity */}
+            <div className="card">
+              <div className="card-head plain">
+                <div className="atabs">
+                  <button className={`atab ${tab === 'working' ? 'on' : ''}`} onClick={() => setTab('working')}>Working <span className="cnt">{working.length}</span></button>
+                  <button className={`atab ${tab === 'filled' ? 'on' : ''}`} onClick={() => setTab('filled')}>Filled <span className="cnt">{filled.length}</span></button>
+                  <button className={`atab ${tab === 'canceled' ? 'on' : ''}`} onClick={() => setTab('canceled')}>Canceled <span className="cnt">{canceled.length}</span></button>
+                </div>
+                <span className="eyebrow">Today's activity</span>
+              </div>
+              <div className="card-body" style={{ minHeight: 150, paddingTop: 8 }}>
+                {tabRows.length === 0 ? (
+                  <div className="desk-empty">{tab === 'working' ? <>No working orders.<br /><span className="faint">Bot places a protective stop on every fill.</span></> : tab === 'canceled' ? 'No canceled orders today.' : 'No fills yet today.'}</div>
+                ) : (
+                  <table className="ptbl">
+                    <thead><tr><th className="l">Time</th><th className="l">Side</th><th className="l">Symbol</th><th>Qty</th><th>Price</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {tabRows.slice(0, 12).map((o, i) => (
+                        <tr key={i}>
+                          <td className="l muted">{hhmmss(o.time)}</td>
+                          <td className="l"><span className={`chip ${/SELL|STC/i.test(o.side) ? 'down' : 'up'}`} style={{ fontSize: '0.6rem' }}>{o.side}</span></td>
+                          <td className="l psym">{o.symbol}</td>
+                          <td>{o.qty}</td>
+                          <td>${num(o.price)}</td>
+                          <td><span className="chip mut" style={{ fontSize: '0.6rem' }}>{o.status}</span></td>
                         </tr>
                       ))}
-                  </tbody>
-                </table>
+                    </tbody>
+                  </table>
+                )}
               </div>
-            </Card>
-            <Card>
-              <CardHead title="📡 Live Activity" tone="blue" right={<span className="faint" style={{ fontSize: '0.8rem' }}>{alerts.length}</span>} />
-              <div className="log-viewer" style={{ maxHeight: 200, borderRadius: 0, border: 'none' }}>
-                {alerts.length === 0 ? <div className="log-line" style={{ color: 'var(--fg-3)' }}>Waiting for bot activity…</div>
-                  : alerts.map((a) => { const cls = a.type === 'BUY' ? 'success' : a.type === 'STOP_LOSS' ? 'error' : a.type === 'SELL' ? 'warning' : 'info'; return <div key={a.id} className={`log-line ${cls}`}>[{new Date(a.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}] {a.message}</div> })}
-              </div>
-            </Card>
-          </div>
+            </div>
 
-          <div className="grid">
-            <Card accent={profile.vibe === 'aggressive' ? 'blue' : 'green'}>
-              <CardHead title={profile.vibe === 'aggressive' ? '🧪 Lab Risk' : '🛡 Protection'} tone={profile.vibe === 'aggressive' ? 'blue' : 'green'} right={<span className={`chip ${profile.vibe === 'aggressive' ? 'blue' : 'up'}`}>ACTIVE</span>} />
-              <div className="card-body" style={{ display: 'grid', gap: 12 }}>
-                <Meter label={`Daily breaker (−${(profile.daily_loss_stop_pct * 100).toFixed(0)}%)`} right={pct(dayPct)} pct={breakerUsed} color={breakerUsed > 70 ? 'var(--red)' : 'var(--green)'} />
-                <Meter label="Capital deployed" right={`${deployedPct.toFixed(0)}%`} pct={deployedPct} color="var(--blue)" />
-                <div className="spread"><span className="metric-label">To $25K goal</span><span className="chip mut">{goalPct.toFixed(0)}%</span></div>
-                <div className="spread"><span className="metric-label">Risk / trade</span><span className={`chip ${profile.vibe === 'aggressive' ? 'blue' : 'up'}`}>{(profile.risk_pct * 100).toFixed(1)}% dynamic</span></div>
-              </div>
-            </Card>
-            <Card>
-              <CardHead title="📈 Watchlist" tone="plain" />
-              <div className="card-body" style={{ display: 'grid', gap: 0 }}>
-                {quotes.length === 0 ? <Empty>Connect Schwab for live quotes</Empty>
-                  : quotes.map((q) => (
-                    <div key={q.symbol} className="spread" style={{ padding: '7px 0', borderBottom: '1px solid var(--divider)' }}>
-                      <span className="tabular" style={{ fontWeight: 600 }}>{q.symbol}</span>
-                      <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}><Flash value={q.price} fmt={(n) => n.toFixed(2)} /><span className="tabular" style={{ fontSize: '0.78rem', color: pnlColor(q.change_pct), minWidth: 56, textAlign: 'right' }}>{pct(q.change_pct)}</span></span>
+            {/* AI signal queue */}
+            <div className="card">
+              <div className="card-head blue"><h3 className="card-title blue">🤖 AI Signal Queue</h3><span className="chip blue">{profile.min_confidence}%+ to fire</span></div>
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                {signals.length === 0 ? <div className="desk-empty">No live signals — scanning {profile.scan_universe} universe.</div>
+                  : signals.map((t) => (
+                    <div key={t.id} className="sig">
+                      <div className="spread"><span><b className="tabular" style={{ color: 'var(--blue)' }}>{t.symbol}</b> <span className="chip up" style={{ fontSize: '0.6rem', marginLeft: 6 }}>{t.action}</span></span><span className="tabular" style={{ fontSize: '0.76rem' }}>{t.confidence}%</span></div>
+                      <div className="sigbar"><div className="sigfill" style={{ width: `${t.confidence}%` }} /></div>
+                      <span className="faint" style={{ fontSize: '0.66rem' }}>{t.strategy}</span>
                     </div>
                   ))}
               </div>
-            </Card>
-            <Card>
-              <CardHead title="🤖 AI Signals" tone="blue" right={<span className="chip blue">{profile.min_confidence}%+ to fire</span>} />
-              <div className="card-body" style={{ display: 'grid', gap: 8 }}>
-                {signals.length === 0 ? <Empty>No open signals</Empty>
-                  : signals.map((t) => (
-                    <div key={t.id} className="spread"><span><b className="tabular" style={{ color: 'var(--blue)' }}>{t.symbol}</b> <span className="chip mut" style={{ fontSize: '0.62rem', marginLeft: 6 }}>{t.strategy}</span></span><span className="chip up">{t.confidence}%</span></div>
-                  ))}
-              </div>
-            </Card>
+            </div>
           </div>
         </div>
       </div>
