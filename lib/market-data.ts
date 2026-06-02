@@ -27,7 +27,7 @@ export interface MarketRegime {
 const YF_CHART = 'https://query1.finance.yahoo.com/v8/finance/chart'
 const YF_QUOTE = 'https://query1.finance.yahoo.com/v7/finance/quote'
 
-// Watchlist - high-liquidity stocks with good momentum
+// Schwab live — conservative, liquid, proven momentum stocks
 export const WATCHLIST = {
   TECH:     ['NVDA', 'AMD', 'MSFT', 'AAPL', 'PLTR'],
   CONSUMER: ['TSLA', 'AMZN', 'SHOP', 'NFLX'],
@@ -36,7 +36,21 @@ export const WATCHLIST = {
   ETF:      ['SPY', 'QQQ'],
 }
 
-export const ALL_SYMBOLS = Object.values(WATCHLIST).flat()
+// Alpaca paper — aggressive, full universe, crypto proxy stocks
+// More symbols = more chances to find high-conviction setups
+export const ALPACA_WATCHLIST = {
+  MEGA:    ['NVDA', 'AMD', 'MSFT', 'AAPL', 'TSLA', 'META', 'GOOGL', 'AMZN'],
+  GROWTH:  ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP'],
+  MOMENTUM:['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT'],
+  VOLATILE:['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY'],
+  ETF:     ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ'],
+  CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK'],  // crypto exposure via stocks
+}
+
+export const ALL_SYMBOLS        = Object.values(WATCHLIST).flat()
+export const ALL_ALPACA_SYMBOLS = Object.values(ALPACA_WATCHLIST).flat().filter(
+  (s, i, a) => a.indexOf(s) === i  // deduplicate
+)
 
 // ── Technical Analysis ────────────────────────────────────────────────────────
 
