@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getAccountBalance } from '@/lib/schwab'
+import { getAccountBalance } from '@/lib/broker'
 import { createClient } from '@/lib/supabase-server'
 
 export async function GET() {

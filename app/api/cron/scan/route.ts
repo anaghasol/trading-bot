@@ -5,7 +5,7 @@
  * Schedule: 9:15 AM ET (morning entry) + 12:00 PM ET (midday entry)
  */
 import { NextResponse } from 'next/server'
-import { getPositions, getAccountBalance, placeBuyWithProtection, getOrders, getQuote } from '@/lib/schwab'
+import { getPositions, getAccountBalance, placeBuyWithProtection, getOrders, getQuote } from '@/lib/broker'
 import { getRecommendations } from '@/lib/ai-advisor'
 import { analyzePdtStatus, SWING_CONFIG } from '@/lib/pdt'
 import { calculatePositionSize, isMarketOpen, isDailyLossExceeded } from '@/lib/risk'
