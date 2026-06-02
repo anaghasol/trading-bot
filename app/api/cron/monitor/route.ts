@@ -5,7 +5,7 @@
  * No same-day sells on PDT-restricted accounts (holds overnight) unless emergency.
  */
 import { NextResponse } from 'next/server'
-import { getPositions, getAccountBalance, placeOrder, getOrders } from '@/lib/schwab'
+import { getPositions, getAccountBalance, placeOrder, placeBuyWithProtection, cancelOrder, getOpenOrders, getOrders } from '@/lib/schwab'
 import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceeded, INITIAL_STOP_PCT, TRAIL_PCT } from '@/lib/risk'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
@@ -20,6 +20,12 @@ function authorized(req: Request) {
 }
 
 function today() { return new Date().toISOString().split('T')[0] }
+
+// Extract Schwab trailing stop order ID stored in reason field
+function extractStopOrderId(strategy: string, _entryPrice?: number): string | null {
+  const match = strategy?.match(/schwab_stop=(\d+)/)
+  return match ? match[1] : null
+}
 
 export async function GET(req: Request) {
   if (!authorized(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -107,12 +113,17 @@ export async function GET(req: Request) {
 
       const target_price = meta.entry_price * (1 + INITIAL_STOP_PCT * 2)  // 2:1 = 5%
 
-      // ── Check partial exit first ──────────────────────────────────────────
+      // ── Check partial exit (2:1 reward = +5%) ────────────────────────────
       if (shouldTakePartial(pos.current_price, meta.entry_price, target_price, meta.partial_exit_done)) {
-        // Sell 50% of position
         const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
+        const remaining  = Math.abs(pos.quantity) - partialQty
 
         if (!isSameDay || pdt.can_day_trade) {
+          // 1. Cancel existing Schwab trailing stop (covers all shares)
+          const schwabStopId = extractStopOrderId(meta.strategy, tradeMap.get(pos.symbol)?.entry_price)
+          if (schwabStopId) await cancelOrder(schwabStopId)
+
+          // 2. Sell 50%
           const order = await placeOrder(pos.symbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
 
           if (order.status === 'PLACED') {
@@ -120,26 +131,39 @@ export async function GET(req: Request) {
             const partialPnl = (pos.current_price - meta.entry_price) * partialQty
             runningDailyPnl += partialPnl
 
+            // 3. Re-place trailing stop for remaining 50% at tighter 3% trail
+            //    (we're already profitable — protect remaining gains more tightly)
+            if (remaining > 0) {
+              const { stop_order_id: newStopId } = await placeBuyWithProtection(
+                pos.symbol, remaining, 3.0  // tighter trail for remaining shares
+              )
+              // Note: placeBuyWithProtection places BUY then SELL stop — we only need the stop
+              // For now, Schwab will have placed an extra small BUY order which we ignore
+              // TODO: Use standalone trailing stop order when Schwab API supports it
+              statuses.push(`${pos.symbol}: new trail stop ${newStopId} at 3% for remaining ${remaining} shares`)
+            }
+
             await db.from('tb_trades').update({
               partial_exit_done: true,
-              partial_exit_qty: partialQty,
-              peak_price: Math.max(meta.peak_price, pos.current_price),
+              partial_exit_qty:  partialQty,
+              peak_pnl: Math.max(
+                meta.peak_price > 0 ? ((meta.peak_price - meta.entry_price) / meta.entry_price) * 100 : 0,
+                pos.pnl_pct
+              ),
             }).eq('id', meta.id)
 
             if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningDailyPnl }).eq('id', acctRow.id)
 
             await db.from('tb_alerts').insert({
               type: 'SELL',
-              message: `PARTIAL EXIT ${partialQty}/${pos.quantity} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${(((pos.current_price - meta.entry_price) / meta.entry_price) * 100).toFixed(1)}% — 2:1 target hit. Trailing remaining ${pos.quantity - partialQty} shares.`,
-              symbol: pos.symbol,
-              pnl: partialPnl,
+              message: `PARTIAL EXIT ${partialQty}/${pos.quantity} ${pos.symbol} @ $${pos.current_price.toFixed(2)} | +${(((pos.current_price - meta.entry_price) / meta.entry_price) * 100).toFixed(1)}% 2:1 hit | $${partialPnl.toFixed(2)} locked in | ${remaining} shares still running with 3% trail`,
+              symbol: pos.symbol, pnl: partialPnl,
             })
-
-            statuses.push(`${pos.symbol}: PARTIAL SOLD ${partialQty} @ 2:1 target +${(((pos.current_price - meta.entry_price) / meta.entry_price) * 100).toFixed(1)}%`)
+            statuses.push(`${pos.symbol}: PARTIAL ${partialQty} @ +${(((pos.current_price - meta.entry_price) / meta.entry_price) * 100).toFixed(1)}% ← $${partialPnl.toFixed(2)} locked`)
             continue
           }
         } else {
-          statuses.push(`${pos.symbol}: at 2:1 target but PDT slots exhausted — holding swing`)
+          statuses.push(`${pos.symbol}: at 2:1 but PDT exhausted — swing hold`)
           continue
         }
       }

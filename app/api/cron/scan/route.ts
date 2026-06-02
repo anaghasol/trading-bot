@@ -5,7 +5,7 @@
  * Schedule: 9:15 AM ET (morning entry) + 12:00 PM ET (midday entry)
  */
 import { NextResponse } from 'next/server'
-import { getPositions, getAccountBalance, placeOrder, getOrders, getQuote } from '@/lib/schwab'
+import { getPositions, getAccountBalance, placeBuyWithProtection, getOrders, getQuote } from '@/lib/schwab'
 import { getRecommendations } from '@/lib/ai-advisor'
 import { analyzePdtStatus, SWING_CONFIG } from '@/lib/pdt'
 import { calculatePositionSize, isMarketOpen, isDailyLossExceeded } from '@/lib/risk'
@@ -80,13 +80,13 @@ export async function GET(req: Request) {
       const cashAvailable  = equity - totalAllocated
       if (sizing.qty * quote.price > cashAvailable * 0.95) continue
 
-      const order = await placeOrder(rec.symbol, sizing.qty, 'BUY')
+      // BUY + immediately attach 5% GTC trailing stop at Schwab (no cron gap for stops)
+      const { buy, stop_order_id } = await placeBuyWithProtection(rec.symbol, sizing.qty, 5.0)
 
-      if (order.status === 'PLACED') {
+      if (buy.status === 'PLACED') {
         tradesMade++
 
-        // Store risk params in reason field if migration v3 not yet run
-        const riskNote = ` | stop=$${sizing.initial_stop.toFixed(2)} target=$${sizing.target_price.toFixed(2)} risk=$${sizing.risk_dollars.toFixed(0)}`
+        const riskNote = ` | stop=$${sizing.initial_stop.toFixed(2)} target=$${sizing.target_price.toFixed(2)} risk=$${sizing.risk_dollars.toFixed(0)} schwab_stop=${stop_order_id ?? 'pending'}`
         const tradeRow: Record<string, unknown> = {
           symbol:      rec.symbol,
           action:      'BUY',
@@ -99,27 +99,27 @@ export async function GET(req: Request) {
           regime:      regime.regime,
           created_at:  new Date().toISOString(),
         }
-        // Conditionally add v3 columns (migration may not be run yet)
-        try {
-          const { error } = await db.from('tb_trades').insert({
-            ...tradeRow,
-            initial_stop_price:  sizing.initial_stop,
-            peak_price:          quote.price,
-            trailing_stop_price: quote.price * 0.95,
-            target_price:        sizing.target_price,
-            partial_exit_done:   false,
-          })
-          if (error?.code === 'PGRST204') {
-            // Column doesn't exist yet, insert without v3 columns
-            await db.from('tb_trades').insert(tradeRow)
-          }
-        } catch {
+
+        // Try inserting with v3 columns, fall back to base columns
+        const { error } = await db.from('tb_trades').insert({
+          ...tradeRow,
+          initial_stop_price:  sizing.initial_stop,
+          peak_price:          quote.price,
+          trailing_stop_price: quote.price * 0.95,
+          target_price:        sizing.target_price,
+          partial_exit_done:   false,
+        })
+        if (error?.code === 'PGRST204') {
           await db.from('tb_trades').insert(tradeRow)
         }
 
+        const stopNote = stop_order_id
+          ? `GTC trail stop #${stop_order_id} active at Schwab`
+          : 'manual stop monitoring'
+
         await db.from('tb_alerts').insert({
           type: 'BUY',
-          message: `SWING BUY ${sizing.qty} ${rec.symbol} @ $${quote.price.toFixed(2)} | Risk $${sizing.risk_dollars.toFixed(0)} | Stop $${sizing.initial_stop.toFixed(2)} | Target $${sizing.target_price.toFixed(2)} | ${rec.reason} (${rec.confidence}% confident)`,
+          message: `BUY ${sizing.qty} ${rec.symbol} @ $${quote.price.toFixed(2)} | Risk $${sizing.risk_dollars.toFixed(0)} (1.2% equity) | 5% trail stop @ Schwab (${stopNote}) | Target $${sizing.target_price.toFixed(2)} | ${rec.reason} (${rec.confidence}%)`,
           symbol: rec.symbol,
         })
       }

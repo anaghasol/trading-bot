@@ -1,93 +1,93 @@
-name: Trading Engine (Free Cron)
+name: Trading Engine
 
-# FREE alternative to Vercel Pro crons.
-# GitHub Actions gives 2,000 min/month free (unlimited on public repos).
-# Calls the Vercel API routes directly on a schedule.
+# FREE cron (no Vercel Pro needed).
+# GitHub Actions: 2,000 min/month free on private repos.
+# At every 5 min × 6.5 hr × 22 days = ~1700 runs/month ← fits free tier.
 #
-# Setup: Go to GitHub repo → Settings → Secrets → Actions
-# Add secret: CRON_SECRET = tradebot-cron-2026-secure
-# Add secret: APP_URL     = https://trading-bot-hazel-one.vercel.app
+# SETUP: GitHub repo → Settings → Secrets → Actions → New repository secret
+# Add: CRON_SECRET = tradebot-cron-2026-secure
+# Add: APP_URL     = https://trading-bot-hazel-one.vercel.app
 
 on:
   schedule:
-    # Morning scan: 9:15 AM ET = 13:15 UTC (Monday-Friday)
+    # ── Every 5 min during market hours (9:30 AM – 4 PM ET = 13:30-20:00 UTC) ──
+    - cron: '30,35,40,45,50,55 13 * * 1-5'   # 9:30-9:55 AM ET
+    - cron: '*/5 14 * * 1-5'                   # 10:00-10:55 AM ET
+    - cron: '*/5 15 * * 1-5'                   # 11:00-11:55 AM ET
+    - cron: '*/5 16 * * 1-5'                   # 12:00-12:55 PM ET
+    - cron: '*/5 17 * * 1-5'                   # 1:00-1:55 PM ET
+    - cron: '*/5 18 * * 1-5'                   # 2:00-2:55 PM ET
+    - cron: '*/5 19 * * 1-5'                   # 3:00-3:55 PM ET
+
+    # ── Morning scan: 9:15 AM ET = 13:15 UTC ──
     - cron: '15 13 * * 1-5'
 
-    # Midday scan: 12:00 PM ET = 16:00 UTC
+    # ── Midday scan: 12:00 PM ET = 16:00 UTC ──
     - cron: '0 16 * * 1-5'
 
-    # Position monitor: every 15 min 9:30 AM – 3:30 PM ET = 13:30-19:30 UTC
-    - cron: '30 13 * * 1-5'
-    - cron: '45 13 * * 1-5'
-    - cron: '0,15,30,45 14 * * 1-5'
-    - cron: '0,15,30,45 15 * * 1-5'
-    - cron: '0,15,30,45 16 * * 1-5'
-    - cron: '0,15,30,45 17 * * 1-5'
-    - cron: '0,15,30,45 18 * * 1-5'
-    - cron: '0,15,30,45 19 * * 1-5'
+    # ── Swing exit checks ──
+    - cron: '35 13 * * 1-5'  # 9:35 AM ET morning review
+    - cron: '30 19 * * 1-5'  # 3:30 PM ET pre-close review
 
-    # Morning swing-exit check: 9:35 AM ET = 13:35 UTC
-    - cron: '35 13 * * 1-5'
-
-    # Pre-close swing-exit: 3:30 PM ET = 19:30 UTC
-    - cron: '30 19 * * 1-5'
-
-  # Allow manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
       job:
-        description: 'Job to run (scan/monitor/close)'
+        description: 'Job to run'
         required: true
         default: 'monitor'
         type: choice
         options: [scan, monitor, close]
 
 jobs:
+  # ── Morning and midday entry scans ─────────────────────────────────────────
   market-scan:
-    name: Market Scan (9:15 AM + 12 PM ET)
+    name: Market Scan
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'scan' || github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '0 16 * * 1-5'
+    if: |
+      github.event.schedule == '15 13 * * 1-5' ||
+      github.event.schedule == '0 16 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'scan')
     steps:
-      - name: Trigger Scan
+      - name: Trigger AI Market Scan
         run: |
-          echo "Triggering market scan..."
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
+          RESPONSE=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "${{ secrets.APP_URL }}/api/cron/scan")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | head -1)
-          echo "HTTP: $HTTP_CODE"
-          echo "Response: $BODY"
-          if [[ "$HTTP_CODE" != "200" ]]; then
-            echo "Warning: Non-200 response" >&2
-          fi
+          echo "HTTP: $RESPONSE"
+          cat /tmp/response.txt
 
+  # ── Every 5 min position monitor (the engine heart) ────────────────────────
   position-monitor:
-    name: Position Monitor (every 15 min)
+    name: Position Monitor (5 min)
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'monitor' || (github.event.schedule != '15 13 * * 1-5' && github.event.schedule != '0 16 * * 1-5' && github.event.schedule != '35 13 * * 1-5' && github.event.schedule != '30 19 * * 1-5')
+    if: |
+      (github.event.schedule != '15 13 * * 1-5' &&
+       github.event.schedule != '0 16 * * 1-5' &&
+       github.event.schedule != '35 13 * * 1-5' &&
+       github.event.schedule != '30 19 * * 1-5') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'monitor')
     steps:
-      - name: Monitor Positions
+      - name: Monitor + Trailing Stop + Partial Exits
         run: |
-          echo "Monitoring positions..."
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
+          RESPONSE=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "${{ secrets.APP_URL }}/api/cron/monitor")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | head -1)
-          echo "HTTP: $HTTP_CODE | $BODY"
+          echo "HTTP: $RESPONSE"
+          cat /tmp/response.txt
 
+  # ── Swing exit checks (morning target review + pre-close time-stop) ─────────
   swing-exit:
-    name: Swing Exit Check (9:35 AM + 3:30 PM ET)
+    name: Swing Exit Check
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'close' || github.event.schedule == '35 13 * * 1-5' || github.event.schedule == '30 19 * * 1-5'
+    if: |
+      github.event.schedule == '35 13 * * 1-5' ||
+      github.event.schedule == '30 19 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'close')
     steps:
-      - name: Run Swing Exit
+      - name: Morning or Pre-Close Swing Exit
         run: |
-          echo "Running swing exit check..."
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
+          RESPONSE=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "${{ secrets.APP_URL }}/api/cron/close")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | head -1)
-          echo "HTTP: $HTTP_CODE | $BODY"
+          echo "HTTP: $RESPONSE"
+          cat /tmp/response.txt

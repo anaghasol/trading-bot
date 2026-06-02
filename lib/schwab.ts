@@ -285,6 +285,112 @@ export async function placeOrder(
   }
 }
 
+/**
+ * Place BUY + immediately attach a GTC trailing-stop at Schwab level.
+ * This fires INSTANTLY at the exchange — no 15-min cron gap for stops.
+ *
+ * Schwab TRAILING_STOP: trails 5% below highest price since order placed.
+ * GTC = stays active until cancelled or filled.
+ */
+export async function placeBuyWithProtection(
+  symbol: string,
+  quantity: number,
+  trailPct = 5.0
+): Promise<{ buy: OrderResult; stop_order_id: string | null }> {
+  const buy = await placeOrder(symbol, quantity, 'BUY', 'MARKET')
+
+  if (buy.status !== 'PLACED') {
+    return { buy, stop_order_id: null }
+  }
+
+  // Give Schwab 1s to process the fill
+  await new Promise((r) => setTimeout(r, 1000))
+
+  const hash = await getAccountHash()
+  if (!hash) return { buy, stop_order_id: null }
+
+  const stopPayload = {
+    orderType:           'TRAILING_STOP',
+    session:             'NORMAL',
+    duration:            'GOOD_TILL_CANCEL',
+    stopPriceLinkBasis:  'LAST',
+    stopPriceLinkType:   'PERCENT',
+    stopPriceOffset:     trailPct,
+    orderStrategyType:   'SINGLE',
+    orderLegCollection:  [{
+      instruction: 'SELL',
+      quantity,
+      instrument:  { symbol, assetType: 'EQUITY' },
+    }],
+  }
+
+  const stopResult = await apiPost<{ orderId?: string }>(
+    `${API_BASE}/accounts/${hash}/orders`,
+    stopPayload
+  )
+
+  const stop_order_id = stopResult?.orderId ? String(stopResult.orderId) : null
+  console.log(`[schwab] Trailing stop placed for ${symbol}: order ${stop_order_id}`)
+
+  return { buy, stop_order_id }
+}
+
+/**
+ * Cancel an open order by order ID.
+ * Used when we want to replace a trailing stop after a partial exit.
+ */
+export async function cancelOrder(order_id: string): Promise<boolean> {
+  const hash = await getAccountHash()
+  if (!hash) return false
+
+  const token = await getAccessToken()
+  if (!token) return false
+
+  const res = await fetch(`${API_BASE}/accounts/${hash}/orders/${order_id}`, {
+    method:  'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+
+  return res.ok
+}
+
+/**
+ * Get all open/working orders for the account.
+ * Used to check if a trailing stop is still active.
+ */
+export async function getOpenOrders(): Promise<SchwabOrder[]> {
+  const hash = await getAccountHash()
+  if (!hash) return []
+
+  const from = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const to   = new Date().toISOString()
+
+  const data = await apiGet<unknown[]>(
+    `${API_BASE}/accounts/${hash}/orders?fromEnteredTime=${from}&toEnteredTime=${to}&status=WORKING`
+  )
+  if (!data || !Array.isArray(data)) return []
+
+  return (data as Record<string, unknown>[]).flatMap((o) => {
+    const legs = (o.orderLegCollection as Record<string, unknown>[]) ?? []
+    return legs.map((leg) => {
+      const inst = leg.instrument as Record<string, unknown>
+      return {
+        order_id:        String(o.orderId ?? ''),
+        symbol:          String(inst?.symbol ?? ''),
+        asset_type:      String(inst?.assetType ?? 'EQUITY'),
+        instruction:     (leg.instruction as 'BUY' | 'SELL') ?? 'SELL',
+        quantity:        Number(o.quantity ?? 0),
+        filled_quantity: Number(o.filledQuantity ?? 0),
+        price:           Number(o.price ?? 0),
+        status:          String(o.status ?? ''),
+        entered_time:    String(o.enteredTime ?? ''),
+        close_time:      null,
+        order_type:      String(o.orderType ?? ''),
+      }
+    })
+  }).filter((o) => o.symbol)
+}
+
 // ── Market Data ───────────────────────────────────────────────────────────────
 
 export async function getQuote(symbol: string): Promise<Quote | null> {
