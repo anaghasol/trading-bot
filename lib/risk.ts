@@ -1,26 +1,30 @@
 /**
- * Core risk engine — Robinhood-style trailing stop + position sizing.
+ * Core risk engine — trailing stop + position sizing.
  *
- * Rules:
- * - Position size: risk 1.2% of equity per trade
+ * Rules (reconciled so code == docs):
+ * - Position size: risk 1.5% of equity per trade (baseline; sleeves.ts scales per horizon)
  * - Initial stop: 2.5% below entry (tight, protect capital)
  * - Trailing stop: 5% from peak (locks in profits as price rises)
  * - Partial exit: sell 50% at 2:1 reward (5% gain), let rest ride
  * - Max hold: 5 trading days
- * - Daily loss limit: -4% of account stops all trading
+ * - Daily loss limit: -5% of account stops all trading ("a little aggressive")
+ *
+ * NOTE: per-trade sizing for the live engine now flows through lib/sleeves.ts
+ * (budget × sleeve risk). calculatePositionSize() remains the baseline/fallback
+ * and the single place RISK_PCT is defined.
  */
 
 import type { Position } from './schwab'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-export const RISK_PCT         = 0.012   // 1.2% equity per trade
+export const RISK_PCT         = 0.015   // 1.5% equity per trade (baseline)
 export const INITIAL_STOP_PCT = 0.025   // 2.5% below entry
 export const TRAIL_PCT        = 0.05    // 5% trailing from peak
 export const PARTIAL_EXIT_RR  = 2.0     // Take partial at 2:1 reward:risk = 5%
 export const MAX_POSITIONS    = 3
 export const MAX_HOLD_DAYS    = 5
-export const DAILY_LOSS_PCT   = 0.04    // -4% daily hard stop
+export const DAILY_LOSS_PCT   = 0.05    // -5% daily hard stop (code == docs)
 
 // ── Position Sizing ───────────────────────────────────────────────────────────
 

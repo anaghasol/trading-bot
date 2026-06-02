@@ -1,15 +1,26 @@
 /**
- * CRON: /api/cron/scan — runs BOTH Schwab and Alpaca concurrently.
- * Each broker checked independently; both can be stopped via /api/engine.
+ * CRON: /api/cron/scan — the continuous-trading entry loop.
+ * Runs BOTH Schwab (real, protected) and Alpaca (paper, aggressive lab) concurrently.
+ *
+ * UPGRADE (this build): the scanner is now profile + sleeve + rotation aware.
+ *   1. profileFor(broker)   → per-broker risk personality (protected vs lab)
+ *   2. getCategoryMomentum()→ rank themes; skip COLD, boost HOT (daily rotation)
+ *   3. getSleeveAllocation()→ each entry is sized against its time-horizon sleeve
+ *
+ * Each AI pick is routed:  setup → sleeve → (budget × risk × category-bias) → qty.
+ * All Supabase contracts (tb_trades / tb_alerts / tb_cron_log, broker-column
+ * fallback) are unchanged — this is additive sizing/selection logic only.
  */
 import { NextResponse } from 'next/server'
 import * as SchwabBroker from '@/lib/schwab'
 import * as AlpacaBroker from '@/lib/alpaca'
 import { getRecommendations } from '@/lib/ai-advisor'
-import { analyzePdtStatus, SWING_CONFIG } from '@/lib/pdt'
-import { calculatePositionSize, isMarketOpen, isDailyLossExceeded } from '@/lib/risk'
-import { ALL_SYMBOLS, ALL_ALPACA_SYMBOLS } from '@/lib/market-data'
+import { analyzePdtStatus } from '@/lib/pdt'
+import { isMarketOpen, isDailyLossExceeded } from '@/lib/risk'
 import { createServiceClient } from '@/lib/supabase-server'
+import { profileFor } from '@/lib/strategy-profiles'
+import { getCategoryMomentum, biasForSymbol, categoryLabel, type RotationResult } from '@/lib/category-rotation'
+import { getSleeveAllocation, sleeveForSetup, sleeveSizing } from '@/lib/sleeves'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -32,11 +43,12 @@ async function getEngineStatus(db: ReturnType<typeof createServiceClient>) {
 async function runScan(
   broker: 'schwab' | 'alpaca_paper',
   db: ReturnType<typeof createServiceClient>,
-  scanSymbolOverride?: string[]
+  rotation: RotationResult,
 ): Promise<{ trades_made: number; message: string }> {
 
   const isSchwab = broker === 'schwab'
-  const api = isSchwab ? SchwabBroker : AlpacaBroker
+  const api      = isSchwab ? SchwabBroker : AlpacaBroker
+  const profile  = profileFor(broker)
 
   const [positions, balance, orders] = await Promise.all([
     api.getPositions(),
@@ -51,53 +63,55 @@ async function runScan(
     .from('tb_account').select('daily_pnl').order('id', { ascending: false }).limit(1).single()
   const dailyPnl = acctRow?.daily_pnl ?? 0
 
-  if (!isSchwab) {
-    // Alpaca paper: no PDT restriction, bigger risk tolerance
-  } else if (isDailyLossExceeded(dailyPnl, equity)) {
-    return { trades_made: 0, message: `[${broker}] Daily loss limit hit` }
+  // Daily-loss breaker: enforced on real money (Schwab); paper lab runs looser.
+  if (isSchwab && isDailyLossExceeded(dailyPnl, equity)) {
+    return { trades_made: 0, message: `[${broker}] Daily loss limit hit (−5%)` }
   }
 
-  if (positions.length >= SWING_CONFIG.max_positions) {
-    return { trades_made: 0, message: `[${broker}] Full: ${positions.length}/${SWING_CONFIG.max_positions}` }
+  if (positions.length >= profile.max_positions) {
+    return { trades_made: 0, message: `[${broker}] Full: ${positions.length}/${profile.max_positions}` }
   }
 
   const heldSymbols = positions.map((p) => p.symbol)
+  const alloc       = await getSleeveAllocation(db)
 
-  // Alpaca paper gets larger watchlist for more opportunities
-  const { recommendations, regime, position_size_pct, scanned, candidates } =
+  const { recommendations, regime, scanned, candidates } =
     await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining)
 
+  // Rotation overlay: drop picks in COLD themes (bias 0), then rank by
+  // confidence × category bias so hot themes win the open slots.
+  const ranked = recommendations
+    .filter((r) => !heldSymbols.includes(r.symbol))
+    .map((r) => ({ rec: r, bias: biasForSymbol(r.symbol, rotation) }))
+    .filter((x) => x.bias > 0)
+    .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
+
   let tradesMade = 0
-  const openSlots = SWING_CONFIG.max_positions - positions.length
+  const openSlots = profile.max_positions - positions.length
 
-  for (const rec of recommendations.slice(0, openSlots)) {
-    if (heldSymbols.includes(rec.symbol)) continue
-
+  for (const { rec, bias } of ranked.slice(0, openSlots)) {
     const quote = isSchwab
       ? await SchwabBroker.getQuote(rec.symbol)
       : await AlpacaBroker.getQuote(rec.symbol)
-
     if (!quote || quote.price <= 0) continue
 
-    // Risk-based sizing: Alpaca paper uses more aggressive 2% risk since it's fake money
-    const riskPct = isSchwab ? 0.012 : 0.020
-    const sizing  = calculatePositionSize(equity, quote.price, 0.025)
-    // Override qty for Alpaca (more aggressive)
-    if (!isSchwab) {
-      const aggressiveDollars = equity * riskPct / (quote.price * 0.025)
-      sizing.qty = Math.max(1, Math.floor(aggressiveDollars))
-    }
-
-    if (sizing.qty === 0) continue
+    // Route the pick to its sleeve and size against that horizon's budget.
+    const sleeve = sleeveForSetup(rec.setup)
+    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias)
+    if (sizing.qty < 1) continue
 
     const { buy, stop_order_id } = isSchwab
-      ? await SchwabBroker.placeBuyWithProtection(rec.symbol, sizing.qty, 5.0)
-      : await AlpacaBroker.placeBuyWithProtection(rec.symbol, sizing.qty, 5.0)
+      ? await SchwabBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
+      : await AlpacaBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
 
     if (buy.status === 'PLACED') {
       tradesMade++
 
-      const riskNote = ` | stop=$${sizing.initial_stop.toFixed(2)} target=$${sizing.target_price.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}`
+      const initialStop = quote.price * (1 - sizing.stop_pct)
+      const target      = quote.price * (1 + sizing.stop_pct * 2)
+      const cat         = categoryLabel(rec.symbol)
+      const riskNote = ` | sleeve=${sleeve} cat=${cat} stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}`
+
       const tradeRow: Record<string, unknown> = {
         symbol: rec.symbol, action: 'BUY', quantity: sizing.qty,
         entry_price: quote.price, status: 'OPEN',
@@ -110,10 +124,9 @@ async function runScan(
       const { error } = await db.from('tb_trades').insert({ ...tradeRow, broker })
       if (error?.code === 'PGRST204') await db.from('tb_trades').insert(tradeRow)
 
-      // Insert alert with broker tag
       const alertRow = {
         type: 'BUY',
-        message: `[${broker.toUpperCase()}] BUY ${sizing.qty} ${rec.symbol} @ $${quote.price.toFixed(2)} | ${rec.reason} (${rec.confidence}%)`,
+        message: `[${broker.toUpperCase()}] BUY ${sizing.qty} ${rec.symbol} @ $${quote.price.toFixed(2)} · ${sleeve}/${cat} · ${rec.reason} (${rec.confidence}%)`,
         symbol: rec.symbol,
       }
       const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
@@ -121,9 +134,10 @@ async function runScan(
     }
   }
 
+  const hot = rotation.hottest ? ` Hot:${rotation.hottest}` : ''
   return {
     trades_made: tradesMade,
-    message: `[${broker}] Regime:${regime.regime} PDT:${pdt.day_trades_used}/3 Scanned:${scanned} Candidates:${candidates} Trades:${tradesMade}`,
+    message: `[${broker}] Regime:${regime.regime}${hot} PDT:${pdt.day_trades_used}/3 Scanned:${scanned} Candidates:${candidates} Ranked:${ranked.length} Trades:${tradesMade}`,
   }
 }
 
@@ -136,14 +150,15 @@ export async function GET(req: Request) {
   const db = createServiceClient()
   const engines = await getEngineStatus(db)
 
-  const results: Record<string, unknown> = {}
+  // Rank themes once per tick and share across both brokers.
+  const rotation = await getCategoryMomentum()
 
-  // Run both concurrently
+  const results: Record<string, unknown> = {}
   const tasks: Promise<void>[] = []
 
   if (engines.schwab === 'running') {
     tasks.push(
-      runScan('schwab', db).then((r) => {
+      runScan('schwab', db, rotation).then((r) => {
         results.schwab = r
         return db.from('tb_cron_log').insert({ job: 'scan', status: 'success', trades_made: r.trades_made, message: r.message }).then(() => {})
       }).catch((e) => { results.schwab = { error: e.message } })
@@ -154,7 +169,7 @@ export async function GET(req: Request) {
 
   if (engines.alpaca_paper === 'running') {
     tasks.push(
-      runScan('alpaca_paper', db).then((r) => {
+      runScan('alpaca_paper', db, rotation).then((r) => {
         results.alpaca_paper = r
         return db.from('tb_cron_log').insert({ job: 'scan', status: 'success', trades_made: r.trades_made, message: r.message }).then(() => {})
       }).catch((e) => { results.alpaca_paper = { error: e.message } })
@@ -165,5 +180,10 @@ export async function GET(req: Request) {
 
   await Promise.allSettled(tasks)
 
-  return NextResponse.json({ status: 'ok', engines, results })
+  return NextResponse.json({
+    status: 'ok',
+    engines,
+    rotation: rotation.categories.map((c) => ({ key: c.key, rank: c.rank, temp: c.temp, score: c.score, bias: c.bias })),
+    results,
+  })
 }

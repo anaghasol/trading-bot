@@ -536,3 +536,65 @@ export async function getTransactions(daysBack = 30): Promise<SchwabTransaction[
     }
   }).filter((t) => t.symbol)
 }
+
+// ── Account Summary + Funding Events (from schwab-additions.ts) ───────────────
+
+export interface AccountSummary {
+  account_value: number
+  cash: number
+  stock_buying_power: number
+  option_buying_power: number
+  day_trade_buying_power: number
+  long_market_value: number
+  equity: number
+}
+
+export async function getAccountSummary(): Promise<AccountSummary | null> {
+  const hash = await getAccountHash()
+  if (!hash) return null
+
+  const data = await apiGet<Record<string, unknown>>(
+    `${API_BASE}/accounts/${hash}?fields=positions`
+  )
+  if (!data) return null
+
+  const sa   = (data.securitiesAccount as Record<string, unknown>) ?? {}
+  const cur  = (sa.currentBalances   as Record<string, number>) ?? {}
+  const proj = (sa.projectedBalances as Record<string, number>) ?? {}
+
+  return {
+    account_value:          cur.liquidationValue ?? cur.equity ?? 0,
+    cash:                   cur.cashBalance ?? cur.cashAvailableForTrading ?? cur.totalCash ?? 0,
+    stock_buying_power:     proj.buyingPower ?? cur.buyingPower ?? cur.cashAvailableForTrading ?? 0,
+    option_buying_power:    cur.buyingPowerNonMarginableTrade ?? cur.buyingPower ?? 0,
+    day_trade_buying_power: cur.dayTradingBuyingPower ?? 0,
+    long_market_value:      cur.longMarketValue ?? 0,
+    equity:                 cur.equity ?? cur.liquidationValue ?? 0,
+  }
+}
+
+const FUNDING_TYPES = ['ACH_RECEIPT', 'CASH_RECEIPT', 'ELECTRONIC_FUND', 'WIRE_IN', 'JOURNAL', 'RECEIVE_AND_DELIVER']
+
+export interface FundingEvent { date: string; type: string; amount: number; description: string }
+
+export async function getFundingEvents(daysBack = 120): Promise<FundingEvent[]> {
+  const hash = await getAccountHash()
+  if (!hash) return []
+
+  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  const to   = new Date().toISOString().split('T')[0]
+
+  const data = await apiGet<unknown[]>(
+    `${API_BASE}/accounts/${hash}/transactions?startDate=${from}&endDate=${to}`
+  )
+  if (!data || !Array.isArray(data)) return []
+
+  return (data as Record<string, unknown>[])
+    .map((t) => ({
+      date:        String(t.tradeDate ?? t.time ?? t.settleDate ?? ''),
+      type:        String(t.type ?? ''),
+      amount:      Number(t.netAmount ?? 0),
+      description: String(t.description ?? ''),
+    }))
+    .filter((t) => FUNDING_TYPES.includes(t.type) && Math.abs(t.amount) > 0)
+}

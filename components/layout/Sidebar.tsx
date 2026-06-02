@@ -2,13 +2,16 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, History, Settings, TrendingUp, LogOut } from 'lucide-react'
+import { LayoutDashboard, TrendingUp, Layers, History, Brain, Settings, LogOut } from 'lucide-react'
 import { createClient } from '@/lib/supabase-client'
 
 const nav = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { href: '/trades',    icon: History,          label: 'Trade History' },
-  { href: '/settings',  icon: Settings,         label: 'Settings' },
+  { href: '/growth',    icon: TrendingUp,      label: 'Growth' },
+  { href: '/sleeves',   icon: Layers,          label: 'Sleeves' },
+  { href: '/trades',    icon: History,         label: 'Trade History' },
+  { href: '/learning',  icon: Brain,           label: 'Learning' },
+  { href: '/settings',  icon: Settings,        label: 'Settings' },
 ]
 
 export default function Sidebar() {
@@ -21,16 +24,16 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="w-56 shrink-0 flex flex-col bg-[#0d1117] border-r border-[#21262d] h-screen sticky top-0">
-      {/* Logo */}
-      <div className="px-5 py-5 border-b border-[#21262d]">
+    <aside className="w-56 shrink-0 flex flex-col bg-[#0b0f17] border-r border-[#1f2737] h-screen sticky top-0">
+      {/* Brand */}
+      <div className="px-5 py-5 border-b border-[#1f2737]">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-accent/20 border border-accent/30 flex items-center justify-center">
-            <TrendingUp className="w-4 h-4 text-accent" />
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'var(--green-dim)', border: '1px solid rgba(16,185,129,0.3)' }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></svg>
           </div>
           <div>
-            <div className="text-white font-semibold text-sm leading-none">TradeBot</div>
-            <div className="text-[#484f58] text-[10px] mt-0.5">Schwab AI</div>
+            <div className="text-white font-semibold text-[15px] leading-none">MyTrade</div>
+            <div className="text-[#5b6472] text-[10px] mt-1 tracking-wide uppercase">Autonomous · AI</div>
           </div>
         </div>
       </div>
@@ -44,10 +47,9 @@ export default function Sidebar() {
               key={href}
               href={href}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
-                active
-                  ? 'bg-accent/10 text-accent border border-accent/20'
-                  : 'text-[#848d97] hover:text-white hover:bg-[#161b22]'
+                active ? 'text-[#10b981]' : 'text-[#848d97] hover:text-white hover:bg-[#141a26]'
               }`}
+              style={active ? { background: 'var(--green-faint)', border: '1px solid rgba(16,185,129,0.2)' } : undefined}
             >
               <Icon className="w-4 h-4 shrink-0" />
               {label}
@@ -56,11 +58,26 @@ export default function Sidebar() {
         })}
       </nav>
 
+      {/* Status footer */}
+      <div className="px-3 pb-3">
+        <div className="rounded-lg px-3 py-2.5 mb-2" style={{ background: 'var(--bg-2)', border: '1px solid var(--border)' }}>
+          <div className="flex items-center gap-2 mb-1.5">
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981', display: 'inline-block', animation: 'pulse 1.4s infinite' }} />
+            <span className="text-[11px] text-[#9ca3af] font-medium">Engines live</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="chip down" style={{ fontSize: '0.62rem', padding: '2px 7px' }}>SCHWAB</span>
+            <span className="chip blue" style={{ fontSize: '0.62rem', padding: '2px 7px' }}>PAPER</span>
+          </div>
+        </div>
+      </div>
+
       {/* Sign out */}
-      <div className="px-3 pb-5 border-t border-[#21262d] pt-4">
+      <div className="px-3 pb-5 border-t border-[#1f2737] pt-3">
         <button
           onClick={signOut}
-          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-[#848d97] hover:text-loss hover:bg-loss/10 w-full transition-colors"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-[#848d97] hover:text-[#ef4444] w-full transition-colors"
+          style={{ background: 'transparent' }}
         >
           <LogOut className="w-4 h-4 shrink-0" />
           Sign out
