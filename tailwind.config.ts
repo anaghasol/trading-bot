@@ -9,26 +9,30 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['IBM Plex Sans', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
-        mono: ['IBM Plex Mono', 'Monaco', 'Courier New', 'monospace'],
+        // Exact fonts from MyTrade Live.html design file
+        sans: ['IBM Plex Sans', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        mono: ['IBM Plex Mono', 'Menlo', 'Consolas', 'monospace'],
       },
       colors: {
-        bg: {
-          0: '#0b0f17',
-          1: '#0f1419',
-          2: '#1a1f2e',
-          3: '#1e293b',
-          inset: '#0f172a',
-        },
-        border: { DEFAULT: '#374151', soft: '#334155' },
-        fg: { 1: '#e5e7eb', 2: '#9ca3af', 3: '#6b7280' },
-        green: { DEFAULT: '#10b981' },
-        red:   { DEFAULT: '#ef4444' },
-        blue:  { DEFAULT: '#3b82f6' },
-        amber: { DEFAULT: '#f59e0b' },
+        // Exact palette from MyTrade Live.html
+        bg: { 0: '#0b0f17', 1: '#0f1419', 2: '#161b27', 3: '#1e2435', inset: '#0d1320' },
+        border: { DEFAULT: '#2a3346', soft: '#39435a' },
+        fg: { 1: '#e8edf5', 2: '#9aa6b8', 3: '#646f82' },
+        green:  { DEFAULT: '#13c98e' },
+        red:    { DEFAULT: '#f0556a' },
+        blue:   { DEFAULT: '#4d8dff' },
+        amber:  { DEFAULT: '#f5a623' },
+        violet: { DEFAULT: '#a78bfa' },
       },
       borderRadius: {
-        sm: '4px', md: '6px', lg: '8px', xl: '12px', pill: '20px',
+        sm: '4px', md: '7px', lg: '11px', xl: '14px', pill: '999px',
+      },
+      fontSize: {
+        '2xs': '10px',
+        xs:    '11px',
+        sm:    '12px',
+        base:  '13px',
+        md:    '13.5px',
       },
     },
   },
