@@ -1,17 +1,20 @@
 /**
- * Claude-powered AI advisor — SWING TRADING MODE.
+ * AI advisor — mechanical EMA scanner → Claude validation.
  *
- * Under $25K PDT rule: we hold overnight (1-5 days), NOT day-trade.
- * Goal: $100-200/day profit compounding toward $25K.
- * Strategy: momentum breakouts + oversold reversals with 1-5 day holds.
+ * Old flow: Claude scans all symbols → often returns nothing (conservative)
+ * New flow: mechanical 20/50 EMA pullback scanner filters first → Claude only
+ *           validates the 3-6 best setups → generates signals every day.
+ *
+ * VIX < 25 + SPY above 200 SMA = market filter (skip cold markets entirely).
  */
 import Anthropic from '@anthropic-ai/sdk'
 import {
-  getMarketData, getMarketRegime, getSector, ALL_SYMBOLS,
-  type MarketData, type MarketRegime,
+  scanForEMAPullback, getMarketRegime, getSector,
+  ALL_SYMBOLS, ALL_ALPACA_SYMBOLS,
+  type EMASetup, type MarketRegime,
 } from './market-data'
 import { buildLearningContext } from './learning'
-import { SWING_CONFIG } from './pdt'
+import { profileFor } from './strategy-profiles'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
@@ -22,7 +25,7 @@ export interface Recommendation {
   setup: string
   reason: string
   target_pct: number
-  hold_days: number      // expected hold in trading days
+  hold_days: number
   stop_pct: number
   sector: string
 }
@@ -36,123 +39,56 @@ export interface AdvisorResult {
   learning_context: string
 }
 
-// ── Candidate Scoring ─────────────────────────────────────────────────────────
+// ── Claude validation — only called on pre-filtered mechanical setups ──────────
 
-interface Candidate {
-  symbol: string
-  score: number
-  setup: string
-  data: MarketData
-  reasons: string[]
-}
-
-function scoreCandidates(marketData: MarketData[]): Candidate[] {
-  const candidates: Candidate[] = []
-
-  for (const d of marketData) {
-    const { rsi, volume_ratio, change_1d, change_5d } = d
-    let score = 0
-    let setup = 'TREND'
-    const reasons: string[] = []
-
-    if (rsi > 85 && volume_ratio < 1.5) continue
-    if (rsi < 18) continue
-
-    // MOMENTUM BREAKOUT: RSI powering up + volume + day move
-    if (rsi >= 60 && volume_ratio >= 1.5 && change_1d > 1.0) {
-      score += 5
-      setup = 'MOMENTUM_BREAKOUT'
-      reasons.push(`RSI ${rsi.toFixed(0)} breakout, ${volume_ratio.toFixed(1)}x vol, +${change_1d.toFixed(1)}% day`)
-    }
-    // OVERSOLD REVERSAL: beaten down with volume returning (swing bounce)
-    else if (rsi <= 35 && volume_ratio >= 1.5 && change_1d < -1.5) {
-      score += 4
-      setup = 'REVERSAL'
-      reasons.push(`Oversold RSI ${rsi.toFixed(0)}, ${volume_ratio.toFixed(1)}x vol, reversal candidate`)
-    }
-    // STEADY UPTREND: not overbought, consistent grind
-    else if (rsi >= 45 && rsi <= 65 && change_5d >= 3.0) {
-      score += 3
-      setup = 'TREND'
-      reasons.push(`Steady trend RSI ${rsi.toFixed(0)}, +${change_5d.toFixed(1)}% 5d`)
-      if (volume_ratio >= 1.3) { score += 1; reasons.push(`${volume_ratio.toFixed(1)}x vol`) }
-    }
-
-    // Day momentum bonus
-    if (change_1d >= 2.0) { score += 1; reasons.push(`+${change_1d.toFixed(1)}% today`) }
-    if (change_5d >= 8.0) { score += 2; reasons.push(`+${change_5d.toFixed(1)}% 5d rally`) }
-
-    // BUY-side only
-    if (change_1d < -3.0 && setup !== 'REVERSAL') continue
-
-    if (score >= 3) {
-      candidates.push({ symbol: d.symbol, score, setup, data: d, reasons })
-    }
-  }
-
-  return candidates.sort((a, b) => b.score - a.score).slice(0, 6)
-}
-
-function filterBySector(candidates: Candidate[], heldSymbols: string[]): Candidate[] {
-  const heldSectors = new Set(heldSymbols.map(getSector))
-  const usedSectors = new Set(heldSectors)
-  return candidates.filter((c) => {
-    const sector = getSector(c.symbol)
-    if (usedSectors.has(sector)) return false
-    usedSectors.add(sector)
-    return true
-  })
-}
-
-// ── Claude Prompt ─────────────────────────────────────────────────────────────
-
-async function getClaudePicks(
-  candidates: Candidate[],
+async function claudeValidate(
+  setups: EMASetup[],
   regime: MarketRegime,
-  balance: number,
-  heldSymbols: string[],
-  learningContext: string,
-  pdtSlotsLeft: number
+  equity: number,
+  held: string[],
+  learning: string,
+  minConf: number,
+  broker: string
 ): Promise<Recommendation[]> {
 
-  const prompt = `You are a swing trader managing a $${balance.toFixed(0)} account under the PDT rule (under $25K).
+  const profile = profileFor(broker)
 
-CRITICAL CONSTRAINTS:
-- SWING TRADE ONLY: Hold 1-5 days. Do NOT day-trade (we hold overnight).
-- PDT day-trade slots remaining today: ${pdtSlotsLeft}/3 (reserve for emergencies)
-- Goal: $100-200 profit daily compounding toward $25K
-- Currently holding: ${heldSymbols.join(', ') || 'nothing'}
-- Max 3 positions total
+  const prompt = `You are a professional swing trader. Pre-screened mechanical setups are below.
+Your job: validate each with market context and assign confidence.
 
-MARKET REGIME: ${regime.regime} — ${regime.label}
+ACCOUNT: $${equity.toFixed(0)} | BROKER: ${broker} | MIN CONFIDENCE TO TRADE: ${minConf}%
+MARKET: ${regime.label} (SPY ${regime.spy_above_200sma ? 'above' : 'BELOW'} 200 SMA, VIX ${regime.vix.toFixed(0)})
+HELD SYMBOLS: ${held.join(', ') || 'none — all slots open'}
 
-RECENT PERFORMANCE CONTEXT:
-${learningContext}
+RECENT PERFORMANCE:
+${learning}
 
-TECHNICAL SETUPS (candidates for 1-5 day holds):
-${JSON.stringify(candidates.map((c) => ({
-  symbol: c.symbol,
-  setup: c.setup,
-  price: c.data.price,
-  rsi: c.data.rsi,
-  volume_ratio: c.data.volume_ratio,
-  change_1d: c.data.change_1d,
-  change_5d: c.data.change_5d,
-  reason: c.reasons.join('; '),
+MECHANICAL SETUPS (pre-filtered, all pass 20/50 EMA uptrend + pullback rules):
+${JSON.stringify(setups.map((s) => ({
+  symbol:          s.symbol,
+  setup_type:      s.setup_type,
+  price:           s.price,
+  ema20:           s.ema20,
+  ema50:           s.ema50,
+  dist_from_ema20: `${s.dist_from_ema20_pct.toFixed(1)}%`,
+  rsi:             s.rsi,
+  volume_ratio:    `${s.volume_ratio.toFixed(1)}x`,
+  change_1d:       `${s.change_1d.toFixed(1)}%`,
+  change_5d:       `${s.change_5d.toFixed(1)}%`,
+  pullback_score:  `${s.pullback_score}/10`,
+  reason:          s.reason,
 })), null, 2)}
 
-RULES FOR SWING TRADE PICKS:
-1. Only pick if 75%+ confident in a 1-5 day hold thesis
-2. Momentum breakouts: best for 2-3 day holds after volume surge
-3. Reversals: best for 1-2 day bounces off support
-4. Target +8-15% over the hold period
-5. Stop at -5% (held overnight, not same-day)
-6. Prefer stocks with clear catalysts or sector momentum
-7. In RISK_OFF: return empty array
-8. In CAUTION: only 1 pick max, highest confidence only
+RULES:
+- Only return setups you'd actually trade. These already pass mechanical filters.
+- ${profile.vibe === 'aggressive' ? 'Aggressive lab: take more setups, lower bar, no PDT limit' : 'Protected real account: only high-conviction, PDT-safe swing holds (1-5 days)'}
+- Target: +${profile.vibe === 'aggressive' ? '8-20' : '5-15'}% over ${profile.max_hold_days} days
+- Stop: ${(profile.initial_stop_pct * 100).toFixed(0)}% below entry
+- Do NOT return symbols in held list
+- In RISK_OFF: return []
 
-Return ONLY valid JSON array (no markdown, no explanation):
-[{"symbol":"NVDA","action":"BUY","confidence":83,"setup":"MOMENTUM_BREAKOUT","reason":"breaking above 200MA on 2x volume, sector rotation into semis","target_pct":12,"hold_days":3,"stop_pct":-5}]`
+Return ONLY valid JSON array (no markdown):
+[{"symbol":"NVDA","action":"BUY","confidence":84,"setup":"EMA20_BOUNCE","reason":"perfect pullback to 20 EMA, volume surge, RSI 61 ideal","target_pct":10,"hold_days":3,"stop_pct":-2.5}]`
 
   try {
     const msg = await client.messages.create({
@@ -162,92 +98,80 @@ Return ONLY valid JSON array (no markdown, no explanation):
     })
 
     let text = (msg.content[0] as { type: string; text: string }).text.trim()
-    if (text.includes('```')) {
-      text = text.split('```')[1].replace(/^json/, '').trim()
-    }
-    if (!text.startsWith('[')) {
-      const match = text.match(/\[[\s\S]*\]/)
-      if (match) text = match[0]
-      else return []
-    }
+    if (text.includes('```')) text = text.split('```')[1].replace(/^json/, '').trim()
+    if (!text.startsWith('[')) { const m = text.match(/\[[\s\S]*\]/); text = m ? m[0] : '[]' }
 
     const picks: Recommendation[] = JSON.parse(text)
     return picks
-      .filter((p) => p.confidence >= 75 && !heldSymbols.includes(p.symbol))
-      .map((p) => ({
-        ...p,
-        sector: getSector(p.symbol),
-        hold_days: p.hold_days ?? 2,
-        stop_pct: p.stop_pct ?? SWING_CONFIG.stop_loss_pct,
-      }))
+      .filter((p) => p.confidence >= minConf && !held.includes(p.symbol))
+      .map((p) => ({ ...p, sector: getSector(p.symbol) }))
   } catch (err) {
-    console.error('[ai-advisor] Claude failed:', err)
+    console.error('[ai-advisor] Claude error:', err)
     return []
   }
 }
 
-// ── Main Entry Point ──────────────────────────────────────────────────────────
+// ── Main entry point ──────────────────────────────────────────────────────────
 
 export async function getRecommendations(
-  balance: number,
+  equity: number,
   heldSymbols: string[] = [],
-  pdtSlotsLeft = 3
+  pdtSlotsLeft = 3,
+  broker = 'schwab'
 ): Promise<AdvisorResult> {
 
-  const [regime, learningCtx] = await Promise.all([
-    getMarketRegime(),
-    buildLearningContext(),
-  ])
+  const profile = profileFor(broker)
+  const symbols = broker === 'alpaca_paper' ? ALL_ALPACA_SYMBOLS : ALL_SYMBOLS.filter((s) => !['SPY', 'QQQ'].includes(s))
+
+  // Step 1: Market regime check (free)
+  const regime = await getMarketRegime()
 
   if (regime.regime === 'RISK_OFF') {
+    return { recommendations: [], regime, position_size_pct: 0, scanned: 0, candidates: 0, learning_context: 'RISK_OFF — no trades' }
+  }
+
+  // Step 2: Mechanical EMA pullback scan (free, no AI cost)
+  // Fetches 1-year data per symbol for accurate 200 SMA + 50/20 EMA
+  const allSetups = await scanForEMAPullback(symbols)
+  const setups    = allSetups
+    .filter((s) => !heldSymbols.includes(s.symbol))  // skip already held
+    .slice(0, 6)  // top 6 mechanical setups → feed to Claude
+
+  if (setups.length === 0) {
     return {
       recommendations: [],
       regime,
-      position_size_pct: 0,
-      scanned: 0,
+      position_size_pct: profile.risk_pct,
+      scanned: symbols.length,
       candidates: 0,
-      learning_context: learningCtx.summary,
+      learning_context: 'No EMA pullback setups found today',
     }
   }
 
-  // In CAUTION, reduce position size
-  const position_size_pct = regime.regime === 'CAUTION'
-    ? SWING_CONFIG.position_size_pct * 0.6
-    : SWING_CONFIG.position_size_pct
+  // Step 3: Learning context (free, Supabase read)
+  let learning = 'No history yet — using defaults'
+  try {
+    const ctx = await buildLearningContext()
+    learning = ctx.summary
+  } catch { /* ignore */ }
 
-  const marketData = await getMarketData(
-    ALL_SYMBOLS.filter((s) => !['SPY', 'QQQ'].includes(s))
-  )
-
-  const rawCandidates = scoreCandidates(marketData)
-  const candidates    = filterBySector(rawCandidates, heldSymbols)
-
-  if (candidates.length === 0) {
-    return {
-      recommendations: [],
-      regime,
-      position_size_pct,
-      scanned: marketData.length,
-      candidates: 0,
-      learning_context: learningCtx.summary,
-    }
-  }
-
-  const recommendations = await getClaudePicks(
-    candidates,
+  // Step 4: Claude validates only the pre-filtered setups (1 API call, cheap)
+  const recommendations = await claudeValidate(
+    setups,
     regime,
-    balance,
+    equity,
     heldSymbols,
-    learningCtx.summary,
-    pdtSlotsLeft
+    learning,
+    profile.min_confidence,
+    broker
   )
 
   return {
     recommendations,
     regime,
-    position_size_pct,
-    scanned: marketData.length,
-    candidates: candidates.length,
-    learning_context: learningCtx.summary,
+    position_size_pct: profile.risk_pct,
+    scanned: symbols.length,
+    candidates: setups.length,
+    learning_context: learning,
   }
 }
