@@ -10,10 +10,12 @@
 
 import type { Position, OrderResult, SchwabOrder } from './schwab'
 
-const IS_PAPER = process.env.BROKER !== 'alpaca_live'
-const BASE_URL = IS_PAPER
+const IS_PAPER  = process.env.BROKER !== 'alpaca_live'
+const BASE_URL  = IS_PAPER
   ? 'https://paper-api.alpaca.markets/v2'
   : 'https://api.alpaca.markets/v2'
+// Market data always from data.alpaca.markets (same auth, IEX feed = free)
+const DATA_URL  = 'https://data.alpaca.markets/v2'
 
 const KEY_ID  = process.env.ALPACA_KEY_ID!
 const SECRET  = process.env.ALPACA_SECRET_KEY!
@@ -177,22 +179,26 @@ export async function getOrders(daysBack = 10): Promise<SchwabOrder[]> {
 }
 
 export async function getQuote(symbol: string): Promise<{ symbol: string; price: number; change_pct: number; volume: number } | null> {
-  const data = await get<{ bars: Record<string, { c: number; o: number; v: number }[]> }>(
-    `/stocks/${symbol}/quotes/latest`
-  )
-  // Alpaca market data uses a different endpoint
-  const latestBar = await get<{ bar: { c: number; o: number; v: number } }>(
-    `https://data.alpaca.markets/v2/stocks/${symbol}/bars/latest`
-  )
-  if (!latestBar?.bar) return null
+  try {
+    // Market data from data.alpaca.markets (IEX feed = free, 15-min delay for paper)
+    const res = await fetch(
+      `${DATA_URL}/stocks/${symbol}/bars/latest?feed=iex`,
+      { headers: headers(), cache: 'no-store' }
+    )
+    if (!res.ok) return null
+    const data = await res.json() as { bar?: { c: number; o: number; v: number } }
+    if (!data.bar) return null
 
-  const price = latestBar.bar.c
-  const open  = latestBar.bar.o
-  return {
-    symbol,
-    price,
-    change_pct: open > 0 ? ((price - open) / open) * 100 : 0,
-    volume:     latestBar.bar.v,
+    const price = data.bar.c
+    const open  = data.bar.o
+    return {
+      symbol,
+      price,
+      change_pct: open > 0 ? ((price - open) / open) * 100 : 0,
+      volume:     data.bar.v,
+    }
+  } catch {
+    return null
   }
 }
 
