@@ -281,23 +281,24 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
           }
         }
 
-        // ── Tier 2: Loose patterns (partial trend OK — paper-mode catches more) ─
+        // ── Tier 2: Loose patterns — NO volume requirement because intraday
+        //    volume is partial (e.g. 11am vol ≈ 40% of daily avg, always fails)
         if (score === 0) {
-          if (Math.abs(dist_from_ema20_pct) <= 6 && e20 > e50 && rsiVal >= 45 && vol_ratio >= 1.15) {
+          if (Math.abs(dist_from_ema20_pct) <= 8 && e20 > e50 && rsiVal >= 42) {
             score += 3; setup_type = 'EMA20_BOUNCE'
-            reasons.push(`Loose EMA20 (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal}, ${vol_ratio.toFixed(1)}x vol)`)
-          } else if (change_1d >= 1.5 && vol_ratio >= 1.6 && rsiVal >= 52 && price > e20) {
+            reasons.push(`Loose EMA20 (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
+          } else if (change_1d >= 1.5 && rsiVal >= 50 && price > e20) {
             score += 3; setup_type = 'BREAKOUT'
-            reasons.push(`Momentum break +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
-          } else if (change_1d >= 2.5 && vol_ratio >= 2.0 && rsiVal >= 48 && rsiVal <= 82) {
+            reasons.push(`Momentum +${change_1d.toFixed(1)}% RSI ${rsiVal}`)
+          } else if (change_1d >= 2.5 && rsiVal >= 45 && rsiVal <= 85) {
             score += 4; setup_type = 'BREAKOUT'
-            reasons.push(`Gap-up +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
-          } else if (price > e50 && rsiVal >= 40 && vol_ratio >= 1.1 && dist_from_ema20_pct >= -8) {
+            reasons.push(`Gap-up +${change_1d.toFixed(1)}%, RSI ${rsiVal}`)
+          } else if (price > e50 && rsiVal >= 38 && dist_from_ema20_pct >= -10) {
             score += 2; setup_type = 'EMA20_BOUNCE'
-            reasons.push(`Ultra-loose pull (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
-          } else if (change_1d >= 0.8 && vol_ratio >= 1.3 && price > e50) {
+            reasons.push(`Near EMA (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
+          } else if (change_1d >= 0.5 && price > e50 && rsiVal >= 40) {
             score += 2; setup_type = 'MOMENTUM'
-            reasons.push(`Up-day +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`)
+            reasons.push(`Up-day +${change_1d.toFixed(1)}%, RSI ${rsiVal}`)
           }
         }
 
