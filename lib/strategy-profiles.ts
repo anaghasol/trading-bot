@@ -47,13 +47,13 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     key: 'alpaca_paper',
     label: 'Alpaca · Paper (Aggressive Lab)',
     vibe: 'aggressive',
-    risk_pct: 0.03,             // 3% per trade — aggressive but testable
-    max_positions: 6,           // 6 concurrent ideas
-    min_confidence: 75,         // slightly lower gate than live (78%) → more signals
+    risk_pct: 0.04,             // 4% per trade — max aggression for learning
+    max_positions: 10,          // 10 concurrent ideas
+    min_confidence: 65,         // lowered gate — more signals for testing
     allow_day_trades: true,     // no PDT on paper → intraday flips allowed
-    initial_stop_pct: 0.03,     // 3% stop (slightly wider than live 2.5%)
-    trail_pct: 0.06,            // 6% trailing — let winners run
-    daily_loss_stop_pct: 0.08,  // −8% daily breaker (more room than live's 5%)
+    initial_stop_pct: 0.04,     // 4% stop
+    trail_pct: 0.08,            // 8% trailing — let winners run longer
+    daily_loss_stop_pct: 0.12,  // −12% daily breaker (wide room for paper testing)
     max_hold_days: 3,           // faster turnover → more data points
     scan_universe: 'wide',
   },

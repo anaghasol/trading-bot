@@ -91,8 +91,10 @@ async function runScan(
 
   let tradesMade = 0
   const openSlots = profile.max_positions - positions.length
+  // Paper mode: review up to 12 candidates to fill slots; live: stick to openSlots
+  const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 12)
 
-  for (const { rec, bias } of ranked.slice(0, openSlots)) {
+  for (const { rec, bias } of ranked.slice(0, reviewLimit)) {
     const quote = isSchwab
       ? await SchwabBroker.getQuote(rec.symbol)
       : await AlpacaBroker.getQuote(rec.symbol)

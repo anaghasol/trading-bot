@@ -290,6 +290,23 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
           setup_type = 'MOMENTUM'
           reasons.push(`Momentum: +${change_5d.toFixed(1)}% 5d, RSI ${rsiVal}`)
         }
+        // Loose 20 EMA pullback — paper mode: slightly above/below EMA, lower thresholds
+        else if (
+          Math.abs(dist_from_ema20_pct) <= 6 &&
+          e20 > e50 &&
+          rsiVal >= 45 &&
+          vol_ratio >= 1.15
+        ) {
+          score += 3
+          setup_type = 'EMA20_BOUNCE'
+          reasons.push(`Loose EMA20 (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal}, ${vol_ratio.toFixed(1)}x vol)`)
+        }
+        // Momentum breakout — simple day move + volume surge
+        else if (change_1d >= 1.5 && vol_ratio >= 1.6 && rsiVal >= 52 && price > e20) {
+          score += 3
+          setup_type = 'BREAKOUT'
+          reasons.push(`Momentum break +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
+        }
 
         if (score === 0) return  // no pattern
 
