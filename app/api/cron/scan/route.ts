@@ -81,11 +81,27 @@ async function runScan(
   const { recommendations, regime, scanned, candidates } =
     await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining, broker)
 
+  // Telegram signal boost: symbols mentioned in recent Telegram trade signals
+  // (last 4 hours) get +8 confidence points — channel confirms our own scan.
+  const since = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
+  const { data: tgRows } = await db
+    .from('tb_alerts')
+    .select('symbol')
+    .in('type', ['BUY', 'SELL'])
+    .gte('created_at', since)
+    .not('symbol', 'is', null)
+  const tgSymbols = new Set((tgRows ?? []).map((r) => r.symbol as string))
+
   // Rotation overlay: drop picks in COLD themes (bias 0), then rank by
   // confidence × category bias so hot themes win the open slots.
+  // Telegram-confirmed symbols get +8 confidence bonus before ranking.
   const ranked = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
-    .map((r) => ({ rec: r, bias: biasForSymbol(r.symbol, rotation) }))
+    .map((r) => ({
+      rec: { ...r, confidence: tgSymbols.has(r.symbol) ? Math.min(100, r.confidence + 8) : r.confidence },
+      bias: biasForSymbol(r.symbol, rotation),
+      tg_confirmed: tgSymbols.has(r.symbol),
+    }))
     .filter((x) => x.bias > 0)
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
@@ -94,7 +110,7 @@ async function runScan(
   // Paper mode: review up to 12 candidates to fill slots; live: stick to openSlots
   const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 12)
 
-  for (const { rec, bias } of ranked.slice(0, reviewLimit)) {
+  for (const { rec, bias, tg_confirmed } of ranked.slice(0, reviewLimit)) {
     const quote = isSchwab
       ? await SchwabBroker.getQuote(rec.symbol)
       : await AlpacaBroker.getQuote(rec.symbol)
@@ -115,7 +131,8 @@ async function runScan(
       const initialStop = quote.price * (1 - sizing.stop_pct)
       const target      = quote.price * (1 + sizing.stop_pct * 2)
       const cat      = categoryLabel(rec.symbol)
-      const riskNote = ` | sleeve=${sleeve} cat=${cat} ema=${rec.ema_score}/10 claude=${rec.claude_conf}% oai=${rec.openai_conf}% stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}`
+      const tgNote   = tg_confirmed ? ' 📡TG-confirmed' : ''
+      const riskNote = ` | sleeve=${sleeve} cat=${cat} ema=${rec.ema_score}/10 claude=${rec.claude_conf}% oai=${rec.openai_conf}% stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}${tgNote}`
 
       const tradeRow: Record<string, unknown> = {
         symbol: rec.symbol, action: 'BUY', quantity: sizing.qty,
