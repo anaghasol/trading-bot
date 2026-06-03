@@ -63,6 +63,225 @@ function useMarketClock() {
   return { txt, open }
 }
 
+// ── quick-trade panel ────────────────────────────────────────────────────────
+function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: number; qmap: Record<string, { price: number; change_pct: number }>; onDone: () => void }) {
+  const [sym, setSym] = useState('')
+  const [action, setAction] = useState<'BUY' | 'SELL'>('BUY')
+  const [mode, setMode] = useState<'shares' | 'dollars'>('shares')
+  const [qty, setQty] = useState('')
+  const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET')
+  const [limitPx, setLimitPx] = useState('')
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'err'>('idle')
+  const [msg, setMsg] = useState('')
+  const [suggestions, setSuggestions] = useState<{ symbol: string; name: string }[]>([])
+  const [sugIdx, setSugIdx] = useState(-1)
+  const [showSug, setShowSug] = useState(false)
+  const symRef = useRef<HTMLInputElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const upper = sym.toUpperCase().trim()
+  const liveQ = qmap[upper]
+  const livePrice = liveQ?.price ?? 0
+
+  const shares = mode === 'shares'
+    ? parseFloat(qty) || 0
+    : livePrice > 0 ? Math.floor((parseFloat(qty) || 0) / livePrice) : 0
+  const estCost = shares * (orderType === 'LIMIT' && parseFloat(limitPx) > 0 ? parseFloat(limitPx) : livePrice)
+  const canAfford = action === 'SELL' || cash <= 0 || estCost <= cash
+
+  function onSymChange(val: string) {
+    const v = val.toUpperCase()
+    setSym(v); setSugIdx(-1)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (v.length === 0) { setSuggestions([]); setShowSug(false); return }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/alpaca/search?q=${encodeURIComponent(v)}`)
+        const data = await res.json()
+        setSuggestions(data.results ?? [])
+        setShowSug((data.results ?? []).length > 0)
+      } catch { /* ignore */ }
+    }, 180)
+  }
+
+  function pickSuggestion(s: { symbol: string; name: string }) {
+    setSym(s.symbol); setSuggestions([]); setShowSug(false); setSugIdx(-1)
+    symRef.current?.blur()
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (!showSug) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSugIdx(i => Math.min(i + 1, suggestions.length - 1)) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setSugIdx(i => Math.max(i - 1, -1)) }
+    else if (e.key === 'Enter' && sugIdx >= 0) { e.preventDefault(); pickSuggestion(suggestions[sugIdx]) }
+    else if (e.key === 'Escape') { setShowSug(false) }
+  }
+
+  async function submit() {
+    if (!upper || shares <= 0) return
+    setStatus('loading'); setMsg('')
+    try {
+      const res = await fetch('/api/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: upper, quantity: shares, action, broker, orderType, limitPrice: orderType === 'LIMIT' ? parseFloat(limitPx) : undefined }),
+      })
+      const data = await res.json()
+      if (data.status === 'PLACED') {
+        setStatus('ok'); setMsg(`✓ ${action} ${shares} ${upper} placed`)
+        setSym(''); setQty(''); setLimitPx('')
+        setTimeout(() => { setStatus('idle'); setMsg(''); onDone() }, 2500)
+      } else {
+        setStatus('err'); setMsg(data.error ?? 'Order failed')
+        setTimeout(() => setStatus('idle'), 4000)
+      }
+    } catch {
+      setStatus('err'); setMsg('Network error')
+      setTimeout(() => setStatus('idle'), 4000)
+    }
+  }
+
+  const isPaper = broker === 'alpaca_paper'
+  const accent = isPaper ? 'var(--blue)' : action === 'BUY' ? 'var(--green)' : 'var(--red)'
+
+  return (
+    <div className="card">
+      <div className="card-head plain">
+        <h3 className="card-title neutral">⚡ Quick Trade <span className="chip mut" style={{ fontSize: '0.6rem' }}>{isPaper ? 'Paper · Alpaca' : 'Live · Schwab'}</span></h3>
+        <span className="eyebrow">Buying power: <b style={{ color: 'var(--fg-1)' }}>${Math.floor(cash).toLocaleString()}</b></span>
+      </div>
+      <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* Symbol row */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ flex: 1, position: 'relative' }}>
+            <div className="eyebrow" style={{ marginBottom: 3 }}>Symbol</div>
+            <input
+              ref={symRef}
+              value={sym}
+              onChange={(e) => onSymChange(e.target.value)}
+              onKeyDown={onKeyDown}
+              onFocus={() => suggestions.length > 0 && setShowSug(true)}
+              onBlur={() => setTimeout(() => setShowSug(false), 150)}
+              placeholder="NVDA, OKLO, SPY…"
+              autoComplete="off"
+              style={{ width: '100%', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '6px 10px', color: 'var(--fg-1)', fontSize: '0.88rem', fontFamily: 'var(--font-mono)', letterSpacing: '0.04em' }}
+            />
+            {/* Autocomplete dropdown */}
+            {showSug && suggestions.length > 0 && (
+              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, background: 'var(--bg-3)', border: '1px solid var(--divider)', borderRadius: 6, marginTop: 2, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+                {suggestions.map((s, i) => (
+                  <div
+                    key={s.symbol}
+                    onMouseDown={() => pickSuggestion(s)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', cursor: 'pointer',
+                      background: i === sugIdx ? 'var(--bg-2)' : 'transparent',
+                      borderBottom: i < suggestions.length - 1 ? '1px solid var(--divider)' : 'none',
+                    }}
+                  >
+                    <span className="tabular" style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--fg-1)', minWidth: 52 }}>{s.symbol}</span>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--fg-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {livePrice > 0 && (
+            <div style={{ textAlign: 'right', paddingTop: 18 }}>
+              <div className="tabular" style={{ fontWeight: 700, fontSize: '0.95rem' }}>${num(livePrice)}</div>
+              <div className="tabular" style={{ fontSize: '0.7rem', color: liveQ.change_pct >= 0 ? 'var(--green)' : 'var(--red)' }}>{p2(liveQ.change_pct)}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Action + Order type */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <div className="seg" style={{ flex: 1 }}>
+            <button className={`seg-btn ${action === 'BUY' ? 'on' : ''}`} style={action === 'BUY' ? { background: 'var(--green-faint)', color: 'var(--green)', borderColor: 'var(--green)' } : {}} onClick={() => setAction('BUY')}>BUY</button>
+            <button className={`seg-btn ${action === 'SELL' ? 'on-red' : ''}`} onClick={() => setAction('SELL')}>SELL</button>
+          </div>
+          <div className="seg">
+            <button className={`seg-btn ${orderType === 'MARKET' ? 'on' : ''}`} onClick={() => setOrderType('MARKET')}>Market</button>
+            <button className={`seg-btn ${orderType === 'LIMIT' ? 'on' : ''}`} onClick={() => setOrderType('LIMIT')}>Limit</button>
+          </div>
+        </div>
+
+        {/* Qty row */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <div style={{ flex: 1 }}>
+            <div className="eyebrow" style={{ marginBottom: 3 }}>
+              {mode === 'shares' ? 'Shares' : 'Dollar amount'}
+            </div>
+            <input
+              type="number" min="0"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              placeholder={mode === 'shares' ? '10' : '500'}
+              style={{ width: '100%', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '6px 10px', color: 'var(--fg-1)', fontSize: '0.88rem', fontFamily: 'var(--font-mono)' }}
+            />
+          </div>
+          <button
+            onClick={() => setMode(m => m === 'shares' ? 'dollars' : 'shares')}
+            style={{ padding: '6px 10px', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, fontSize: '0.72rem', color: 'var(--fg-3)', cursor: 'pointer', whiteSpace: 'nowrap', marginBottom: 1 }}
+          >{mode === 'shares' ? '$ switch' : '# switch'}</button>
+        </div>
+
+        {/* Limit price */}
+        {orderType === 'LIMIT' && (
+          <div>
+            <div className="eyebrow" style={{ marginBottom: 3 }}>Limit price</div>
+            <input
+              type="number" min="0" step="0.01"
+              value={limitPx}
+              onChange={(e) => setLimitPx(e.target.value)}
+              placeholder={livePrice > 0 ? livePrice.toFixed(2) : '0.00'}
+              style={{ width: '100%', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '6px 10px', color: 'var(--fg-1)', fontSize: '0.88rem', fontFamily: 'var(--font-mono)' }}
+            />
+          </div>
+        )}
+
+        {/* Cost estimate + execute */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
+          <div style={{ flex: 1, fontSize: '0.78rem', color: 'var(--fg-3)' }}>
+            {shares > 0 && livePrice > 0 && (
+              <span>Est. {action === 'BUY' ? 'cost' : 'proceeds'}: <b style={{ color: canAfford ? accent : 'var(--red)' }}>${num(estCost)}</b>
+                {mode === 'dollars' && <span className="faint"> · {shares} sh</span>}
+              </span>
+            )}
+          </div>
+          <button
+            disabled={!upper || shares <= 0 || status === 'loading' || !canAfford}
+            onClick={submit}
+            style={{
+              padding: '8px 18px', borderRadius: 7, border: 'none', cursor: 'pointer', fontWeight: 700,
+              fontSize: '0.82rem', letterSpacing: '0.04em',
+              background: status === 'loading' ? 'var(--bg-3)' : !canAfford ? 'var(--bg-3)' : accent,
+              color: status === 'loading' || !canAfford ? 'var(--fg-3)' : '#fff',
+              opacity: (!upper || shares <= 0) ? 0.5 : 1,
+              transition: 'all 0.15s',
+            }}
+          >
+            {status === 'loading' ? '…' : `${action} ${shares > 0 ? shares + ' sh' : ''}`}
+          </button>
+        </div>
+
+        {/* Status message */}
+        {msg && (
+          <div style={{ fontSize: '0.78rem', padding: '6px 10px', borderRadius: 6, background: status === 'ok' ? 'var(--green-faint)' : 'var(--red-faint)', color: status === 'ok' ? 'var(--green)' : 'var(--red)', border: `1px solid ${status === 'ok' ? 'var(--green)' : 'var(--red)'}` }}>
+            {msg}
+          </div>
+        )}
+
+        {!canAfford && shares > 0 && (
+          <div style={{ fontSize: '0.72rem', color: 'var(--red)' }}>
+            Insufficient buying power — need {money(estCost)}, have {money(cash)}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function DashboardPage() {
   const [broker, setBroker] = useState<Broker>('schwab')
   const [dash, setDash] = useState<Record<Broker, Dash | null>>({ schwab: null, alpaca_paper: null })
@@ -261,6 +480,9 @@ export default function DashboardPage() {
               <button className="x" onClick={() => setAlertOn(false)}>×</button>
             </div>
           )}
+
+          {/* Quick Trade */}
+          <QuickTrade broker={broker} cash={summary?.stock_buying_power ?? cash} qmap={qmap} onDone={() => load(broker)} />
 
           {/* Positions */}
           <div className="card">
