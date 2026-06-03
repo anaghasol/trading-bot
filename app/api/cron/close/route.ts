@@ -86,25 +86,23 @@ export async function GET(req: Request) {
       let exitReason  = ''
 
       if (isMorning) {
-        // Morning: exit if at profit target (overnight position reached target)
-        if (!isSameDay && pos.pnl_pct >= SWING_CONFIG.profit_target_pct) {
+        // Morning: exit only if held max days AND losing — winners keep riding
+        if (!isSameDay && holdDays >= SWING_CONFIG.max_hold_days && pos.pnl_pct < 0) {
           shouldExit = true
-          exitReason = `PROFIT TARGET hit +${pos.pnl_pct.toFixed(1)}% in ${holdDays}d`
-        }
-        // Morning: also exit if held past max days
-        if (!isSameDay && holdDays >= SWING_CONFIG.max_hold_days) {
-          shouldExit = true
-          exitReason = `TIME STOP: held ${holdDays} days`
+          exitReason = `TIME STOP (losing ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d)`
         }
       }
 
       if (isPreClose) {
-        // Pre-close: exit if held 5+ days OR at profit target
-        if (!isSameDay && (holdDays >= SWING_CONFIG.max_hold_days || pos.pnl_pct >= SWING_CONFIG.profit_target_pct)) {
+        // Pre-close: cut losers held 3+ days. Winners ride — trailing stop catches them.
+        if (!isSameDay && holdDays >= 3 && pos.pnl_pct < -2) {
           shouldExit = true
-          exitReason = holdDays >= SWING_CONFIG.max_hold_days
-            ? `TIME STOP ${holdDays}d held`
-            : `PROFIT TARGET +${pos.pnl_pct.toFixed(1)}%`
+          exitReason = `PRE-CLOSE CUT: ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d`
+        }
+        // Also close if hit big profit target (lock in outlier wins at pre-close)
+        if (!isSameDay && pos.pnl_pct >= 20) {
+          shouldExit = true
+          exitReason = `BIG WIN LOCK: +${pos.pnl_pct.toFixed(1)}% — banking it`
         }
       }
 

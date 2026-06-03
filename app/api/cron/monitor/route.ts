@@ -6,6 +6,7 @@ import { NextResponse } from 'next/server'
 import * as SchwabBroker from '@/lib/schwab'
 import * as AlpacaBroker from '@/lib/alpaca'
 import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceeded, INITIAL_STOP_PCT } from '@/lib/risk'
+import { profileFor } from '@/lib/strategy-profiles'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
 import { alertStopHit } from '@/lib/notify'
@@ -121,8 +122,9 @@ async function monitorBroker(
       }
     }
 
-    // Full exit check
-    const exit = checkExitCondition(pos.current_price, meta.entry_price, meta.peak_price, meta.initial_stop, holdDays, false)
+    // Full exit check — use broker profile's trail/stop settings
+    const profile = profileFor(broker)
+    const exit = checkExitCondition(pos.current_price, meta.entry_price, meta.peak_price, meta.initial_stop, holdDays, false, profile.trail_pct, profile.max_hold_days)
     if (exit.new_peak_price > meta.peak_price && meta.id) {
       await db.from('tb_trades').update({ peak_pnl: ((exit.new_peak_price - meta.entry_price) / meta.entry_price) * 100 }).eq('id', meta.id)
     }
