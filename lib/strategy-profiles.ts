@@ -49,7 +49,7 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     vibe: 'aggressive',
     risk_pct: 0.07,             // 7% per trade
     max_positions: 15,          // 15 concurrent positions
-    min_confidence: 55,         // 55% gate — nuclear option for paper data collection
+    min_confidence: 50,         // 50% gate — max activity for learning phase
     allow_day_trades: true,
     initial_stop_pct: 0.05,
     trail_pct: 0.10,
