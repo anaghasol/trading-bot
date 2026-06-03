@@ -92,17 +92,22 @@ async function runScan(
     .not('symbol', 'is', null)
   const tgSymbols = new Set((tgRows ?? []).map((r) => r.symbol as string))
 
-  // Rotation overlay: drop picks in COLD themes (bias 0), then rank by
-  // confidence × category bias so hot themes win the open slots.
+  // Rotation overlay: rank by confidence × category bias.
+  // Paper mode: COLD categories get bias=0.5 (not filtered out) so we still collect data.
+  // Live (Schwab): COLD categories are filtered out completely.
   // Telegram-confirmed symbols get +8 confidence bonus before ranking.
   const ranked = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
-    .map((r) => ({
-      rec: { ...r, confidence: tgSymbols.has(r.symbol) ? Math.min(100, r.confidence + 8) : r.confidence },
-      bias: biasForSymbol(r.symbol, rotation),
-      tg_confirmed: tgSymbols.has(r.symbol),
-    }))
-    .filter((x) => x.bias > 0)
+    .map((r) => {
+      const rawBias = biasForSymbol(r.symbol, rotation)
+      const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias  // paper: never hard-zero
+      return {
+        rec: { ...r, confidence: tgSymbols.has(r.symbol) ? Math.min(100, r.confidence + 8) : r.confidence },
+        bias,
+        tg_confirmed: tgSymbols.has(r.symbol),
+      }
+    })
+    .filter((x) => isSchwab ? x.bias > 0 : true)  // live: drop COLD; paper: keep everything
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
   let tradesMade = 0
