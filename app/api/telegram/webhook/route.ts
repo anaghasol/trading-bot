@@ -38,9 +38,7 @@ export async function POST(req: Request) {
 
     // Parse the signal with Claude AI
     const signal = await parseSignal(text)
-    if (!signal) {
-      return NextResponse.json({ ok: true, _debug: 'no signal parsed', text })
-    }
+    if (!signal) return NextResponse.json({ ok: true })
 
     console.log(`[telegram] signal parsed:`, signal)
 
@@ -95,6 +93,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, signal, order })
   } catch (e) {
     console.error('[telegram] webhook error:', e)
-    return NextResponse.json({ ok: true, _err: String(e) })
+    return NextResponse.json({ ok: true })
   }
 }
