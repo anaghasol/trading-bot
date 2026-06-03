@@ -60,35 +60,25 @@ function buildPrompt(
   model: 'claude' | 'openai'
 ): string {
   const profile = profileFor(broker)
-  return `You are an expert swing trader. Pre-screened mechanical setups below.
+  const isPaper = broker === 'alpaca_paper'
+  return `You are a ${isPaper ? 'PAPER TRADING bot collecting data aggressively' : 'conservative swing trader'}. Rate these pre-screened setups.
 
-ACCOUNT: $${equity.toFixed(0)} | BROKER: ${broker.toUpperCase()} | MIN CONFIDENCE: ${minConf}%
-MARKET: ${regime.label} | SPY ${regime.spy_above_200sma ? 'above ✓' : 'BELOW ✗'} 200 SMA | VIX ${regime.vix.toFixed(0)}
+ACCOUNT: $${equity.toFixed(0)} | MODE: ${isPaper ? 'PAPER (fake money — be aggressive, rate high)' : 'LIVE ($2K real — be selective)'}
+MARKET: ${regime.label} | VIX ${regime.vix.toFixed(0)} | SPY 200SMA: ${regime.spy_above_200sma ? 'above' : 'below'}
 HELD: ${held.join(', ') || 'none'}
-PERFORMANCE: ${learning}
 
-SETUPS (all pass 20 EMA pullback mechanical filter):
+${isPaper ? `PAPER MODE INSTRUCTIONS: This is fake money for learning. Rate EVERY setup >= ${minConf}% if it has any positive momentum. Be generous. We need data.` : `LIVE MODE: Only rate high-conviction setups >= ${minConf}%.`}
+
+SETUPS:
 ${JSON.stringify(setups.map((s) => ({
-  sym:      s.symbol,
-  type:     s.setup_type,
-  price:    s.price,
-  ema20:    s.ema20,
-  dist:     `${s.dist_from_ema20_pct.toFixed(1)}%`,
-  rsi:      s.rsi,
-  vol:      `${s.volume_ratio.toFixed(1)}x`,
-  d1:       `${s.change_1d.toFixed(1)}%`,
-  d5:       `${s.change_5d.toFixed(1)}%`,
-  score:    `${s.pullback_score}/10`,
-  why:      s.reason,
-})), null, 2)}
+  sym: s.symbol, type: s.setup_type, price: s.price,
+  dist_ema20: `${s.dist_from_ema20_pct.toFixed(1)}%`,
+  rsi: s.rsi, d1: `${s.change_1d.toFixed(1)}%`, d5: `${s.change_5d.toFixed(1)}%`,
+  score: `${s.pullback_score}/10`, why: s.reason,
+})))}
 
-RULES:
-- ${profile.vibe === 'aggressive' ? 'AGGRESSIVE LAB (paper money): take more setups, 3-day holds ok' : 'PROTECTED (real $2K): only 1-5 day swing holds, PDT-safe'}
-- Skip held symbols. Skip if RISK_OFF.
-- Target ${(profile.initial_stop_pct * 2 * 100).toFixed(0)}-15% over ${profile.max_hold_days}d. Stop at ${(profile.initial_stop_pct * 100).toFixed(0)}%.
-
-Return ONLY valid JSON array (no markdown):
-[{"symbol":"NVDA","action":"BUY","confidence":84,"setup":"EMA20_BOUNCE","reason":"textbook pullback to 20 EMA, RSI 61, 2.1x volume","target_pct":10,"hold_days":3,"stop_pct":-2.5}]`
+Return ONLY a JSON array. Include ALL setups you'd take at ${minConf}%+ confidence:
+[{"symbol":"X","action":"BUY","confidence":72,"setup":"EMA20_BOUNCE","reason":"brief reason","target_pct":8,"hold_days":3,"stop_pct":-5}]`
 }
 
 // ── Claude call ───────────────────────────────────────────────────────────────
@@ -99,7 +89,7 @@ async function askClaude(
 ): Promise<Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number }>> {
   try {
     const msg = await claude.messages.create({
-      model: 'claude-sonnet-4-6', max_tokens: 512,
+      model: 'claude-sonnet-4-6', max_tokens: 1500,
       messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude') }],
     })
     let text = (msg.content[0] as { type: string; text: string }).text.trim()
