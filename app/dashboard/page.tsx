@@ -494,46 +494,89 @@ export default function DashboardPage() {
 
           {/* Positions */}
           <div className="card">
-            <div className="card-head plain"><h3 className="card-title neutral">📊 Positions <span className="chip mut" style={{ fontSize: '0.6rem' }}>{pos.length} open</span></h3><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span className="eyebrow">Net liq</span><span className="tabular" style={{ fontWeight: 700 }}>{money(netLiq)}</span></div></div>
+            <div className="card-head plain">
+              <h3 className="card-title neutral">📊 Positions <span className="chip mut" style={{ fontSize: '0.6rem' }}>{pos.length} open</span></h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="eyebrow">Net liq</span>
+                <span className="tabular" style={{ fontWeight: 700 }}>{money(netLiq)}</span>
+              </div>
+            </div>
             <div style={{ overflowX: 'auto' }}>
-              <table className="ptbl">
-                <thead><tr>
-                  <th className="l">Symbol</th><th>Qty</th><th>P/L Day</th><th>P/L Open</th><th>P/L %</th><th>Cost</th><th>Net Liq</th><th>Mark</th><th>Δ</th><th>Γ</th><th>Θ</th><th>V</th><th></th>
-                </tr></thead>
+              <table className="ptbl" style={{ minWidth: 680 }}>
+                <colgroup>
+                  <col style={{ minWidth: 110 }} />{/* Symbol */}
+                  <col style={{ minWidth: 50 }} /> {/* Qty */}
+                  <col style={{ minWidth: 90 }} /> {/* P/L Day */}
+                  <col style={{ minWidth: 90 }} /> {/* P/L Open */}
+                  <col style={{ minWidth: 70 }} /> {/* P/L % */}
+                  <col style={{ minWidth: 90 }} /> {/* Avg Cost */}
+                  <col style={{ minWidth: 90 }} /> {/* Net Liq */}
+                  <col style={{ minWidth: 80 }} /> {/* Mark */}
+                  <col style={{ minWidth: 80 }} /> {/* Action */}
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th className="l">Symbol</th>
+                    <th style={{ textAlign: 'right' }}>Qty</th>
+                    <th style={{ textAlign: 'right' }}>P/L Day</th>
+                    <th style={{ textAlign: 'right' }}>P/L Open</th>
+                    <th style={{ textAlign: 'right' }}>P/L %</th>
+                    <th style={{ textAlign: 'right' }}>Avg Cost</th>
+                    <th style={{ textAlign: 'right' }}>Net Liq</th>
+                    <th style={{ textAlign: 'right' }}>Mark</th>
+                    <th></th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {pos.length === 0 ? <tr><td colSpan={13}><div className="desk-empty">No open positions — engine waiting for a {profile.min_confidence}%+ signal.</div></td></tr>
+                  {pos.length === 0
+                    ? <tr><td colSpan={9}><div className="desk-empty">No open positions — engine waiting for a {profile.min_confidence}%+ signal.</div></td></tr>
                     : pos.map((p, i) => {
-                      const opt = p.asset_type === 'OPTION'
-                      const day = dayChangeOf(p)
-                      const cost = p.avg_cost * p.quantity * (opt ? 100 : 1)
-                      return (
-                        <tr key={p.symbol + i}>
-                          <td className="l"><span className="psym">{p.symbol}</span><span className={`pbadge ${opt ? 'opt' : 'eq'}`}>{opt ? 'OPT' : 'EQ'}</span></td>
-                          <td>{p.quantity > 0 ? '+' : ''}{p.quantity}</td>
-                          <td style={{ color: day == null ? 'var(--fg-3)' : pnlColor(day) }}>{day == null ? '—' : signed(day)}</td>
-                          <td style={{ color: pnlColor(p.unrealized_pnl) }}>{signed(p.unrealized_pnl)}</td>
-                          <td style={{ color: pnlColor(p.pnl_pct) }}>{p2(p.pnl_pct)}</td>
-                          <td className="muted">{money(cost)}</td>
-                          <td>{money(p.market_value)}</td>
-                          <td><Flash value={p.current_price} fmt={num} /></td>
-                          <td>{opt ? '—' : p.quantity.toFixed(2)}</td><td>{opt ? '—' : '0.00'}</td><td>{opt ? '—' : '0.00'}</td><td>{opt ? '—' : '0.00'}</td>
-                          <td><button className="closex" onClick={() => fetch('/api/schwab/trade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: p.symbol, quantity: Math.abs(p.quantity), action: 'SELL' }) }).then(() => setTimeout(() => load(broker), 1500))}>Close</button></td>
-                        </tr>
-                      )
-                    })}
+                        const opt = p.asset_type === 'OPTION'
+                        const day = dayChangeOf(p)
+                        const cost = p.avg_cost * p.quantity * (opt ? 100 : 1)
+                        const dayPnlPct = p.avg_cost > 0 && day != null ? (day / cost) * 100 : null
+                        return (
+                          <tr key={p.symbol + i}>
+                            <td className="l">
+                              <span className="psym">{p.symbol}</span>
+                              <span className={`pbadge ${opt ? 'opt' : 'eq'}`}>{opt ? 'OPT' : 'EQ'}</span>
+                            </td>
+                            <td style={{ textAlign: 'right' }}>{p.quantity > 0 ? '+' : ''}{p.quantity}</td>
+                            <td style={{ textAlign: 'right', color: day == null ? 'var(--fg-3)' : pnlColor(day) }}>
+                              {day == null ? '—' : signed(day)}
+                              {dayPnlPct != null && <span style={{ fontSize: '0.68rem', marginLeft: 4, opacity: 0.7 }}>{p2(dayPnlPct)}</span>}
+                            </td>
+                            <td style={{ textAlign: 'right', color: pnlColor(p.unrealized_pnl) }}>{signed(p.unrealized_pnl)}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <span style={{ color: pnlColor(p.pnl_pct), fontWeight: 600 }}>{p2(p.pnl_pct)}</span>
+                            </td>
+                            <td style={{ textAlign: 'right', color: 'var(--fg-3)' }}>{money(cost)}</td>
+                            <td style={{ textAlign: 'right' }}>{money(p.market_value)}</td>
+                            <td style={{ textAlign: 'right' }}><Flash value={p.current_price} fmt={num} /></td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button className="closex" onClick={() => {
+                                const api = isPaper ? '/api/alpaca/trade' : '/api/schwab/trade'
+                                fetch('/api/trade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: p.symbol, quantity: Math.abs(p.quantity), action: 'SELL', broker }) }).then(() => setTimeout(() => load(broker), 1500))
+                              }}>Close</button>
+                            </td>
+                          </tr>
+                        )
+                      })}
                 </tbody>
                 {pos.length > 0 && (
-                  <tfoot><tr>
-                    <td className="l">Totals</td>
-                    <td>{pos.reduce((s, p) => s + p.quantity, 0)}</td>
-                    <td style={{ color: pnlColor(totDay) }}>{signed(totDay)}</td>
-                    <td style={{ color: pnlColor(unreal) }}>{signed(unreal)}</td>
-                    <td>—</td>
-                    <td>{money(totCost)}</td>
-                    <td>{money(netLiq)}</td>
-                    <td>—</td>
-                    <td>{totDelta.toFixed(2)}</td><td>0.00</td><td>0.00</td><td>0.00</td><td></td>
-                  </tr></tfoot>
+                  <tfoot>
+                    <tr>
+                      <td className="l" style={{ fontWeight: 600 }}>Totals</td>
+                      <td style={{ textAlign: 'right' }}>{pos.reduce((s, p) => s + p.quantity, 0)}</td>
+                      <td style={{ textAlign: 'right', color: pnlColor(totDay) }}>{signed(totDay)}</td>
+                      <td style={{ textAlign: 'right', color: pnlColor(unreal) }}>{signed(unreal)}</td>
+                      <td>—</td>
+                      <td style={{ textAlign: 'right', color: 'var(--fg-3)' }}>{money(totCost)}</td>
+                      <td style={{ textAlign: 'right' }}>{money(netLiq)}</td>
+                      <td>—</td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
                 )}
               </table>
             </div>
