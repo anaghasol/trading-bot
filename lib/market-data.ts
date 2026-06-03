@@ -43,10 +43,14 @@ export interface EMASetup {
   volume_ratio: number
   change_1d: number
   change_5d: number
-  dist_from_ema20_pct: number  // negative = below EMA (pullback), positive = above
-  pullback_score: number       // 0-10
+  dist_from_ema20_pct: number
+  pullback_score: number
   setup_type: 'EMA20_BOUNCE' | 'EMA50_PULLBACK' | 'BREAKOUT' | 'MOMENTUM'
   reason: string
+  // Candlestick + RS additions
+  candle_pattern: string        // e.g. 'HAMMER', 'ENGULFING', 'NONE'
+  rs_vs_spy: number             // stock 1d change minus SPY 1d change
+  earnings_soon: boolean        // within 7 days of earnings (avoid)
 }
 
 export interface MarketRegime {
@@ -119,7 +123,10 @@ function rsi(closes: number[], period = 14): number {
 
 // ── Data Fetching ─────────────────────────────────────────────────────────────
 
-interface OHLCV { closes: number[]; volumes: number[] }
+interface OHLCV {
+  opens: number[]; highs: number[]; lows: number[]
+  closes: number[]; volumes: number[]
+}
 
 async function fetchOHLCV(symbol: string, range = '1y'): Promise<OHLCV | null> {
   try {
@@ -131,11 +138,77 @@ async function fetchOHLCV(symbol: string, range = '1y'): Promise<OHLCV | null> {
     const data = await res.json()
     const q = data.chart?.result?.[0]?.indicators?.quote?.[0]
     const closes: number[]  = (q?.close  as number[])?.filter((c) => c != null) ?? []
+    const opens: number[]   = (q?.open   as number[])?.filter((c) => c != null) ?? []
+    const highs: number[]   = (q?.high   as number[])?.filter((c) => c != null) ?? []
+    const lows: number[]    = (q?.low    as number[])?.filter((c) => c != null) ?? []
     const volumes: number[] = (q?.volume as number[])?.filter((v) => v != null) ?? []
-    return closes.length >= 20 ? { closes, volumes } : null
+    return closes.length >= 20 ? { opens, highs, lows, closes, volumes } : null
   } catch {
     return null
   }
+}
+
+// ── Candlestick Pattern Detection ─────────────────────────────────────────────
+
+function detectCandle(opens: number[], highs: number[], lows: number[], closes: number[]): string {
+  const o  = opens.at(-1)!,  h  = highs.at(-1)!,  l  = lows.at(-1)!,  c  = closes.at(-1)!
+  const o2 = opens.at(-2)!,  h2 = highs.at(-2)!,  l2 = lows.at(-2)!,  c2 = closes.at(-2)!
+  const body    = Math.abs(c - o)
+  const range   = h - l
+  const upWick  = h - Math.max(o, c)
+  const dnWick  = Math.min(o, c) - l
+  const bullish = c > o
+
+  if (range === 0) return 'NONE'
+
+  // Bullish Engulfing: current green candle fully wraps previous red candle
+  if (bullish && c2 < o2 && o < c2 && c > o2) return 'ENGULFING'
+
+  // Hammer: small body near top, long lower wick (>= 2× body), tiny upper wick
+  if (bullish && dnWick >= body * 2 && upWick <= body * 0.5 && body / range < 0.4) return 'HAMMER'
+
+  // Dragonfly Doji: tiny body, very long lower wick
+  if (body / range < 0.1 && dnWick >= range * 0.7) return 'DOJI_BULL'
+
+  // Morning Star (3-candle): big red → small body → big green
+  const o3 = opens.at(-3)!, c3 = closes.at(-3)!
+  const midBodySmall = Math.abs(c2 - o2) < Math.abs(c3 - o3) * 0.4
+  if (c3 < o3 && midBodySmall && bullish && c > (o3 + c3) / 2) return 'MORNING_STAR'
+
+  // Bullish Marubozu: nearly all body, minimal wicks (strong momentum)
+  if (bullish && body / range > 0.85) return 'MARUBOZU'
+
+  // Inside bar after down move (compression before breakout)
+  if (h < h2 && l > l2 && c2 < o2) return 'INSIDE_BAR'
+
+  // Tweezer bottom: two candles with near-identical lows (double support)
+  if (Math.abs(l - l2) / l < 0.003) return 'TWEEZER_BOTTOM'
+
+  return 'NONE'
+}
+
+// Candle score bonus: 0 = no pattern, up to 3 = strong confirmation
+function candleScore(pattern: string): number {
+  return { ENGULFING: 3, MORNING_STAR: 3, HAMMER: 2, DOJI_BULL: 2,
+           MARUBOZU: 2, TWEEZER_BOTTOM: 2, INSIDE_BAR: 1, NONE: 0 }[pattern] ?? 0
+}
+
+// ── Earnings Proximity Check ──────────────────────────────────────────────────
+
+async function hasEarningsSoon(symbol: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=calendarEvents`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 3600 } }
+    )
+    if (!res.ok) return false
+    const data = await res.json()
+    const dates = data?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate
+    if (!Array.isArray(dates) || dates.length === 0) return false
+    const nextEarnings = new Date((dates[0].raw as number) * 1000)
+    const daysUntil = (nextEarnings.getTime() - Date.now()) / 86_400_000
+    return daysUntil >= 0 && daysUntil <= 7
+  } catch { return false }
 }
 
 // Keep legacy fetchChart for getMarketRegime
@@ -222,13 +295,19 @@ export async function getMarketRegime(): Promise<MarketRegime> {
 export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]> {
   const setups: EMASetup[] = []
 
+  // Fetch SPY once for relative strength baseline
+  const spyOhlcv = await fetchOHLCV('SPY', '5d')
+  const spyChange1d = spyOhlcv && spyOhlcv.closes.length >= 2
+    ? ((spyOhlcv.closes.at(-1)! - spyOhlcv.closes.at(-2)!) / spyOhlcv.closes.at(-2)!) * 100
+    : 0
+
   await Promise.allSettled(
     symbols.map(async (symbol) => {
       try {
         const ohlcv = await fetchOHLCV(symbol, '1y')
         if (!ohlcv || ohlcv.closes.length < 60) return
 
-        const { closes, volumes } = ohlcv
+        const { opens, highs, lows, closes, volumes } = ohlcv
         const price   = closes.at(-1)!
         const prev    = closes.at(-2)!
 
@@ -311,15 +390,35 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
         if (change_5d > 8)             { score += 1; reasons.push(`+${change_5d.toFixed(1)}% 5d trend`) }
         if (change_1d > 1)             { score += 1; reasons.push(`+${change_1d.toFixed(1)}% today`) }
 
+        // ── Candlestick pattern ───────────────────────────────────────────────
+        const candle_pattern = detectCandle(opens, highs, lows, closes)
+        const cScore = candleScore(candle_pattern)
+        if (cScore > 0) { score += cScore; reasons.push(`${candle_pattern} candle`) }
+
+        // ── Relative strength vs SPY ──────────────────────────────────────────
+        const rs_vs_spy = Math.round((change_1d - spyChange1d) * 100) / 100
+        if (rs_vs_spy > 2) { score += 2; reasons.push(`RS+${rs_vs_spy.toFixed(1)}% vs SPY`) }
+        else if (rs_vs_spy > 1) { score += 1; reasons.push(`RS+${rs_vs_spy.toFixed(1)}% vs SPY`) }
+
+        // ── Earnings proximity (skip if earnings within 7 days) ───────────────
+        const earnings_soon = await hasEarningsSoon(symbol)
+        if (earnings_soon) {
+          reasons.push('⚠️ earnings soon — skip')
+          // Still include but zero score so AI can decide
+        }
+
         setups.push({
           symbol, price, ema20: e20, ema50: e50, sma200: s200,
           rsi: rsiVal, volume_ratio: vol_ratio,
           change_1d: Math.round(change_1d * 100) / 100,
           change_5d: Math.round(change_5d * 100) / 100,
           dist_from_ema20_pct: Math.round(dist_from_ema20_pct * 100) / 100,
-          pullback_score: Math.min(10, score),
+          pullback_score: earnings_soon ? 0 : Math.min(10, score),
           setup_type,
           reason: reasons.join(', '),
+          candle_pattern,
+          rs_vs_spy,
+          earnings_soon,
         })
       } catch {
         // skip
