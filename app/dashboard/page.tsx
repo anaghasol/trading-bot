@@ -324,6 +324,14 @@ export default function DashboardPage() {
     setStamp(new Date().toLocaleTimeString('en-US', { hour12: false }))
   }, [])
 
+  // Clear stale data instantly when broker tab switches — no cross-contamination
+  useEffect(() => {
+    setPos([])
+    setSummary(null)
+    setOrders([])
+    setPdt(null)
+  }, [broker])
+
   // market-hours-aware polling: fast when open, slow when closed
   useEffect(() => {
     load(broker)
