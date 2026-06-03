@@ -73,10 +73,10 @@ export const WATCHLIST = {
 export const ALPACA_WATCHLIST = {
   MEGA:         ['NVDA', 'AMD', 'MSFT', 'AAPL', 'TSLA', 'META', 'GOOGL', 'AMZN', 'AVGO'],
   GROWTH:       ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP', 'CRWD'],
-  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT', 'TSLL'],
-  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY', 'LUNR'],
+  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT', 'TSLL', 'NVDL', 'APP', 'UPST'],
+  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY', 'LUNR', 'OKLO', 'ASTS', 'RDDT'],
   ETF:          ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ', 'LABU'],
-  CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK', 'IBIT'],
+  CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK', 'IBIT', 'HOOD'],
 }
 
 export const ALL_SYMBOLS        = Object.values(WATCHLIST).flat()

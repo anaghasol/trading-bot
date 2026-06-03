@@ -108,7 +108,7 @@ async function runScan(
   let tradesMade = 0
   const openSlots = profile.max_positions - positions.length
   // Paper mode: review up to 12 candidates to fill slots; live: stick to openSlots
-  const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 15)
+  const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 20)
 
   for (const { rec, bias, tg_confirmed } of ranked.slice(0, reviewLimit)) {
     const quote = isSchwab
