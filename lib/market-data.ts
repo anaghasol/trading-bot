@@ -313,6 +313,18 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
           setup_type = 'BREAKOUT'
           reasons.push(`Gap-up +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
         }
+        // Ultra-loose pullback — paper mode catch-all for any uptrending name
+        else if (price > e50 && rsiVal >= 40 && vol_ratio >= 1.1 && dist_from_ema20_pct >= -8) {
+          score += 2
+          setup_type = 'EMA20_BOUNCE'
+          reasons.push(`Ultra-loose pull (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
+        }
+        // Simple up-day — any name above 50 EMA with positive day + volume
+        else if (change_1d >= 0.8 && vol_ratio >= 1.3 && price > e50) {
+          score += 2
+          setup_type = 'MOMENTUM'
+          reasons.push(`Up-day +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`)
+        }
 
         if (score === 0) return  // no pattern
 
