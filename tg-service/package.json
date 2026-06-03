@@ -1,0 +1,12 @@
+{
+  "name": "tg-poller",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "telegram": "^2.26.22",
+    "@supabase/supabase-js": "^2.43.5"
+  }
+}
