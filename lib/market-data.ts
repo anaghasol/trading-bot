@@ -260,75 +260,48 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
         const volume_ok     = vol_ratio >= 1.3           // some interest
         const volume_spike  = vol_ratio >= 1.8           // strong interest
 
-        // For Schwab (real $): require full uptrend stack. For paper: allow partial trend.
-        const partial_trend = e20 > e50  // just 20 > 50, no SMA200 required
-        if (!in_uptrend && !partial_trend) return  // both failed → skip
-
         let score = 0
         const reasons: string[] = []
         let setup_type: EMASetup['setup_type'] = 'EMA20_BOUNCE'
 
-        // Core pattern: pullback to 20 EMA with bounce
-        if (above_all_ema && near_ema20 && bouncing && rsi_ok) {
-          score += 4
-          setup_type = 'EMA20_BOUNCE'
-          reasons.push(`20 EMA bounce (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
-        }
-        // Deeper pullback to 50 EMA
-        else if (price > e50 && price <= e20 * 1.02 && rsiVal >= 45 && bouncing) {
-          score += 3
-          setup_type = 'EMA50_PULLBACK'
-          reasons.push(`50 EMA pullback (RSI ${rsiVal})`)
-        }
-        // Breakout above 20 EMA after consolidation
-        else if (dist_from_ema20_pct > 0 && dist_from_ema20_pct < 2 && change_1d > 1.5 && volume_spike) {
-          score += 4
-          setup_type = 'BREAKOUT'
-          reasons.push(`EMA20 breakout +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`)
-        }
-        // Pure momentum continuation
-        else if (price > e20 && rsiVal >= 60 && rsiVal <= 78 && change_5d > 5 && volume_ok) {
-          score += 2
-          setup_type = 'MOMENTUM'
-          reasons.push(`Momentum: +${change_5d.toFixed(1)}% 5d, RSI ${rsiVal}`)
-        }
-        // Loose 20 EMA pullback — paper mode: slightly above/below EMA, lower thresholds
-        else if (
-          Math.abs(dist_from_ema20_pct) <= 6 &&
-          e20 > e50 &&
-          rsiVal >= 45 &&
-          vol_ratio >= 1.15
-        ) {
-          score += 3
-          setup_type = 'EMA20_BOUNCE'
-          reasons.push(`Loose EMA20 (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal}, ${vol_ratio.toFixed(1)}x vol)`)
-        }
-        // Momentum breakout — simple day move + volume surge
-        else if (change_1d >= 1.5 && vol_ratio >= 1.6 && rsiVal >= 52 && price > e20) {
-          score += 3
-          setup_type = 'BREAKOUT'
-          reasons.push(`Momentum break +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
-        }
-        // Gap-up scanner — stock opened significantly higher than prior close
-        else if (change_1d >= 2.5 && vol_ratio >= 2.0 && rsiVal >= 50 && rsiVal <= 80) {
-          score += 4
-          setup_type = 'BREAKOUT'
-          reasons.push(`Gap-up +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
-        }
-        // Ultra-loose pullback — paper mode catch-all for any uptrending name
-        else if (price > e50 && rsiVal >= 40 && vol_ratio >= 1.1 && dist_from_ema20_pct >= -8) {
-          score += 2
-          setup_type = 'EMA20_BOUNCE'
-          reasons.push(`Ultra-loose pull (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
-        }
-        // Simple up-day — any name above 50 EMA with positive day + volume
-        else if (change_1d >= 0.8 && vol_ratio >= 1.3 && price > e50) {
-          score += 2
-          setup_type = 'MOMENTUM'
-          reasons.push(`Up-day +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`)
+        // ── Tier 1: Classic patterns (require uptrend) ────────────────────────
+        if (in_uptrend) {
+          if (above_all_ema && near_ema20 && bouncing && rsi_ok) {
+            score += 4; setup_type = 'EMA20_BOUNCE'
+            reasons.push(`20 EMA bounce (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
+          } else if (price > e50 && price <= e20 * 1.02 && rsiVal >= 45 && bouncing) {
+            score += 3; setup_type = 'EMA50_PULLBACK'
+            reasons.push(`50 EMA pullback (RSI ${rsiVal})`)
+          } else if (dist_from_ema20_pct > 0 && dist_from_ema20_pct < 2 && change_1d > 1.5 && volume_spike) {
+            score += 4; setup_type = 'BREAKOUT'
+            reasons.push(`EMA20 breakout +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`)
+          } else if (price > e20 && rsiVal >= 60 && rsiVal <= 78 && change_5d > 5 && volume_ok) {
+            score += 2; setup_type = 'MOMENTUM'
+            reasons.push(`Momentum: +${change_5d.toFixed(1)}% 5d, RSI ${rsiVal}`)
+          }
         }
 
-        if (score === 0) return  // no pattern
+        // ── Tier 2: Loose patterns (partial trend OK — paper-mode catches more) ─
+        if (score === 0) {
+          if (Math.abs(dist_from_ema20_pct) <= 6 && e20 > e50 && rsiVal >= 45 && vol_ratio >= 1.15) {
+            score += 3; setup_type = 'EMA20_BOUNCE'
+            reasons.push(`Loose EMA20 (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal}, ${vol_ratio.toFixed(1)}x vol)`)
+          } else if (change_1d >= 1.5 && vol_ratio >= 1.6 && rsiVal >= 52 && price > e20) {
+            score += 3; setup_type = 'BREAKOUT'
+            reasons.push(`Momentum break +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
+          } else if (change_1d >= 2.5 && vol_ratio >= 2.0 && rsiVal >= 48 && rsiVal <= 82) {
+            score += 4; setup_type = 'BREAKOUT'
+            reasons.push(`Gap-up +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
+          } else if (price > e50 && rsiVal >= 40 && vol_ratio >= 1.1 && dist_from_ema20_pct >= -8) {
+            score += 2; setup_type = 'EMA20_BOUNCE'
+            reasons.push(`Ultra-loose pull (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
+          } else if (change_1d >= 0.8 && vol_ratio >= 1.3 && price > e50) {
+            score += 2; setup_type = 'MOMENTUM'
+            reasons.push(`Up-day +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`)
+          }
+        }
+
+        if (score === 0) return  // no pattern matched
 
         // Bonus scoring
         if (volume_spike)              { score += 2; reasons.push(`${vol_ratio.toFixed(1)}× vol spike`) }
