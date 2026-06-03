@@ -1,59 +1,88 @@
-/**
- * One-time Telegram auth flow:
- *   Step 1: GET /api/telegram/auth?secret=XXX&phone=%2B1...
- *           → sends OTP to your phone
- *   Step 2: GET /api/telegram/auth?secret=XXX&phone=%2B1...&code=12345
- *           → completes login, stores session in Supabase
- */
-
 import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
-import { saveSession } from '@/lib/telegram-client'
 import { createServiceClient } from '@/lib/supabase-server'
 
 const API_ID   = parseInt(process.env.TELEGRAM_API_ID ?? '0')
 const API_HASH = process.env.TELEGRAM_API_HASH ?? ''
 
+function makeClient(session = '') {
+  return new TelegramClient(new StringSession(session), API_ID, API_HASH, {
+    connectionRetries: 3,
+    useWSS: true,          // WebSocket — works in Vercel serverless (TCP does not)
+  })
+}
+
+async function dbGet(key: string) {
+  const db = createServiceClient()
+  const { data } = await db.from('tb_settings').select('value').eq('key', key).single()
+  return data?.value ?? null
+}
+
+async function dbSet(key: string, value: string) {
+  const db = createServiceClient()
+  await db.from('tb_settings').upsert({ key, value })
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
-  const secret = searchParams.get('secret')
-  const phone  = searchParams.get('phone')
-  const code   = searchParams.get('code')
-  const password = searchParams.get('password') // 2FA if needed
-
-  if (secret !== process.env.CRON_SECRET) {
+  if (searchParams.get('secret') !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  if (!phone) {
-    return NextResponse.json({ error: 'phone param required, e.g. ?phone=%2B12345678901' }, { status: 400 })
-  }
 
-  const client = new TelegramClient(new StringSession(''), API_ID, API_HASH, { connectionRetries: 3 })
-  await client.connect()
+  const phone    = searchParams.get('phone')
+  const code     = searchParams.get('code')
+  const password = searchParams.get('password') ?? ''
 
-  if (!code) {
-    // Step 1 — send OTP
-    await client.sendCode({ apiId: API_ID, apiHash: API_HASH }, phone)
-    return NextResponse.json({ ok: true, next: 'Add &code=XXXXX to the URL with the code Telegram just texted you' })
-  }
+  if (!phone) return NextResponse.json({ error: 'phone param required' }, { status: 400 })
 
-  // Step 2 — sign in
   try {
-    await client.signInUser(
-      { apiId: API_ID, apiHash: API_HASH },
-      {
-        phoneNumber: phone,
-        phoneCode: async () => code,
-        password: async () => password ?? '',
-        onError: async (err) => { throw err },
-      }
+    if (!code) {
+      // ── Step 1: send OTP ──────────────────────────────────────────────────
+      const client = makeClient()
+      await client.connect()
+      const result = await client.sendCode({ apiId: API_ID, apiHash: API_HASH }, phone)
+      // Save partial session + hash so step 2 can reuse them
+      await dbSet('tg_phone_hash', result.phoneCodeHash)
+      await dbSet('tg_partial_session', client.session.save() as unknown as string)
+      await client.disconnect()
+
+      return NextResponse.json({
+        ok: true,
+        msg: `Code sent to ${phone}. Now visit the URL again adding &code=XXXXX with the Telegram code.`,
+      })
+    }
+
+    // ── Step 2: verify code ─────────────────────────────────────────────────
+    const partialSession = await dbGet('tg_partial_session') ?? ''
+    const phoneCodeHash  = await dbGet('tg_phone_hash') ?? ''
+
+    const client = makeClient(partialSession)
+    await client.connect()
+
+    await client.invoke(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      new (await import('telegram/tl')).Api.auth.SignIn({
+        phoneNumber:   phone,
+        phoneCodeHash,
+        phoneCode:     code,
+      }) as any
     )
+
     const session = client.session.save() as unknown as string
-    await saveSession(session)
+    await dbSet('telegram_session', session)
+    // Clean up temp keys
+    const db = createServiceClient()
+    await db.from('tb_settings').delete().in('key', ['tg_phone_hash', 'tg_partial_session'])
     await client.disconnect()
-    return NextResponse.json({ ok: true, message: 'Logged in! Session saved to Supabase. Polling is now active.' })
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 })
+
+    return NextResponse.json({ ok: true, msg: 'Logged in! Polling will now read SF Essential Trades automatically.' })
+  } catch (e: unknown) {
+    const err = e as Error
+    // 2FA required
+    if (err.message?.includes('SESSION_PASSWORD_NEEDED')) {
+      return NextResponse.json({ error: '2FA required — add &password=YOUR_2FA_PASSWORD to the URL' })
+    }
+    return NextResponse.json({ error: err.message ?? String(e) }, { status: 500 })
   }
 }

@@ -26,6 +26,7 @@ export async function getClient(): Promise<TelegramClient> {
   const session = new StringSession(sessionStr)
   const client = new TelegramClient(session, API_ID, API_HASH, {
     connectionRetries: 3,
+    useWSS: true,
   })
   await client.connect()
   if (sessionStr === '') {
