@@ -27,7 +27,11 @@ async function poll() {
     const sessionStr = await getVal('telegram_session')
     if (!sessionStr) { console.error('No session in Supabase'); return }
 
-    const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3 })
+    const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, {
+    connectionRetries: 3,
+    updateWorkers: 0,      // disable update loop — we only read, don't need push updates
+    baseLogger: { levels: [], log: () => {} },  // suppress internal gramjs logs
+  })
     await client.connect()
     await setVal('telegram_session', client.session.save())
 
