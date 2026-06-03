@@ -81,41 +81,72 @@ export function checkExitCondition(
   initial_stop_price: number,
   hold_days: number,
   partial_exit_done: boolean,
-  trail_pct = TRAIL_PCT,   // caller passes profile's trail_pct
-  max_hold  = MAX_HOLD_DAYS
+  trail_pct  = TRAIL_PCT,
+  max_hold   = MAX_HOLD_DAYS,
+  is_paper   = false
 ): ExitDecision {
-  const new_peak      = Math.max(peak_price, current_price)
-  const trailing_stop = new_peak * (1 - trail_pct)
-  const pnl_pct       = ((current_price - entry_price) / entry_price) * 100
-  const in_profit     = current_price > entry_price * 1.01  // 1%+ up
+  const new_peak  = Math.max(peak_price, current_price)
+  const pnl_pct   = ((current_price - entry_price) / entry_price) * 100
+  const in_profit = pnl_pct >= 1.0  // 1%+ up = in profit territory
 
-  // 1. Initial stop — only while not yet in meaningful profit
+  // ── Hard loss cap ─────────────────────────────────────────────────────────
+  // Paper: 10% max loss. Live: 5% max loss. Never let it go past this.
+  const hard_stop_pct = is_paper ? -10 : -5
+  if (pnl_pct <= hard_stop_pct) {
+    return {
+      should_exit: true,
+      exit_type: 'INITIAL_STOP',
+      reason: `HARD STOP ${pnl_pct.toFixed(1)}% — max loss (${hard_stop_pct}%) hit`,
+      new_peak_price: new_peak,
+      trailing_stop_price: current_price,
+      pnl_pct,
+    }
+  }
+
+  // ── Initial stop (before profit) ─────────────────────────────────────────
   if (!in_profit && current_price <= initial_stop_price) {
     return {
       should_exit: true,
       exit_type: 'INITIAL_STOP',
       reason: `STOP: ${pnl_pct.toFixed(1)}% (stop $${initial_stop_price.toFixed(2)} hit)`,
-      new_peak_price: new_peak, trailing_stop_price: trailing_stop, pnl_pct,
+      new_peak_price: new_peak,
+      trailing_stop_price: initial_stop_price,
+      pnl_pct,
     }
   }
 
-  // 2. Trailing stop — kicks in once 1%+ in profit, locks gains from peak
-  if (in_profit && new_peak > entry_price * 1.01 && current_price <= trailing_stop) {
+  // ── Trailing stop (once in profit) ───────────────────────────────────────
+  // Once up 5%+, lock in at least breakeven (stop rises to entry)
+  // Once up 10%+, stop rises to +5% (never give back more than half the gain)
+  let trailing_stop = new_peak * (1 - trail_pct)
+  if (new_peak >= entry_price * 1.10) {
+    // Lock in at least +5% once peaked at +10%
+    trailing_stop = Math.max(trailing_stop, entry_price * 1.05)
+  } else if (new_peak >= entry_price * 1.05) {
+    // Lock in at least breakeven once peaked at +5%
+    trailing_stop = Math.max(trailing_stop, entry_price * 1.001)
+  }
+
+  if (in_profit && current_price <= trailing_stop) {
     return {
       should_exit: true,
       exit_type: 'TRAILING_STOP',
-      reason: `TRAIL: peak $${new_peak.toFixed(2)} → trail $${trailing_stop.toFixed(2)} → now $${current_price.toFixed(2)} (${pnl_pct.toFixed(1)}%)`,
-      new_peak_price: new_peak, trailing_stop_price: trailing_stop, pnl_pct,
+      reason: `TRAIL: peaked +${(((new_peak - entry_price) / entry_price) * 100).toFixed(1)}% → trail $${trailing_stop.toFixed(2)} → now ${pnl_pct.toFixed(1)}%`,
+      new_peak_price: new_peak,
+      trailing_stop_price: trailing_stop,
+      pnl_pct,
     }
   }
 
-  // 3. Time stop — ONLY exit if still losing after max days (winners ride on)
+  // ── Time stop — only cut losers (profitable positions always ride) ────────
   if (hold_days >= max_hold && pnl_pct < 0) {
     return {
       should_exit: true,
       exit_type: 'TIME_STOP',
-      reason: `TIME STOP (losing ${pnl_pct.toFixed(1)}% after ${hold_days}d — cut)`,
-      new_peak_price: new_peak, trailing_stop_price: trailing_stop, pnl_pct,
+      reason: `TIME STOP: losing ${pnl_pct.toFixed(1)}% after ${hold_days}d — cut the loser`,
+      new_peak_price: new_peak,
+      trailing_stop_price: trailing_stop,
+      pnl_pct,
     }
   }
 
@@ -123,7 +154,9 @@ export function checkExitCondition(
     should_exit: false,
     exit_type: 'NONE',
     reason: `HOLD ${pnl_pct >= 0 ? '+' : ''}${pnl_pct.toFixed(1)}% | peak +${(((new_peak - entry_price) / entry_price) * 100).toFixed(1)}% | trail $${trailing_stop.toFixed(2)}`,
-    new_peak_price: new_peak, trailing_stop_price: trailing_stop, pnl_pct,
+    new_peak_price: new_peak,
+    trailing_stop_price: trailing_stop,
+    pnl_pct,
   }
 }
 

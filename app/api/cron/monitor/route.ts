@@ -67,6 +67,15 @@ async function monitorBroker(
     .select('id, symbol, entry_price, peak_pnl, created_at, strategy, reason')
     .eq('status', 'OPEN')
 
+  // Check for Telegram SELL signals in the last 2 hours (external signal reversal)
+  const tgCutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  const { data: tgSells } = await db
+    .from('tb_alerts')
+    .select('symbol')
+    .eq('type', 'SELL')
+    .gte('created_at', tgCutoff)
+  const tgSellSymbols = new Set((tgSells ?? []).map((r) => r.symbol as string))
+
   const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string }>()
   for (const t of openTrades ?? []) {
     const ep         = t.entry_price ?? 0
@@ -122,9 +131,25 @@ async function monitorBroker(
       }
     }
 
-    // Full exit check — use broker profile's trail/stop settings
+    // External signal reversal: if Telegram sent a SELL on this symbol → exit
+    if (tgSellSymbols.has(pos.symbol)) {
+      const order = await api.placeOrder(pos.symbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
+      if (order.status === 'PLACED') {
+        closed++
+        runningPnl += pos.unrealized_pnl
+        if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl, pnl_pct: pos.pnl_pct, closed_at: new Date().toISOString() }).eq('id', meta.id)
+        statuses.push(`${pos.symbol}: EXIT — Telegram SELL signal reversal | ${pos.pnl_pct.toFixed(1)}%`)
+        continue
+      }
+    }
+
+    // Full exit check — use broker profile's trail/stop settings + hard loss cap
     const profile = profileFor(broker)
-    const exit = checkExitCondition(pos.current_price, meta.entry_price, meta.peak_price, meta.initial_stop, holdDays, false, profile.trail_pct, profile.max_hold_days)
+    const exit = checkExitCondition(
+      pos.current_price, meta.entry_price, meta.peak_price, meta.initial_stop,
+      holdDays, false, profile.trail_pct, profile.max_hold_days,
+      broker === 'alpaca_paper'
+    )
     if (exit.new_peak_price > meta.peak_price && meta.id) {
       await db.from('tb_trades').update({ peak_pnl: ((exit.new_peak_price - meta.entry_price) / meta.entry_price) * 100 }).eq('id', meta.id)
     }
