@@ -260,7 +260,9 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
         const volume_ok     = vol_ratio >= 1.3           // some interest
         const volume_spike  = vol_ratio >= 1.8           // strong interest
 
-        if (!in_uptrend) return  // skip broken structure
+        // For Schwab (real $): require full uptrend stack. For paper: allow partial trend.
+        const partial_trend = e20 > e50  // just 20 > 50, no SMA200 required
+        if (!in_uptrend && !partial_trend) return  // both failed → skip
 
         let score = 0
         const reasons: string[] = []

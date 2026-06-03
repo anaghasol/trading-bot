@@ -209,9 +209,10 @@ export async function getRecommendations(
 
   // 2. Mechanical EMA pullback scan (1yr data, free, no AI cost)
   const allSetups = await scanForEMAPullback(symbols)
+  const limit     = broker === 'alpaca_paper' ? 20 : 6  // paper: wider funnel
   const setups    = allSetups
     .filter((s) => !heldSymbols.includes(s.symbol))
-    .slice(0, 6)
+    .slice(0, limit)
 
   if (setups.length === 0) {
     return {
