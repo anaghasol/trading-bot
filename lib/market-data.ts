@@ -51,6 +51,8 @@ export interface EMASetup {
   candle_pattern: string        // e.g. 'HAMMER', 'ENGULFING', 'NONE'
   rs_vs_spy: number             // stock 1d change minus SPY 1d change
   earnings_soon: boolean        // within 7 days of earnings (avoid)
+  rs_rank: number               // 0-100 percentile rank by 1d RS within scanned batch
+  pct_from_52w_high: number     // % below 52w high (negative, e.g. -12.5 = 12.5% below)
 }
 
 export interface MarketRegime {
@@ -322,6 +324,11 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
         const change_5d = closes.length >= 6
           ? ((price - closes.at(-6)!) / closes.at(-6)!) * 100 : 0
 
+        // 52-week high proximity — Minervini: skip if > 25% below (broken downtrend)
+        const high_52w = Math.max(...closes.slice(-252))
+        const pct_from_52w_high = Math.round(((price - high_52w) / high_52w) * 10000) / 100
+        if (pct_from_52w_high < -25) return
+
         // Volume vs 20-day average
         const avgVol20   = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20
         const todayVol   = volumes.at(-1) ?? 0
@@ -390,6 +397,10 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
         if (change_5d > 8)             { score += 1; reasons.push(`+${change_5d.toFixed(1)}% 5d trend`) }
         if (change_1d > 1)             { score += 1; reasons.push(`+${change_1d.toFixed(1)}% today`) }
 
+        // ── 52-week high proximity bonus ──────────────────────────────────────
+        if (pct_from_52w_high >= -10)      { score += 2; reasons.push(`within 10% of 52w high`) }
+        else if (pct_from_52w_high >= -20) { score += 1; reasons.push(`within 20% of 52w high`) }
+
         // ── Candlestick pattern ───────────────────────────────────────────────
         const candle_pattern = detectCandle(opens, highs, lows, closes)
         const cScore = candleScore(candle_pattern)
@@ -419,12 +430,28 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
           candle_pattern,
           rs_vs_spy,
           earnings_soon,
+          pct_from_52w_high,
+          rs_rank: 0,  // computed after all symbols processed
         })
       } catch {
         // skip
       }
     })
   )
+
+  // Compute intra-batch RS rank: percentile of 1d change within this scan
+  if (setups.length > 1) {
+    const ranked = [...setups].sort((a, b) => a.change_1d - b.change_1d)
+    for (const s of setups) {
+      const idx = ranked.findIndex(x => x.symbol === s.symbol)
+      s.rs_rank = Math.round((idx / (ranked.length - 1)) * 100)
+      if (!s.earnings_soon) {
+        if (s.rs_rank >= 90)      { s.pullback_score = Math.min(10, s.pullback_score + 3); s.reason += `, RS#${s.rs_rank}` }
+        else if (s.rs_rank >= 75) { s.pullback_score = Math.min(10, s.pullback_score + 2); s.reason += `, RS#${s.rs_rank}` }
+        else if (s.rs_rank >= 60) { s.pullback_score = Math.min(10, s.pullback_score + 1); s.reason += `, RS#${s.rs_rank}` }
+      }
+    }
+  }
 
   return setups.sort((a, b) => b.pullback_score - a.pullback_score)
 }
