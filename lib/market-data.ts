@@ -307,6 +307,12 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
           setup_type = 'BREAKOUT'
           reasons.push(`Momentum break +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
         }
+        // Gap-up scanner — stock opened significantly higher than prior close
+        else if (change_1d >= 2.5 && vol_ratio >= 2.0 && rsiVal >= 50 && rsiVal <= 80) {
+          score += 4
+          setup_type = 'BREAKOUT'
+          reasons.push(`Gap-up +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol, RSI ${rsiVal}`)
+        }
 
         if (score === 0) return  // no pattern
 
