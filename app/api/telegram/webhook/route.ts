@@ -27,58 +27,61 @@ export async function POST(req: Request) {
     const text: string = message.text ?? message.caption ?? ''
     const from = message.from?.username ?? message.chat?.title ?? 'unknown'
 
-    // Only process messages from the configured chat (if set)
-    if (ALLOWED_CHAT && chatId !== ALLOWED_CHAT) {
-      return NextResponse.json({ ok: true })
-    }
-
+    if (ALLOWED_CHAT && chatId !== ALLOWED_CHAT) return NextResponse.json({ ok: true })
     if (!text || text.length < 5) return NextResponse.json({ ok: true })
 
-    console.log(`[telegram] message from ${from}: ${text.slice(0, 120)}`)
+    console.log(`[telegram] from ${from}: ${text.slice(0, 120)}`)
 
-    // Parse the signal with Claude AI
+    const db = createServiceClient()
     const signal = await parseSignal(text)
-    if (!signal) return NextResponse.json({ ok: true })
 
-    console.log(`[telegram] signal parsed:`, signal)
+    // ── IGNORE ────────────────────────────────────────────────────────────────
+    if (signal.type === 'ignore') {
+      console.log('[telegram] ignored (promo/noise)')
+      return NextResponse.json({ ok: true, type: 'ignore' })
+    }
 
-    // Execute on Alpaca Paper (safe default)
-    const qty = 1  // start with 1 share; can make this dynamic later
+    // ── LEARN ─────────────────────────────────────────────────────────────────
+    if (signal.type === 'learn') {
+      await db.from('tb_alerts').insert({
+        type: 'INFO',
+        symbol: signal.symbols[0] ?? null,
+        message: `📚 SF Trades insight: ${signal.summary}`,
+      })
+      await tgSend(chatId, `📚 *Insight logged*\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
+      console.log('[telegram] insight saved:', signal.summary)
+      return NextResponse.json({ ok: true, type: 'learn', signal })
+    }
+
+    // ── TRADE ─────────────────────────────────────────────────────────────────
+    const qty = 1
     const order = await Alpaca.placeOrder(
-      signal.symbol,
-      qty,
-      signal.action,
-      signal.order_type,
-      signal.entry_price ?? undefined
+      signal.symbol, qty, signal.action,
+      signal.order_type, signal.entry_price ?? undefined
     )
 
-    // Log to Supabase
-    const db = createServiceClient()
     await db.from('tb_alerts').insert({
       type: signal.action,
       symbol: signal.symbol,
-      message: `Telegram signal → ${signal.action} ${qty} ${signal.symbol}${signal.entry_price ? ` @ $${signal.entry_price}` : ' market'}${signal.stop_loss ? ` | SL $${signal.stop_loss}` : ''} — ${order.status}`,
+      message: `Telegram → ${signal.action} ${qty} ${signal.symbol}${signal.entry_price ? ` @$${signal.entry_price}` : ' mkt'}${signal.stop_loss ? ` SL$${signal.stop_loss}` : ''} — ${order.status}`,
     })
 
-    // Build response message
-    const statusEmoji = order.status === 'PLACED' ? '✅' : '❌'
-    const details = [
-      `*${statusEmoji} ${signal.action} ${qty} ${signal.symbol}*`,
+    const emoji = order.status === 'PLACED' ? '✅' : '❌'
+    const reply = [
+      `*${emoji} ${signal.action} ${qty} ${signal.symbol}*`,
       signal.order_type === 'LIMIT' && signal.entry_price ? `Entry: $${signal.entry_price}` : 'Entry: Market',
       signal.stop_loss ? `SL: $${signal.stop_loss}` : null,
-      signal.target ? `Target: $${signal.target}` : null,
+      signal.target    ? `Target: $${signal.target}` : null,
       `Broker: Alpaca Paper`,
       `Status: ${order.status}`,
+      `Confidence: ${signal.confidence}%`,
     ].filter(Boolean).join('\n')
 
-    // Reply on Telegram
-    await tgSend(chatId, details)
+    await tgSend(chatId, reply)
 
-    // SMS alert
     if (order.status === 'PLACED') {
       await alertTradeEntered({
-        symbol: signal.symbol,
-        qty,
+        symbol: signal.symbol, qty,
         price: signal.entry_price ?? 0,
         broker: 'alpaca_paper',
         claude_conf: signal.confidence,
@@ -90,7 +93,7 @@ export async function POST(req: Request) {
       })
     }
 
-    return NextResponse.json({ ok: true, signal, order })
+    return NextResponse.json({ ok: true, type: 'trade', signal, order })
   } catch (e) {
     console.error('[telegram] webhook error:', e)
     return NextResponse.json({ ok: true })

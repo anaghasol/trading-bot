@@ -70,8 +70,24 @@ export async function GET(req: Request) {
   for (const msg of newMsgs.reverse()) {
     const text = msg.text ?? ''
     const signal = await parseSignal(text)
-    if (!signal) { results.push({ id: msg.id, text: text.slice(0, 60), signal: null }); continue }
 
+    if (signal.type === 'ignore') {
+      results.push({ id: msg.id, type: 'ignore' })
+      continue
+    }
+
+    if (signal.type === 'learn') {
+      await db.from('tb_alerts').insert({
+        type: 'INFO',
+        symbol: signal.symbols[0] ?? null,
+        message: `📚 SF Trades insight: ${signal.summary}`,
+      })
+      await tgSend(`📚 *SF Trades insight*\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
+      results.push({ id: msg.id, type: 'learn', summary: signal.summary })
+      continue
+    }
+
+    // trade
     const order = await Alpaca.placeOrder(signal.symbol, 1, signal.action, signal.order_type, signal.entry_price ?? undefined)
 
     await db.from('tb_alerts').insert({
@@ -81,9 +97,9 @@ export async function GET(req: Request) {
     })
 
     const emoji = order.status === 'PLACED' ? '✅' : '❌'
-    await tgSend(`*${emoji} SF Trades signal*\n${signal.action} 1 ${signal.symbol}${signal.entry_price ? ` @ $${signal.entry_price}` : ' market'}${signal.stop_loss ? `\nSL: $${signal.stop_loss}` : ''}\nStatus: ${order.status} (Alpaca Paper)`)
+    await tgSend(`*${emoji} SF Trades signal*\n${signal.action} 1 ${signal.symbol}${signal.entry_price ? ` @ $${signal.entry_price}` : ' market'}${signal.stop_loss ? `\nSL: $${signal.stop_loss}` : ''}\nConfidence: ${signal.confidence}%\nStatus: ${order.status} (Alpaca Paper)`)
 
-    results.push({ id: msg.id, text: text.slice(0, 60), signal, order })
+    results.push({ id: msg.id, type: 'trade', signal, order })
   }
 
   return NextResponse.json({ ok: true, processed: newMsgs.length, results })
