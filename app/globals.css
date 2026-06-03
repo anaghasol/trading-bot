@@ -248,6 +248,91 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
 ::-webkit-scrollbar-thumb { background: var(--border-soft); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: var(--bg-1); }
 
+/* ── Positions table (ptbl) ─────────────────────────────────── */
+.ptbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ptbl th {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--fg-3); font-weight: 600; padding: 9px 12px;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+  background: var(--bg-2); text-align: right;
+}
+.ptbl th.l { text-align: left; }
+.ptbl td {
+  padding: 10px 12px; border-bottom: 1px solid var(--divider);
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  white-space: nowrap; font-size: 12.5px; color: var(--fg-1);
+}
+.ptbl td.l { text-align: left; font-family: var(--font-sans); }
+.ptbl td.muted { color: var(--fg-3); }
+.ptbl tbody tr:hover { background: var(--bg-3); }
+.ptbl tfoot td {
+  border-top: 1px solid var(--border); border-bottom: none;
+  font-weight: 700; padding-top: 10px; padding-bottom: 10px;
+  background: var(--inset);
+}
+
+/* Symbol + badge in table */
+.psym {
+  font-family: var(--font-mono); font-weight: 700;
+  font-size: 13px; color: var(--fg-1); letter-spacing: .01em;
+}
+.pbadge {
+  display: inline-block; margin-left: 6px;
+  padding: 1px 6px; border-radius: 4px; font-size: 9.5px;
+  font-weight: 700; letter-spacing: .04em; vertical-align: middle;
+}
+.pbadge.eq  { background: var(--blue-dim);  color: var(--blue); }
+.pbadge.opt { background: var(--violet-dim); color: var(--violet); }
+
+/* ── Activity tabs ──────────────────────────────────────────── */
+.atabs { display: flex; gap: 2px; }
+.atab {
+  padding: 5px 13px; border-radius: var(--r-md); font-size: 12px;
+  font-weight: 600; cursor: pointer; color: var(--fg-3);
+  background: transparent; border: none;
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-sans);
+}
+.atab:hover { color: var(--fg-1); background: var(--bg-2); }
+.atab.on { background: var(--bg-2); color: var(--fg-1); }
+.atab .cnt {
+  background: var(--inset); border-radius: 9px; padding: 1px 7px;
+  font-size: 10px; color: var(--fg-2); font-family: var(--font-mono);
+}
+
+/* ── Profile mode banner ────────────────────────────────────── */
+.profile-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; border-radius: var(--r-lg); font-size: 12.5px;
+}
+
+/* ── PDT / equity call alert ────────────────────────────────── */
+.desk-alert {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 16px; border-radius: var(--r-lg);
+  background: var(--amber-dim); border: 1px solid rgba(245,166,35,.35);
+  font-size: 12.5px;
+}
+.desk-alert .ico {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: var(--amber-dim); border: 1px solid rgba(245,166,35,.5);
+  display: grid; place-items: center; flex-shrink: 0;
+  color: var(--amber); font-weight: 700; font-size: 14px;
+}
+.desk-alert .x {
+  margin-left: auto; background: none; border: none;
+  color: var(--fg-3); cursor: pointer; font-size: 18px; padding: 0 4px;
+  flex-shrink: 0; align-self: flex-start;
+}
+.desk-alert .x:hover { color: var(--fg-1); }
+
+/* ── Category trend rows ────────────────────────────────────── */
+.cat-row { display: flex; flex-direction: column; gap: 6px; }
+.cat-top {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; font-weight: 500;
+}
+
 /* ── Responsive ─────────────────────────────────────────────── */
 @media(max-width:1150px) {
   .wrap, .desk-wrap { grid-template-columns: 1fr; }

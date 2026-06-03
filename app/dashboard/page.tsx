@@ -440,15 +440,19 @@ export default function DashboardPage() {
 
           {/* Watchlist */}
           <div className="card">
-            <div className="card-head plain"><h3 className="card-title neutral">📈 Watchlist</h3><span className="eyebrow">Top movers</span></div>
-            <div className="card-body" style={{ paddingTop: 6, paddingBottom: 6 }}>
-              {watch.length === 0 ? <div className="desk-empty">Connect Schwab for live quotes</div>
-                : watch.map((q) => (
-                  <div key={q.symbol} className="spread" style={{ padding: '6px 0', borderBottom: '1px solid var(--divider)' }}>
-                    <span className="tabular" style={{ fontWeight: 600, fontSize: '0.8rem' }}>{q.symbol}</span>
-                    <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}><Flash value={q.price} fmt={num} className="" /><span className="tabular" style={{ fontSize: '0.74rem', color: pnlColor(q.change_pct), minWidth: 60, textAlign: 'right' }}>{p2(q.change_pct)}</span></span>
-                  </div>
-                ))}
+            <div className="card-head plain"><h3 className="card-title neutral">📈 Watchlist</h3><span className="eyebrow">Live quotes</span></div>
+            <div className="card-body" style={{ padding: '6px 14px' }}>
+              {watch.length === 0
+                ? <div className="desk-empty">Quotes load during market hours</div>
+                : <div className="wl">
+                    {watch.map((q) => (
+                      <>
+                        <span key={q.symbol + '-s'} className="wl sym">{q.symbol}</span>
+                        <span key={q.symbol + '-p'} className="wl mk"><Flash value={q.price} fmt={num} /></span>
+                        <span key={q.symbol + '-c'} className="wl ch" style={{ color: pnlColor(q.change_pct) }}>{p2(q.change_pct)}</span>
+                      </>
+                    ))}
+                  </div>}
             </div>
           </div>
 
@@ -597,17 +601,34 @@ export default function DashboardPage() {
                 {tabRows.length === 0 ? (
                   <div className="desk-empty">{tab === 'working' ? <>No working orders.<br /><span className="faint">Bot places a protective stop on every fill.</span></> : tab === 'canceled' ? 'No canceled orders today.' : 'No fills yet today.'}</div>
                 ) : (
-                  <table className="ptbl">
-                    <thead><tr><th className="l">Time</th><th className="l">Side</th><th className="l">Symbol</th><th>Qty</th><th>Price</th><th>Status</th></tr></thead>
+                  <table className="ptbl" style={{ width: '100%' }}>
+                    <colgroup>
+                      <col style={{ width: 70 }} />
+                      <col style={{ width: 72 }} />
+                      <col style={{ minWidth: 80 }} />
+                      <col style={{ width: 50 }} />
+                      <col style={{ width: 80 }} />
+                      <col style={{ width: 80 }} />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th className="l">Time</th>
+                        <th className="l">Side</th>
+                        <th className="l">Symbol</th>
+                        <th style={{ textAlign: 'right' }}>Qty</th>
+                        <th style={{ textAlign: 'right' }}>Price</th>
+                        <th style={{ textAlign: 'right' }}>Status</th>
+                      </tr>
+                    </thead>
                     <tbody>
                       {tabRows.slice(0, 12).map((o, i) => (
                         <tr key={i}>
-                          <td className="l muted">{hhmmss(o.time)}</td>
-                          <td className="l"><span className={`chip ${/SELL|STC/i.test(o.side) ? 'down' : 'up'}`} style={{ fontSize: '0.6rem' }}>{o.side}</span></td>
-                          <td className="l psym">{o.symbol}</td>
-                          <td>{o.qty}</td>
-                          <td>${num(o.price)}</td>
-                          <td><span className="chip mut" style={{ fontSize: '0.6rem' }}>{o.status}</span></td>
+                          <td className="l" style={{ color: 'var(--fg-3)', fontSize: 11.5 }}>{hhmmss(o.time)}</td>
+                          <td className="l"><span className={`chip ${/SELL|STC/i.test(o.side) ? 'down' : 'up'}`} style={{ fontSize: '0.62rem' }}>{o.side}</span></td>
+                          <td className="l"><span className="psym">{o.symbol}</span></td>
+                          <td style={{ textAlign: 'right' }}>{o.qty}</td>
+                          <td style={{ textAlign: 'right' }}>${num(o.price)}</td>
+                          <td style={{ textAlign: 'right' }}><span className="chip mut" style={{ fontSize: '0.62rem' }}>{o.status}</span></td>
                         </tr>
                       ))}
                     </tbody>
