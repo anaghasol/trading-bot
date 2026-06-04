@@ -70,6 +70,22 @@ export async function POST(req: Request) {
       message: `${source} msg#${msg_id} → ${signal.action} ${qty} ${signal.symbol}${signal.entry_price ? ` @$${signal.entry_price}` : ' mkt'}${signal.stop_loss ? ` SL$${signal.stop_loss}` : ''} [conf:${signal.confidence}%] — ${order.status}`,
     })
 
+    if (order.status === 'PLACED' && signal.action === 'BUY') {
+      await db.from('tb_trades').insert({
+        symbol: signal.symbol,
+        broker: 'alpaca_paper',
+        action: 'BUY',
+        quantity: qty,
+        entry_price: entryPrice ?? 0,
+        stop_loss: signal.stop_loss ?? (entryPrice ? entryPrice * (1 - profile.initial_stop_pct) : 0),
+        target_price: signal.target ?? null,
+        confidence: signal.confidence,
+        status: 'OPEN',
+        order_id: order.order_id ?? null,
+        reason: `TG: ${source}`,
+      })
+    }
+
     const emoji = order.status === 'PLACED' ? '✅' : '❌'
     await notify([
       `*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*`,

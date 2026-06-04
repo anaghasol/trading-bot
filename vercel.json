@@ -15,10 +15,6 @@
     {
       "path": "/api/cron/close",
       "schedule": "30 19 * * 1-5"
-    },
-    {
-      "path": "/api/telegram/poll",
-      "schedule": "* 13-21 * * 1-5"
     }
   ]
 }
