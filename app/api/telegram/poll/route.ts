@@ -4,6 +4,9 @@
  * Called by Vercel cron every minute during market hours.
  */
 
+export const runtime = 'nodejs'
+export const maxDuration = 60
+
 import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
@@ -54,8 +57,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: 'TG connect failed', detail: String(e) })
   }
 
-  // Persist refreshed session
-  await saveSession(client.session.save() as unknown as string)
+  try {
+    await saveSession(client.session.save() as unknown as string)
+  } catch { /* non-fatal — session refresh failed but polling can continue */ }
 
   // Heartbeat — keeps status endpoint green
   await db.from('tb_settings').upsert({ key: 'tg_last_poll', value: new Date().toISOString() })
@@ -66,8 +70,15 @@ export async function GET(req: Request) {
   const lastId = parseInt(lastData?.value ?? '0')
 
   // Fetch recent messages from the channel
-  const messages = await client.getMessages(CHANNEL_ID, { limit: 10 })
-  await client.disconnect()
+  let messages: Awaited<ReturnType<typeof client.getMessages>>
+  try {
+    messages = await client.getMessages(CHANNEL_ID, { limit: 10 })
+  } catch (e) {
+    await client.disconnect().catch(() => {})
+    await db.from('tb_settings').upsert({ key: 'tg_status', value: `error: getMessages ${String(e).slice(0, 80)}` })
+    return NextResponse.json({ ok: false, error: 'getMessages failed', detail: String(e) })
+  }
+  await client.disconnect().catch(() => {})
 
   const newMsgs = messages.filter((m) => m.id > lastId && m.text?.length > 5)
 
