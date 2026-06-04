@@ -73,6 +73,14 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Full: ${positions.length}/${profile.max_positions}` }
   }
 
+  // Total exposure cap: don't open new positions if already > 75% equity deployed
+  // Prevents margin usage on volatile names like MARA/SOUN that size up fast
+  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.75
+  const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
+  if (totalMarketValue / equity > MAX_EXPOSURE) {
+    return { trades_made: 0, message: `[${broker}] Exposure cap: $${totalMarketValue.toFixed(0)}/$${equity.toFixed(0)} (${(totalMarketValue/equity*100).toFixed(0)}% > ${MAX_EXPOSURE*100}%)` }
+  }
+
   const heldSymbols = positions.map((p) => p.symbol)
   const alloc       = await getSleeveAllocation(db)
 

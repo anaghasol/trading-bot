@@ -43,12 +43,20 @@ export const SLEEVES: Record<SleeveKey, SleeveSpec> = {
 
 export const DEFAULT_ALLOC: Record<SleeveKey, number> = { aggressive: 40, short: 30, little_long: 20, long: 10 }
 
-/** Map an ai-advisor setup name → the sleeve that should hold it. */
+/** Map an ai-advisor / scanner setup name → the sleeve that should hold it. */
 export function sleeveForSetup(setup: string): SleeveKey {
   switch ((setup || '').toUpperCase()) {
+    // High-velocity: scanner BREAKOUT + legacy MOMENTUM_BREAKOUT → most aggressive
+    case 'BREAKOUT':
     case 'MOMENTUM_BREAKOUT': return 'aggressive'
+    // Intraday momentum: short hold, tighter stop
+    case 'MOMENTUM':
     case 'REVERSAL':          return 'short'
+    // EMA bounces: medium-term swing
+    case 'EMA20_BOUNCE':
+    case 'EMA50_PULLBACK':
     case 'TREND':             return 'little_long'
+    // Everything else: long sleeve (most conservative sizing)
     default:                  return 'long'
   }
 }
