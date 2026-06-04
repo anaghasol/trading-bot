@@ -2,27 +2,23 @@
   "crons": [
     {
       "path": "/api/cron/scan",
-      "schedule": "15 14 * * 1-5"
-    },
-    {
-      "path": "/api/cron/scan",
-      "schedule": "0 17 * * 1-5"
+      "schedule": "*/30 13-20 * * 1-5"
     },
     {
       "path": "/api/cron/monitor",
-      "schedule": "*/30 14-20 * * 1-5"
+      "schedule": "*/5 13-20 * * 1-5"
     },
     {
       "path": "/api/cron/close",
-      "schedule": "35 14 * * 1-5"
+      "schedule": "35 13 * * 1-5"
     },
     {
       "path": "/api/cron/close",
-      "schedule": "30 20 * * 1-5"
+      "schedule": "30 19 * * 1-5"
     },
     {
       "path": "/api/telegram/poll",
-      "schedule": "* 14-21 * * 1-5"
+      "schedule": "* 13-21 * * 1-5"
     }
   ]
 }
