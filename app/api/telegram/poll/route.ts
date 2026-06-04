@@ -11,6 +11,8 @@ import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
+import { calculatePositionSize } from '@/lib/risk'
+import { PROFILES } from '@/lib/strategy-profiles'
 
 const API_ID     = parseInt(process.env.TELEGRAM_API_ID ?? '0')
 const API_HASH   = process.env.TELEGRAM_API_HASH ?? ''
@@ -87,17 +89,45 @@ export async function GET(req: Request) {
       continue
     }
 
-    // trade
-    const order = await Alpaca.placeOrder(signal.symbol, 1, signal.action, signal.order_type, signal.entry_price ?? undefined)
+    // trade — size using paper profile
+    const profile = PROFILES.alpaca_paper
+    const equity = (await Alpaca.getAccountBalance()) ?? 100_000
+    let entryPrice = signal.entry_price
+    if (!entryPrice) {
+      const q = await Alpaca.getQuote(signal.symbol)
+      entryPrice = q?.price ?? null
+    }
+    const sizing = entryPrice
+      ? calculatePositionSize(equity, entryPrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
+      : { qty: 10 }
+    const qty = sizing.qty
+
+    const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, signal.order_type, signal.entry_price ?? undefined)
 
     await db.from('tb_alerts').insert({
       type: signal.action,
       symbol: signal.symbol,
-      message: `SF Essential Trades → ${signal.action} 1 ${signal.symbol}${signal.entry_price ? ` @$${signal.entry_price}` : ' mkt'}${signal.stop_loss ? ` SL$${signal.stop_loss}` : ''} — ${order.status}`,
+      message: `SF Essential Trades → ${signal.action} ${qty} ${signal.symbol}${signal.entry_price ? ` @$${signal.entry_price}` : ' mkt'}${signal.stop_loss ? ` SL$${signal.stop_loss}` : ''} — ${order.status}`,
     })
 
+    if (order.status === 'PLACED' && signal.action === 'BUY') {
+      await db.from('tb_trades').insert({
+        symbol: signal.symbol,
+        broker: 'alpaca_paper',
+        action: 'BUY',
+        quantity: qty,
+        entry_price: entryPrice ?? 0,
+        stop_loss: signal.stop_loss ?? (entryPrice ? entryPrice * (1 - profile.initial_stop_pct) : 0),
+        target_price: signal.target ?? null,
+        confidence: signal.confidence,
+        status: 'OPEN',
+        order_id: order.order_id ?? null,
+        reason: 'TG: SF Essential Trades',
+      })
+    }
+
     const emoji = order.status === 'PLACED' ? '✅' : '❌'
-    await tgSend(`*${emoji} SF Trades signal*\n${signal.action} 1 ${signal.symbol}${signal.entry_price ? ` @ $${signal.entry_price}` : ' market'}${signal.stop_loss ? `\nSL: $${signal.stop_loss}` : ''}\nConfidence: ${signal.confidence}%\nStatus: ${order.status} (Alpaca Paper)`)
+    await tgSend(`*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*\n${signal.entry_price ? `Entry: $${signal.entry_price}` : 'Entry: Market'}${signal.stop_loss ? `\nSL: $${signal.stop_loss}` : ''}\nConfidence: ${signal.confidence}%\nStatus: ${order.status} · Alpaca Paper`)
 
     results.push({ id: msg.id, type: 'trade', signal, order })
   }
