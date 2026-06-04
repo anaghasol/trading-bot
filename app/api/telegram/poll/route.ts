@@ -70,11 +70,23 @@ export async function GET(req: Request) {
   const lastId = parseInt(lastData?.value ?? '0')
 
   // Fetch recent messages from the channel
-  // Must resolve entity first — raw numeric IDs don't carry access hash for channels
+  // Find channel via dialogs — more reliable than numeric ID (handles access hash + new ID formats)
   let messages: Awaited<ReturnType<typeof client.getMessages>>
   try {
-    const entity = await client.getEntity(CHANNEL_ID)
-    messages = await client.getMessages(entity, { limit: 10 })
+    const dialogs = await client.getDialogs({ limit: 200 })
+    const channel = dialogs.find((d) => {
+      const dId = String(d.id ?? '')
+      return dId === String(CHANNEL_ID) ||
+             dId === String(Math.abs(CHANNEL_ID)) ||
+             (d as { title?: string }).title?.toLowerCase().includes('sf essential') ||
+             (d as { title?: string }).title?.toLowerCase().includes('sf trades')
+    })
+    if (!channel?.entity) {
+      await client.disconnect().catch(() => {})
+      await db.from('tb_settings').upsert({ key: 'tg_status', value: 'error: SF Trades channel not found in dialogs' })
+      return NextResponse.json({ ok: false, error: 'channel not found' })
+    }
+    messages = await client.getMessages(channel.entity, { limit: 10 })
   } catch (e) {
     await client.disconnect().catch(() => {})
     await db.from('tb_settings').upsert({ key: 'tg_status', value: `error: getMessages ${String(e).slice(0, 80)}` })
