@@ -21,8 +21,9 @@ const API_ID     = parseInt(process.env.TELEGRAM_API_ID ?? '0')
 const API_HASH   = process.env.TELEGRAM_API_HASH ?? ''
 const BOT_TOKEN  = process.env.TELEGRAM_BOT_TOKEN!
 const GROUP_ID   = parseInt(process.env.TELEGRAM_ALLOWED_CHAT_ID ?? '0')
-// SF Essential Trades channel numeric ID (from URL: web.telegram.org/k/#-2381909837)
-const CHANNEL_ID = parseInt(process.env.TELEGRAM_CHANNEL_ID ?? '-2381909837')
+// SF Essential Trades: Telegram API uses -100 prefix for channels (-1002381909837)
+// web.telegram.org URL shows -2381909837 (without -100) — DO NOT use that directly
+const CHANNEL_ID = parseInt(process.env.TELEGRAM_CHANNEL_ID ?? '-1002381909837')
 
 async function tgSend(text: string) {
   if (!GROUP_ID) return
@@ -70,23 +71,9 @@ export async function GET(req: Request) {
   const lastId = parseInt(lastData?.value ?? '0')
 
   // Fetch recent messages from the channel
-  // Find channel via dialogs — more reliable than numeric ID (handles access hash + new ID formats)
   let messages: Awaited<ReturnType<typeof client.getMessages>>
   try {
-    const dialogs = await client.getDialogs({ limit: 200 })
-    const channel = dialogs.find((d) => {
-      const dId = String(d.id ?? '')
-      return dId === String(CHANNEL_ID) ||
-             dId === String(Math.abs(CHANNEL_ID)) ||
-             (d as { title?: string }).title?.toLowerCase().includes('sf essential') ||
-             (d as { title?: string }).title?.toLowerCase().includes('sf trades')
-    })
-    if (!channel?.entity) {
-      await client.disconnect().catch(() => {})
-      await db.from('tb_settings').upsert({ key: 'tg_status', value: 'error: SF Trades channel not found in dialogs' })
-      return NextResponse.json({ ok: false, error: 'channel not found' })
-    }
-    messages = await client.getMessages(channel.entity, { limit: 10 })
+    messages = await client.getMessages(CHANNEL_ID, { limit: 10 })
   } catch (e) {
     await client.disconnect().catch(() => {})
     await db.from('tb_settings').upsert({ key: 'tg_status', value: `error: getMessages ${String(e).slice(0, 80)}` })
