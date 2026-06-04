@@ -69,11 +69,12 @@ HELD: ${held.join(', ') || 'none'}
 
 ${isPaper ? `PAPER MODE INSTRUCTIONS: This is fake money for learning. Rate EVERY setup >= ${minConf}% if it has any positive momentum. Be generous. We need data.` : `LIVE MODE: Only rate high-conviction setups >= ${minConf}%.`}
 
-SETUPS:
+SETUPS (rs_rank=percentile vs all scanned stocks today 0-100, higher=stronger relative momentum; from_52wh=% below 52w high):
 ${JSON.stringify(setups.map((s) => ({
   sym: s.symbol, type: s.setup_type, price: s.price,
   dist_ema20: `${s.dist_from_ema20_pct.toFixed(1)}%`,
   rsi: s.rsi, d1: `${s.change_1d.toFixed(1)}%`, d5: `${s.change_5d.toFixed(1)}%`,
+  rs_rank: s.rs_rank, from_52wh: `${s.pct_from_52w_high.toFixed(1)}%`,
   score: `${s.pullback_score}/10`, why: s.reason,
 })))}
 
@@ -198,7 +199,9 @@ export async function getRecommendations(
   }
 
   // 2. Mechanical EMA pullback scan (1yr data, free, no AI cost)
-  const allSetups = await scanForEMAPullback(symbols)
+  // Paper: loose mode — relaxed 52w filter (-45%) + lower gap bar (1.5%) to
+  // keep volatile paper names like BBAI/SOUN/MARA in the funnel
+  const allSetups = await scanForEMAPullback(symbols, { loose: broker === 'alpaca_paper' })
   const limit     = broker === 'alpaca_paper' ? 20 : 6  // paper: wider funnel
   const setups    = allSetups
     .filter((s) => !heldSymbols.includes(s.symbol))

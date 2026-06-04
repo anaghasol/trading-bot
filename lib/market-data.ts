@@ -294,7 +294,11 @@ export async function getMarketRegime(): Promise<MarketRegime> {
  * Returns setups sorted by pullback_score descending. Fetch 1y data for
  * accurate 200-period calculations.
  */
-export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]> {
+export async function scanForEMAPullback(
+  symbols: string[],
+  opts: { loose?: boolean } = {},  // loose=true for paper: relaxed 52w filter + lower gap bar
+): Promise<EMASetup[]> {
+  const loose = opts.loose ?? false
   const setups: EMASetup[] = []
 
   // Fetch SPY once for relative strength baseline
@@ -324,10 +328,12 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
         const change_5d = closes.length >= 6
           ? ((price - closes.at(-6)!) / closes.at(-6)!) * 100 : 0
 
-        // 52-week high proximity — Minervini: skip if > 25% below (broken downtrend)
+        // 52-week high proximity — Minervini for live: skip if > 25% below.
+        // Paper (loose): allow up to -45% — volatile names like BBAI/SOUN/MARA
+        // are legitimately far from highs but are the best paper momentum targets.
         const high_52w = Math.max(...closes.slice(-252))
         const pct_from_52w_high = Math.round(((price - high_52w) / high_52w) * 10000) / 100
-        if (pct_from_52w_high < -25) return
+        if (pct_from_52w_high < (loose ? -45 : -25)) return
 
         // Volume vs 20-day average
         const avgVol20   = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20
@@ -376,13 +382,13 @@ export async function scanForEMAPullback(symbols: string[]): Promise<EMASetup[]>
           } else if (change_1d >= 1.5 && rsiVal >= 50 && price > e20) {
             score += 3; setup_type = 'BREAKOUT'
             reasons.push(`Momentum +${change_1d.toFixed(1)}% RSI ${rsiVal}`)
-          } else if (change_1d >= 2.5 && rsiVal >= 45 && rsiVal <= 85) {
+          } else if (change_1d >= (loose ? 1.5 : 2.5) && rsiVal >= 45 && rsiVal <= 85) {
             score += 4; setup_type = 'BREAKOUT'
             reasons.push(`Gap-up +${change_1d.toFixed(1)}%, RSI ${rsiVal}`)
           } else if (price > e50 && rsiVal >= 38 && dist_from_ema20_pct >= -10) {
             score += 2; setup_type = 'EMA20_BOUNCE'
             reasons.push(`Near EMA (dist ${dist_from_ema20_pct.toFixed(1)}%, RSI ${rsiVal})`)
-          } else if (change_1d >= 0.5 && price > e50 && rsiVal >= 40) {
+          } else if (change_1d >= (loose ? 0.3 : 0.5) && price > e50 && rsiVal >= 40) {
             score += 2; setup_type = 'MOMENTUM'
             reasons.push(`Up-day +${change_1d.toFixed(1)}%, RSI ${rsiVal}`)
           }
