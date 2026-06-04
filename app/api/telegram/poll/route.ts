@@ -42,7 +42,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Not authenticated. Visit /api/telegram/auth first.' })
   }
 
-  const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3 })
+  const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3, useWSS: true })
   await client.connect()
 
   // Persist refreshed session
@@ -89,20 +89,18 @@ export async function GET(req: Request) {
       continue
     }
 
-    // trade — size using paper profile
+    // trade — size using paper profile; always use live price for sizing
     const profile = PROFILES.alpaca_paper
     const equity = (await Alpaca.getAccountBalance()) ?? 100_000
-    let entryPrice = signal.entry_price
-    if (!entryPrice) {
-      const q = await Alpaca.getQuote(signal.symbol)
-      entryPrice = q?.price ?? null
-    }
-    const sizing = entryPrice
-      ? calculatePositionSize(equity, entryPrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
+    const liveQuote = await Alpaca.getQuote(signal.symbol)
+    const livePrice = liveQuote?.price ?? signal.entry_price
+    const entryPrice = signal.entry_price
+    const sizing = livePrice
+      ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
       : { qty: 10 }
     const qty = sizing.qty
 
-    const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, signal.order_type, signal.entry_price ?? undefined)
+    const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
 
     await db.from('tb_alerts').insert({
       type: signal.action,

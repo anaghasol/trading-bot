@@ -46,23 +46,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, type: 'learn', signal })
     }
 
-    // trade — execute silently, size using paper profile
+    // trade — always size on live price; execute at market
     const profile = PROFILES.alpaca_paper
     const equity = (await Alpaca.getAccountBalance()) ?? 100_000
-    let entryPrice = signal.entry_price
-    if (!entryPrice) {
-      const q = await Alpaca.getQuote(signal.symbol)
-      entryPrice = q?.price ?? null
-    }
-    const sizing = entryPrice
-      ? calculatePositionSize(equity, entryPrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
+    const liveQuote = await Alpaca.getQuote(signal.symbol)
+    const livePrice = liveQuote?.price ?? signal.entry_price
+    const sizing = livePrice
+      ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
       : { qty: 10 }
     const qty = sizing.qty
+    const entryPrice = livePrice
 
-    const order = await Alpaca.placeOrder(
-      signal.symbol, qty, signal.action,
-      signal.order_type, signal.entry_price ?? undefined
-    )
+    const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
 
     await db.from('tb_alerts').insert({
       type: signal.action,
