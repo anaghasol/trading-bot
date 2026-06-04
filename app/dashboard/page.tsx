@@ -412,6 +412,37 @@ export default function DashboardPage() {
         <button className="iconbtn" onClick={() => load(broker)}>↻ {stamp || '—'}</button>
       </header>
 
+      {/* ════ SYSTEM HEALTH BAR ════ */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 20px', background: 'var(--bg-2)', borderBottom: '1px solid var(--border)', fontSize: '0.68rem', flexWrap: 'wrap' }}>
+        <span className="faint" style={{ marginRight: 4, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.6rem' }}>Systems</span>
+        {/* TG Poller */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: tg == null ? 'var(--bg-3)' : tg.connected ? 'rgba(19,201,142,0.1)' : 'rgba(255,80,80,0.1)', border: `1px solid ${tg == null ? 'var(--border)' : tg.connected ? 'var(--green)' : 'var(--red)'}` }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : 'var(--red)', display: 'inline-block' }} />
+          <span style={{ color: tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : 'var(--red)' }}>TG Poller {tg?.connected ? '✓' : tg == null ? '…' : `✗ ${tg.minutes_silent ?? '?'}m silent`}</span>
+        </span>
+        {/* Alpaca */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: summary ? 'rgba(19,201,142,0.1)' : 'rgba(255,80,80,0.1)', border: `1px solid ${summary ? 'var(--green)' : 'var(--red)'}` }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: summary ? 'var(--green)' : 'var(--red)', display: 'inline-block' }} />
+          <span style={{ color: summary ? 'var(--green)' : 'var(--red)' }}>Alpaca {summary ? '✓' : '✗'}</span>
+        </span>
+        {/* Schwab */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: broker === 'schwab' && summary ? 'rgba(19,201,142,0.1)' : broker !== 'schwab' ? 'var(--bg-3)' : 'rgba(255,80,80,0.1)', border: `1px solid ${broker === 'schwab' && summary ? 'var(--green)' : 'var(--border)'}` }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: broker === 'schwab' && summary ? 'var(--green)' : 'var(--fg-3)', display: 'inline-block' }} />
+          <span style={{ color: broker === 'schwab' && summary ? 'var(--green)' : 'var(--fg-3)' }}>Schwab {broker === 'schwab' ? (summary ? '✓' : '✗') : '—'}</span>
+        </span>
+        {/* Claude AI */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: 'rgba(19,201,142,0.1)', border: '1px solid var(--green)' }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', display: 'inline-block' }} />
+          <span style={{ color: 'var(--green)' }}>Claude AI ✓</span>
+        </span>
+        {/* Market */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: market.open ? 'rgba(19,201,142,0.1)' : 'var(--bg-3)', border: `1px solid ${market.open ? 'var(--green)' : 'var(--border)'}` }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: market.open ? 'var(--green)' : 'var(--fg-3)', display: 'inline-block' }} />
+          <span style={{ color: market.open ? 'var(--green)' : 'var(--fg-3)' }}>Market {market.open ? 'Open' : 'Closed'}</span>
+        </span>
+        <span className="faint" style={{ marginLeft: 'auto', fontSize: '0.6rem' }}>{stamp || '—'}</span>
+      </div>
+
       <div className="desk-wrap">
         {/* ════ LEFT RAIL ════ */}
         <div className="desk-col">
@@ -666,9 +697,9 @@ export default function DashboardPage() {
                 {tg != null && tg.has_session && !tg.connected && (
                   <div style={{ fontSize: '0.75rem', color: '#f5a623', background: 'rgba(245,166,35,0.08)', borderRadius: 6, padding: '6px 10px' }}>
                     {tg.tg_status?.startsWith('error:')
-                      ? <>Railway error: <b>{tg.tg_status.replace('error:', '')}</b></>
-                      : <>Railway silent — {tg.minutes_silent ?? '?'}min since last poll</>}
-                    <br /><span className="faint" style={{ fontSize: '0.65rem' }}>SMS alert sent · check railway.com</span>
+                      ? <>Poller error: <b>{tg.tg_status.replace('error:', '')}</b></>
+                      : <>Poller silent — {tg.minutes_silent ?? '?'}min since last poll</>}
+                    <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Vercel cron may be down · check Vercel dashboard</span>
                   </div>
                 )}
                 {tg != null && tg.signals.length === 0 && tg.connected && (
