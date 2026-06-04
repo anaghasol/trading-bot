@@ -13,6 +13,8 @@ interface Summary { account_value: number; cash: number; stock_buying_power: num
 interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
+interface TgSignal { id: number; type: string; message: string; symbol?: string; created_at: string }
+interface TgStatus { connected: boolean; has_session: boolean; last_poll: string | null; last_msg_id: number; signals: TgSignal[] }
 interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string }
 interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; market_open: boolean }
 interface Pdt { day_trades_remaining: number; is_pdt_protected: boolean; balance: number }
@@ -294,6 +296,7 @@ export default function DashboardPage() {
   const [tab, setTab] = useState<'working' | 'filled' | 'canceled'>('filled')
   const [stamp, setStamp] = useState('')
   const [alertOn, setAlertOn] = useState(true)
+  const [tg, setTg] = useState<TgStatus | null>(null)
   const market = useMarketClock()
   const profile = PROFILES[broker]
 
@@ -322,6 +325,8 @@ export default function DashboardPage() {
     else setOrders([])
     if (r.status === 'fulfilled' && r.value?.categories) setCats(r.value.categories)
     setStamp(new Date().toLocaleTimeString('en-US', { hour12: false }))
+    // Telegram status (broker-agnostic — same Railway service for both)
+    fetch('/api/telegram/status').then(r => r.json()).then(setTg).catch(() => {})
   }, [])
 
   // Clear stale data instantly when broker tab switches — no cross-contamination
@@ -634,6 +639,46 @@ export default function DashboardPage() {
                     </tbody>
                   </table>
                 )}
+              </div>
+            </div>
+
+            {/* Telegram live feed */}
+            <div className="card">
+              <div className="card-head plain" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <h3 className="card-title neutral" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : 'var(--red)', flexShrink: 0 }} />
+                  Telegram · SF Trades
+                </h3>
+                <span className="faint" style={{ fontSize: '0.68rem' }}>
+                  {tg?.last_poll ? `${Math.round((Date.now() - new Date(tg.last_poll).getTime()) / 60000)}m ago` : 'no heartbeat'}
+                </span>
+              </div>
+              <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 100 }}>
+                {tg == null && <div className="desk-empty">Loading…</div>}
+                {tg != null && !tg.has_session && (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--red)' }}>
+                    Not authenticated. Run:<br />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--fg-3)', wordBreak: 'break-all' }}>
+                      /api/telegram/auth?secret=tradebot-cron-2026-secure&phone=+1XXXXXXXXXX
+                    </span>
+                  </div>
+                )}
+                {tg != null && tg.has_session && !tg.connected && (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--yellow, #f5a623)' }}>
+                    Session exists but Railway poller may be down. Last heartbeat: {tg.last_poll ? new Date(tg.last_poll).toLocaleTimeString() : 'never'}
+                  </div>
+                )}
+                {tg != null && tg.signals.length === 0 && tg.connected && (
+                  <div className="desk-empty">No signals yet — watching channel.</div>
+                )}
+                {(tg?.signals ?? []).slice(0, 6).map((s) => (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.72rem' }}>
+                    <span className={`chip ${s.type === 'BUY' ? 'up' : s.type === 'SELL' ? 'down' : 'mut'}`} style={{ fontSize: '0.6rem', flexShrink: 0 }}>{s.type}</span>
+                    {s.symbol && <b style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-mono)' }}>{s.symbol}</b>}
+                    <span className="faint" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.message.replace(/^\[.*?\]\s*/, '').slice(0, 60)}</span>
+                    <span className="faint" style={{ flexShrink: 0 }}>{hhmmss(s.created_at)}</span>
+                  </div>
+                ))}
               </div>
             </div>
 

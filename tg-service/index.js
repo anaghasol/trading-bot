@@ -27,12 +27,16 @@ async function poll() {
     const sessionStr = await getVal('telegram_session')
     if (!sessionStr) { console.error('No session in Supabase'); return }
 
+    // gramjs requires a full logger interface — plain {log:()=>{}} crashes on .info/.warn/.error
+    const SILENT = { info:()=>{}, warn:()=>{}, error:()=>{}, debug:()=>{},
+                     log:()=>{}, levels:[], setLevel:()=>{}, format:()=>'', canSend:()=>false }
     const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, {
-    connectionRetries: 3,
-    updateWorkers: 0,      // disable update loop — we only read, don't need push updates
-    baseLogger: { levels: [], log: () => {} },  // suppress internal gramjs logs
-  })
+      connectionRetries: 3,
+      updateWorkers: 0,
+      baseLogger: SILENT,
+    })
     await client.connect()
+    await setVal('tg_last_poll', new Date().toISOString())  // heartbeat for dashboard widget
     await setVal('telegram_session', client.session.save())
 
     const lastId  = parseInt(await getVal('tg_last_msg_id') ?? '0')
