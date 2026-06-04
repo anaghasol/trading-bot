@@ -9,6 +9,8 @@ import { parseSignal } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
 import { alertTradeEntered } from '@/lib/notify'
+import { calculatePositionSize } from '@/lib/risk'
+import { PROFILES } from '@/lib/strategy-profiles'
 
 const BOT_TOKEN  = process.env.TELEGRAM_BOT_TOKEN!
 const PRIVATE_GROUP = parseInt(process.env.TELEGRAM_ALLOWED_CHAT_ID ?? '0')
@@ -44,8 +46,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, type: 'learn', signal })
     }
 
-    // trade — execute silently
-    const qty = 1
+    // trade — execute silently, size using paper profile
+    const profile = PROFILES.alpaca_paper
+    const equity = (await Alpaca.getAccountBalance()) ?? 100_000
+    let entryPrice = signal.entry_price
+    if (!entryPrice) {
+      const q = await Alpaca.getQuote(signal.symbol)
+      entryPrice = q?.price ?? null
+    }
+    const sizing = entryPrice
+      ? calculatePositionSize(equity, entryPrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
+      : { qty: 10 }
+    const qty = sizing.qty
+
     const order = await Alpaca.placeOrder(
       signal.symbol, qty, signal.action,
       signal.order_type, signal.entry_price ?? undefined
@@ -59,7 +72,7 @@ export async function POST(req: Request) {
 
     const emoji = order.status === 'PLACED' ? '✅' : '❌'
     await notify([
-      `*${emoji} SF Trades → ${signal.action} 1 ${signal.symbol}*`,
+      `*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*`,
       signal.entry_price ? `Entry: $${signal.entry_price}` : 'Entry: Market',
       signal.stop_loss   ? `SL: $${signal.stop_loss}` : null,
       signal.target      ? `Target: $${signal.target}` : null,
