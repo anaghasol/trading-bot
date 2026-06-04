@@ -70,9 +70,11 @@ export async function GET(req: Request) {
   const lastId = parseInt(lastData?.value ?? '0')
 
   // Fetch recent messages from the channel
+  // Must resolve entity first — raw numeric IDs don't carry access hash for channels
   let messages: Awaited<ReturnType<typeof client.getMessages>>
   try {
-    messages = await client.getMessages(CHANNEL_ID, { limit: 10 })
+    const entity = await client.getEntity(CHANNEL_ID)
+    messages = await client.getMessages(entity, { limit: 10 })
   } catch (e) {
     await client.disconnect().catch(() => {})
     await db.from('tb_settings').upsert({ key: 'tg_status', value: `error: getMessages ${String(e).slice(0, 80)}` })
