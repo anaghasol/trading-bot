@@ -10,6 +10,20 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic()
 
+// Cheap pre-filter — skip Claude entirely for obvious noise.
+// A message passes if it has ANY trading signal: ticker, price, keyword, or real length.
+const TRADE_KEYWORDS = /\b(buy|sell|long|short|entry|sl|stop.?loss|target|t1|t2|t3|breakout|support|resistance|earnings|hold|exit|watchlist|alert|position|setup)\b/i
+const HAS_TICKER    = /\b[A-Z]{2,5}\b/        // 2–5 uppercase letters (ticker pattern)
+const HAS_PRICE     = /\$[\d,]+(\.\d+)?|\d+\.?\d*\s*%/  // $123 or 12.5%
+
+export function isWorthClassifying(text: string): boolean {
+  if (text.length < 15) return false          // too short to matter
+  if (TRADE_KEYWORDS.test(text)) return true
+  if (HAS_TICKER.test(text) && HAS_PRICE.test(text)) return true
+  if (text.length > 80) return true           // long message — likely analysis
+  return false
+}
+
 export type SignalType = 'trade' | 'learn' | 'ignore'
 
 export interface TradeSignal {

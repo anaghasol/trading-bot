@@ -11,7 +11,7 @@ import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
-import { parseSignal } from '@/lib/telegram-signal'
+import { parseSignal, isWorthClassifying } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
@@ -100,6 +100,7 @@ export async function GET(req: Request) {
 
   const results = await Promise.all(newMsgs.map(async (msg) => {
     const text = msg.text ?? ''
+    if (!isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
     const signal = await parseSignal(text)
 
     if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
