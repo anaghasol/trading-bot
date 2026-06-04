@@ -5,7 +5,7 @@
  */
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
+export const maxDuration = 300
 
 import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
@@ -80,43 +80,43 @@ export async function GET(req: Request) {
   }
   await client.disconnect().catch(() => {})
 
-  const newMsgs = messages.filter((m) => m.id > lastId && m.text?.length > 5)
+  // Process newest-first, cap at 5 per tick to stay well under timeout
+  const newMsgs = messages
+    .filter((m) => m.id > lastId && m.text?.length > 5)
+    .sort((a, b) => b.id - a.id)
+    .slice(0, 5)
 
   if (newMsgs.length === 0) {
     return NextResponse.json({ ok: true, checked: messages.length, new: 0 })
   }
 
-  // Update last seen ID
+  // Advance watermark immediately so a timeout on processing doesn't cause re-processing
   const maxId = Math.max(...newMsgs.map((m) => m.id))
   await db.from('tb_settings').upsert({ key: 'tg_last_msg_id', value: String(maxId) })
 
-  const results = []
-  for (const msg of newMsgs.reverse()) {
+  // Classify all messages in parallel (Claude API calls)
+  const profile = PROFILES.alpaca_paper
+  const equity = (await Alpaca.getAccountBalance()) ?? 100_000
+
+  const results = await Promise.all(newMsgs.map(async (msg) => {
     const text = msg.text ?? ''
     const signal = await parseSignal(text)
 
-    if (signal.type === 'ignore') {
-      results.push({ id: msg.id, type: 'ignore' })
-      continue
-    }
+    if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
     if (signal.type === 'learn') {
       await db.from('tb_alerts').insert({
         type: 'INFO',
         symbol: signal.symbols[0] ?? null,
-        message: `📚 SF Trades insight: ${signal.summary}`,
+        message: `📚 SF Trades insight: ${signal.summary}${signal.symbols.length ? ` [${signal.symbols.join(', ')}]` : ''}`,
       })
       await tgSend(`📚 *SF Trades insight*\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
-      results.push({ id: msg.id, type: 'learn', summary: signal.summary })
-      continue
+      return { id: msg.id, type: 'learn', summary: signal.summary }
     }
 
-    // trade — size using paper profile; always use live price for sizing
-    const profile = PROFILES.alpaca_paper
-    const equity = (await Alpaca.getAccountBalance()) ?? 100_000
+    // trade
     const liveQuote = await Alpaca.getQuote(signal.symbol)
     const livePrice = liveQuote?.price ?? signal.entry_price
-    const entryPrice = signal.entry_price
     const exposureCap = exposureCapForConfidence(signal.confidence)
     const sizing = livePrice
       ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCap)
@@ -128,21 +128,16 @@ export async function GET(req: Request) {
     await db.from('tb_alerts').insert({
       type: signal.action,
       symbol: signal.symbol,
-      message: `SF Essential Trades → ${signal.action} ${qty} ${signal.symbol}${signal.entry_price ? ` @$${signal.entry_price}` : ' mkt'}${signal.stop_loss ? ` SL$${signal.stop_loss}` : ''} — ${order.status}`,
+      message: `SF Essential Trades → ${signal.action} ${qty} ${signal.symbol}${signal.entry_price ? ` @$${signal.entry_price}` : ' mkt'}${signal.stop_loss ? ` SL$${signal.stop_loss}` : ''} [conf:${signal.confidence}%] — ${order.status}`,
     })
 
     if (order.status === 'PLACED' && signal.action === 'BUY') {
       await db.from('tb_trades').insert({
-        symbol: signal.symbol,
-        broker: 'alpaca_paper',
-        action: 'BUY',
-        quantity: qty,
-        entry_price: entryPrice ?? 0,
-        stop_loss: signal.stop_loss ?? (entryPrice ? entryPrice * (1 - profile.initial_stop_pct) : 0),
-        target_price: signal.target ?? null,
-        confidence: signal.confidence,
-        status: 'OPEN',
-        order_id: order.order_id ?? null,
+        symbol: signal.symbol, broker: 'alpaca_paper', action: 'BUY',
+        quantity: qty, entry_price: livePrice ?? 0,
+        stop_loss: signal.stop_loss ?? (livePrice ? livePrice * (1 - profile.initial_stop_pct) : 0),
+        target_price: signal.target ?? null, confidence: signal.confidence,
+        status: 'OPEN', order_id: order.order_id ?? null,
         reason: 'TG: SF Essential Trades',
       })
     }
@@ -150,8 +145,8 @@ export async function GET(req: Request) {
     const emoji = order.status === 'PLACED' ? '✅' : '❌'
     await tgSend(`*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*\n${signal.entry_price ? `Entry: $${signal.entry_price}` : 'Entry: Market'}${signal.stop_loss ? `\nSL: $${signal.stop_loss}` : ''}\nConfidence: ${signal.confidence}%\nStatus: ${order.status} · Alpaca Paper`)
 
-    results.push({ id: msg.id, type: 'trade', signal, order })
-  }
+    return { id: msg.id, type: 'trade', signal, order }
+  }))
 
   return NextResponse.json({ ok: true, processed: newMsgs.length, results })
 }

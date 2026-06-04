@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase-server'
 
+export const runtime = 'nodejs'
+
 export async function GET() {
   const db = createServiceClient()
 
@@ -36,5 +38,7 @@ export async function GET() {
     tg_status:       tgStatus,
     last_msg_id:     lastMsgId,
     signals:         signalRows.data ?? [],
+  }, {
+    headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
   })
 }
