@@ -221,3 +221,19 @@ export function getPositionSize(balance: number, price: number, size_pct: number
   const dollars = balance * size_pct
   return Math.max(1, Math.floor(dollars / price))
 }
+
+/**
+ * Exposure cap (% of equity per position) scaled by signal confidence.
+ * High conviction = bigger bet. Below 70 shouldn't reach here (filtered upstream).
+ *
+ *  90–100%  →  20%  (strong conviction, boost)
+ *  80–89%   →  15%  (standard)
+ *  70–79%   →  10%  (softer signal, half-size)
+ *  < 70     →   7%  (barely qualifies — tiny starter)
+ */
+export function exposureCapForConfidence(confidence: number): number {
+  if (confidence >= 90) return 0.20
+  if (confidence >= 80) return 0.15
+  if (confidence >= 70) return 0.10
+  return 0.07
+}

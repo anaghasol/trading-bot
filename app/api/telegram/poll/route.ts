@@ -14,7 +14,7 @@ import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
-import { calculatePositionSize } from '@/lib/risk'
+import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
 
 const API_ID     = parseInt(process.env.TELEGRAM_API_ID ?? '0')
@@ -117,8 +117,9 @@ export async function GET(req: Request) {
     const liveQuote = await Alpaca.getQuote(signal.symbol)
     const livePrice = liveQuote?.price ?? signal.entry_price
     const entryPrice = signal.entry_price
+    const exposureCap = exposureCapForConfidence(signal.confidence)
     const sizing = livePrice
-      ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
+      ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCap)
       : { qty: 10 }
     const qty = sizing.qty
 

@@ -9,7 +9,7 @@ import { parseSignal } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
 import { alertTradeEntered } from '@/lib/notify'
-import { calculatePositionSize } from '@/lib/risk'
+import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
 
 const BOT_TOKEN  = process.env.TELEGRAM_BOT_TOKEN!
@@ -51,8 +51,9 @@ export async function POST(req: Request) {
     const equity = (await Alpaca.getAccountBalance()) ?? 100_000
     const liveQuote = await Alpaca.getQuote(signal.symbol)
     const livePrice = liveQuote?.price ?? signal.entry_price
+    const exposureCap = exposureCapForConfidence(signal.confidence)
     const sizing = livePrice
-      ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, 0.15)
+      ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCap)
       : { qty: 10 }
     const qty = sizing.qty
     const entryPrice = livePrice
