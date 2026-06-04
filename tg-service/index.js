@@ -61,8 +61,10 @@ async function poll() {
       console.log(`  → ${data.type ?? '?'} ${data.signal?.symbol ?? ''} ${data.order?.status ?? ''}`)
       await new Promise(r => setTimeout(r, 300))
     }
+    await setVal('tg_status', 'ok')
   } catch (e) {
     console.error('Poll error:', e.message)
+    await setVal('tg_status', `error:${e.message?.slice(0, 120) ?? 'unknown'}`)
   }
 }
 

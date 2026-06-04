@@ -9,7 +9,7 @@ import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceede
 import { profileFor } from '@/lib/strategy-profiles'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
-import { alertStopHit } from '@/lib/notify'
+import { alertStopHit, alertTelegramDown, alertTelegramReconnected } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 
 export const runtime = 'nodejs'
@@ -228,6 +228,36 @@ export async function GET(req: Request) {
   }
 
   await Promise.allSettled(tasks)
+
+  // ── Telegram health check ──────────────────────────────────────────────────
+  // Runs every 5 min. If Railway poller hasn't checked in for >5 min → SMS once per hour.
+  try {
+    const [pollRow, lastAlertRow] = await Promise.all([
+      db.from('tb_settings').select('value').eq('key', 'tg_last_poll').single(),
+      db.from('tb_settings').select('value').eq('key', 'tg_down_alerted_at').single(),
+    ])
+    const lastPoll   = pollRow.data?.value ? new Date(pollRow.data.value) : null
+    const minutesSilent = lastPoll ? Math.round((Date.now() - lastPoll.getTime()) / 60000) : 999
+    const lastAlerted   = lastAlertRow.data?.value ? new Date(lastAlertRow.data.value) : null
+    const alertCooldown = lastAlerted ? (Date.now() - lastAlerted.getTime()) / 60000 : 999
+
+    if (minutesSilent > 5) {
+      if (alertCooldown > 60) {
+        // First alert this hour — SMS and record
+        await alertTelegramDown(minutesSilent)
+        await db.from('tb_settings').upsert({ key: 'tg_down_alerted_at', value: new Date().toISOString() })
+        await db.from('tb_settings').upsert({ key: 'tg_status', value: `down:${minutesSilent}min` })
+      }
+    } else {
+      // Poller is healthy — clear error state
+      if (lastAlerted) {
+        // Was down before → SMS reconnect
+        await alertTelegramReconnected()
+        await db.from('tb_settings').delete().eq('key', 'tg_down_alerted_at')
+      }
+      await db.from('tb_settings').upsert({ key: 'tg_status', value: 'ok' })
+    }
+  } catch { /* don't crash monitor if TG check fails */ }
 
   return NextResponse.json({ status: 'ok', engines, results, duration_ms: Date.now() - start })
 }

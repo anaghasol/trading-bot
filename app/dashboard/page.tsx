@@ -14,7 +14,7 @@ interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
 interface TgSignal { id: number; type: string; message: string; symbol?: string; created_at: string }
-interface TgStatus { connected: boolean; has_session: boolean; last_poll: string | null; last_msg_id: number; signals: TgSignal[] }
+interface TgStatus { connected: boolean; has_session: boolean; last_poll: string | null; minutes_silent: number | null; tg_status: string | null; last_msg_id: number; signals: TgSignal[] }
 interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string }
 interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; market_open: boolean }
 interface Pdt { day_trades_remaining: number; is_pdt_protected: boolean; balance: number }
@@ -664,8 +664,11 @@ export default function DashboardPage() {
                   </div>
                 )}
                 {tg != null && tg.has_session && !tg.connected && (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--yellow, #f5a623)' }}>
-                    Session exists but Railway poller may be down. Last heartbeat: {tg.last_poll ? new Date(tg.last_poll).toLocaleTimeString() : 'never'}
+                  <div style={{ fontSize: '0.75rem', color: '#f5a623', background: 'rgba(245,166,35,0.08)', borderRadius: 6, padding: '6px 10px' }}>
+                    {tg.tg_status?.startsWith('error:')
+                      ? <>Railway error: <b>{tg.tg_status.replace('error:', '')}</b></>
+                      : <>Railway silent — {tg.minutes_silent ?? '?'}min since last poll</>}
+                    <br /><span className="faint" style={{ fontSize: '0.65rem' }}>SMS alert sent · check railway.com</span>
                   </div>
                 )}
                 {tg != null && tg.signals.length === 0 && tg.connected && (

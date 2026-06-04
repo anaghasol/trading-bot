@@ -99,6 +99,21 @@ export async function alertEODSummary(opts: {
   await sendSMS(msg)
 }
 
+/** Telegram poller went silent — sent once per hour max from monitor cron */
+export async function alertTelegramDown(minutesSilent: number): Promise<void> {
+  const msg = [
+    `⚠️ MyTrade: Telegram disconnected`,
+    `SF Essential Trades signals paused — ${minutesSilent}min since last poll`,
+    `Check railway.com or restart the tg-service`,
+  ].join('\n')
+  await sendSMS(msg)
+}
+
+/** Telegram reconnected after being down */
+export async function alertTelegramReconnected(): Promise<void> {
+  await sendSMS(`✅ MyTrade: Telegram reconnected — SF Essential Trades signals live again`)
+}
+
 /** Pre-market setup alert (morning scan results) */
 export async function alertPreMarket(opts: {
   setups_found: number
