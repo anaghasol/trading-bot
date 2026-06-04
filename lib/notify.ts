@@ -99,6 +99,30 @@ export async function alertEODSummary(opts: {
   await sendSMS(msg)
 }
 
+export async function alertEODComparison(opts: {
+  paper_pnl: number
+  paper_balance: number
+  live_pnl: number
+  live_balance: number
+  paper_wins: number
+  paper_losses: number
+  live_wins: number
+  live_losses: number
+}) {
+  const pe = opts.paper_pnl >= 0 ? '📗' : '📕'
+  const le = opts.live_pnl >= 0 ? '✅' : '❌'
+  const goal_pct = ((opts.live_balance / 25000) * 100).toFixed(1)
+
+  const msg = [
+    `📊 MyTrade EOD Comparison`,
+    `${pe} Paper: ${opts.paper_pnl >= 0 ? '+' : ''}$${opts.paper_pnl.toFixed(0)} | ${opts.paper_wins}W/${opts.paper_losses}L | Bal $${opts.paper_balance.toFixed(0)}`,
+    `${le} Live:  ${opts.live_pnl >= 0 ? '+' : ''}$${opts.live_pnl.toFixed(0)} | ${opts.live_wins}W/${opts.live_losses}L | Bal $${opts.live_balance.toFixed(0)}`,
+    `$25K goal: ${goal_pct}%`,
+  ].join('\n')
+
+  await sendSMS(msg)
+}
+
 /** Telegram poller went silent — sent once per hour max from monitor cron */
 export async function alertTelegramDown(minutesSilent: number): Promise<void> {
   const msg = [

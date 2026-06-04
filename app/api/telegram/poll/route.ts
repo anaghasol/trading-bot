@@ -14,6 +14,7 @@ import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal, isWorthClassifying } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
+import * as Schwab from '@/lib/schwab'
 import { createServiceClient } from '@/lib/supabase-server'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
@@ -171,8 +172,43 @@ export async function GET(req: Request) {
       })
     }
 
+    // ── SCHWAB LIVE (parallel, conservative) ──────────────────────────────────
+    // Only if: high confidence, market hours, BUY signal, under 3 positions
+    let schwabNote = ''
+    const schwabProfile = PROFILES.schwab
+    if (signal.action === 'BUY' && !afterHours && signal.confidence >= schwabProfile.min_confidence) {
+      try {
+        const [schwabPositions, schwabBalance] = await Promise.all([Schwab.getPositions(), Schwab.getAccountBalance()])
+        const schwabEquity = schwabBalance ?? 2000
+        const alreadyOpen = schwabPositions.some(p => p.symbol === signal.symbol)
+        const atMaxPositions = schwabPositions.length >= schwabProfile.max_positions
+
+        if (!alreadyOpen && !atMaxPositions) {
+          const schwabQty = livePrice
+            ? calculatePositionSize(schwabEquity, livePrice, schwabProfile.initial_stop_pct, schwabProfile.risk_pct, 0.25).qty
+            : 1
+          const schwabOrder = await Schwab.placeOrder(signal.symbol, schwabQty, 'BUY', 'MARKET')
+
+          if (schwabOrder.status === 'PLACED') {
+            const schwabStop = stopPrice ?? (livePrice ? Math.round(livePrice * (1 - schwabProfile.initial_stop_pct) * 100) / 100 : null)
+            await db.from('tb_trades').insert({
+              symbol: signal.symbol, broker: 'schwab', action: 'BUY',
+              quantity: schwabQty, entry_price: livePrice ?? 0,
+              stop_loss: schwabStop ?? 0,
+              target_price: signal.target ?? null, confidence: signal.confidence,
+              status: 'OPEN', order_id: schwabOrder.order_id ?? null,
+              reason: 'TG: SF Essential Trades (live)',
+            })
+            schwabNote = `\n💰 *Schwab LIVE: BUY ${schwabQty} ${signal.symbol}* · $${((livePrice ?? 0) * schwabQty).toFixed(0)}`
+          }
+        } else {
+          schwabNote = alreadyOpen ? `\n📌 Schwab: already holding ${signal.symbol}` : `\n📌 Schwab: at max ${schwabProfile.max_positions} positions`
+        }
+      } catch { /* Schwab failures never block paper trade */ }
+    }
+
     const emoji = order.status === 'PLACED' ? '✅' : '❌'
-    await tgSend(`*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*\nEntry: Market${stopPrice ? `\nSL: $${stopPrice}` : ''}\nConf: ${signal.confidence}%\nStatus: ${order.status} · Alpaca Paper${afterHoursTag}`)
+    await tgSend(`*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*\nEntry: Market${stopPrice ? `\nSL: $${stopPrice}` : ''}\nConf: ${signal.confidence}%\nPaper: ${order.status}${afterHoursTag}${schwabNote}`)
 
     return { id: msg.id, type: 'trade', signal, order }
   }))

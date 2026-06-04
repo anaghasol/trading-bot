@@ -12,7 +12,7 @@ import { NextResponse } from 'next/server'
 import { getPositions, getAccountBalance, placeOrder, getOrders } from '@/lib/broker'
 import { analyzePdtStatus, SWING_CONFIG } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
-import { alertEODSummary } from '@/lib/notify'
+import { alertEODSummary, alertEODComparison } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 
 export const runtime = 'nodejs'
@@ -169,12 +169,23 @@ export async function GET(req: Request) {
         updated_at: new Date().toISOString(),
       }, { onConflict: 'date' })
 
-      // SMS EOD summary to owner phone
-      await alertEODSummary({
-        daily_pnl: dailyPnl,
-        balance: activeBalance,
-        wins, losses,
-        trades: wins + losses,
+      // SMS EOD: paper vs live comparison
+      const { data: paperClosed } = await db.from('tb_trades').select('pnl').gte('closed_at', `${today}T00:00:00Z`).eq('status', 'CLOSED').eq('broker', 'alpaca_paper')
+      const { data: liveClosed }  = await db.from('tb_trades').select('pnl').gte('closed_at', `${today}T00:00:00Z`).eq('status', 'CLOSED').eq('broker', 'schwab')
+      const paperPnl   = (paperClosed ?? []).reduce((s, t) => s + (t.pnl ?? 0), 0)
+      const livePnl    = (liveClosed  ?? []).reduce((s, t) => s + (t.pnl ?? 0), 0)
+      const paperWins  = (paperClosed ?? []).filter(t => t.pnl > 0).length
+      const paperLoss  = (paperClosed ?? []).filter(t => t.pnl < 0).length
+      const liveWins   = (liveClosed  ?? []).filter(t => t.pnl > 0).length
+      const liveLoss   = (liveClosed  ?? []).filter(t => t.pnl < 0).length
+
+      const schwabBal = await import('@/lib/schwab').then(m => m.getAccountBalance()).catch(() => null)
+
+      await alertEODComparison({
+        paper_pnl: paperPnl, paper_balance: 100_000 + paperPnl,
+        live_pnl: livePnl,   live_balance: schwabBal ?? (2000 + livePnl),
+        paper_wins: paperWins, paper_losses: paperLoss,
+        live_wins: liveWins,   live_losses: liveLoss,
       })
     }
 
