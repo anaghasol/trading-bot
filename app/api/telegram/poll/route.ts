@@ -66,9 +66,13 @@ export async function GET(req: Request) {
   await db.from('tb_settings').upsert({ key: 'tg_last_poll', value: new Date().toISOString() })
   await db.from('tb_settings').upsert({ key: 'tg_status', value: 'ok' })
 
-  // Get last seen message ID from Supabase
+  // Get last seen message ID — use upsert lock to prevent duplicate processing across concurrent cron ticks
   const { data: lastData } = await db.from('tb_settings').select('value').eq('key', 'tg_last_msg_id').single()
   const lastId = parseInt(lastData?.value ?? '0')
+  const lockKey = `tg_poll_lock_${Date.now()}`
+  await db.from('tb_settings').upsert({ key: 'tg_poll_lock', value: lockKey })
+  const { data: lockCheck } = await db.from('tb_settings').select('value').eq('key', 'tg_poll_lock').single()
+  if (lockCheck?.value !== lockKey) return NextResponse.json({ ok: true, skipped: 'concurrent poll detected' })
 
   // Fetch recent messages from the channel
   let messages: Awaited<ReturnType<typeof client.getMessages>>
