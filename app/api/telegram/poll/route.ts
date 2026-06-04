@@ -37,18 +37,29 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const db = createServiceClient()
+
   const sessionStr = await getStoredSession()
   if (!sessionStr) {
     return NextResponse.json({ error: 'Not authenticated. Visit /api/telegram/auth first.' })
   }
 
-  const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3, useWSS: true })
-  await client.connect()
+  let client: TelegramClient | null = null
+  try {
+    client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3, useWSS: true })
+    await client.connect()
+  } catch (e) {
+    const db2 = createServiceClient()
+    await db2.from('tb_settings').upsert({ key: 'tg_status', value: `error: ${String(e).slice(0, 100)}` })
+    return NextResponse.json({ ok: false, error: 'TG connect failed', detail: String(e) })
+  }
 
   // Persist refreshed session
   await saveSession(client.session.save() as unknown as string)
 
-  const db = createServiceClient()
+  // Heartbeat — keeps status endpoint green
+  await db.from('tb_settings').upsert({ key: 'tg_last_poll', value: new Date().toISOString() })
+  await db.from('tb_settings').upsert({ key: 'tg_status', value: 'ok' })
 
   // Get last seen message ID from Supabase
   const { data: lastData } = await db.from('tb_settings').select('value').eq('key', 'tg_last_msg_id').single()
