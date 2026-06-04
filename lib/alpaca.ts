@@ -148,6 +148,23 @@ export async function placeBuyWithProtection(
   return { buy, stop_order_id: stopResult?.id ?? null }
 }
 
+export async function placeStopOrder(
+  symbol: string,
+  quantity: number,
+  stopPrice: number
+): Promise<string | null> {
+  await new Promise((r) => setTimeout(r, 600)) // let fill settle
+  const result = await post<{ id: string }>('/orders', {
+    symbol,
+    qty:           quantity,
+    side:          'sell',
+    type:          'stop',
+    time_in_force: 'gtc',
+    stop_price:    stopPrice.toFixed(2),
+  })
+  return result?.id ?? null
+}
+
 export async function cancelOrder(order_id: string): Promise<boolean> {
   return del(`/orders/${order_id}`)
 }

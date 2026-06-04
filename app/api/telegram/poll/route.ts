@@ -13,6 +13,7 @@ import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal, isWorthClassifying } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
+import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
@@ -101,7 +102,7 @@ export async function GET(req: Request) {
 
   // Classify all messages in parallel (Claude API calls)
   const profile = PROFILES.alpaca_paper
-  const equity = (await Alpaca.getAccountBalance()) ?? 100_000
+  const equity = (await getAccountBalance()) ?? 100_000
 
   const results = await Promise.all(newMsgs.map(async (msg) => {
     const text = msg.text ?? ''
@@ -121,6 +122,21 @@ export async function GET(req: Request) {
     }
 
     // trade
+    // Guard 1: skip if we already hold this symbol (prevents duplicates from repeat signals)
+    if (signal.action === 'BUY') {
+      const { data: existing } = await db.from('tb_trades')
+        .select('id').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1)
+      if (existing && existing.length > 0) {
+        await tgSend(`⚠️ *Skipped ${signal.symbol}* — already have open position`)
+        return { id: msg.id, type: 'skip', reason: 'already_open' }
+      }
+    }
+
+    // Guard 2: block after market hours (4 PM ET = 20:00 UTC)
+    const etHour = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
+    const afterHours = parseInt(etHour) >= 16 || parseInt(etHour) < 9
+    const afterHoursTag = afterHours ? ' [FILLS AT OPEN]' : ''
+
     const liveQuote = await Alpaca.getQuote(signal.symbol)
     const livePrice = liveQuote?.price ?? signal.entry_price
     const exposureCap = exposureCapForConfidence(signal.confidence)
@@ -131,17 +147,24 @@ export async function GET(req: Request) {
 
     const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
 
+    const stopPrice = signal.stop_loss ?? (livePrice ? Math.round(livePrice * (1 - profile.initial_stop_pct) * 100) / 100 : null)
+
     await db.from('tb_alerts').insert({
       type: signal.action,
       symbol: signal.symbol,
-      message: `SF Essential Trades → ${signal.action} ${qty} ${signal.symbol}${signal.entry_price ? ` @$${signal.entry_price}` : ' mkt'}${signal.stop_loss ? ` SL$${signal.stop_loss}` : ''} [conf:${signal.confidence}%] — ${order.status}`,
+      message: `SF Essential Trades → ${signal.action} ${qty} ${signal.symbol} mkt${stopPrice ? ` SL$${stopPrice}` : ''} [conf:${signal.confidence}%]${afterHoursTag} — ${order.status}`,
     })
 
     if (order.status === 'PLACED' && signal.action === 'BUY') {
+      // Place broker-level GTC stop order immediately — protects position even if monitor cron is down
+      if (stopPrice && !afterHours) {
+        await placeStopOrder(signal.symbol, qty, stopPrice).catch(() => {})
+      }
+
       await db.from('tb_trades').insert({
         symbol: signal.symbol, broker: 'alpaca_paper', action: 'BUY',
         quantity: qty, entry_price: livePrice ?? 0,
-        stop_loss: signal.stop_loss ?? (livePrice ? livePrice * (1 - profile.initial_stop_pct) : 0),
+        stop_loss: stopPrice ?? 0,
         target_price: signal.target ?? null, confidence: signal.confidence,
         status: 'OPEN', order_id: order.order_id ?? null,
         reason: 'TG: SF Essential Trades',
@@ -149,7 +172,7 @@ export async function GET(req: Request) {
     }
 
     const emoji = order.status === 'PLACED' ? '✅' : '❌'
-    await tgSend(`*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*\n${signal.entry_price ? `Entry: $${signal.entry_price}` : 'Entry: Market'}${signal.stop_loss ? `\nSL: $${signal.stop_loss}` : ''}\nConfidence: ${signal.confidence}%\nStatus: ${order.status} · Alpaca Paper`)
+    await tgSend(`*${emoji} SF Trades → ${signal.action} ${qty} ${signal.symbol}*\nEntry: Market${stopPrice ? `\nSL: $${stopPrice}` : ''}\nConf: ${signal.confidence}%\nStatus: ${order.status} · Alpaca Paper${afterHoursTag}`)
 
     return { id: msg.id, type: 'trade', signal, order }
   }))
