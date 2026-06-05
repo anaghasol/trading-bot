@@ -176,7 +176,11 @@ export async function GET(req: Request) {
       return { id: msg.id, type: 'learn', summary: signal.summary }
     }
 
-    // trade
+    // ── TRADE EXECUTION ───────────────────────────────────────────────────────
+    // TG signals from Pavan ALWAYS take priority — they bypass VIX/market-tier
+    // gates entirely. Those filters only apply to the AI scanner's own picks.
+    // Only hard guards here: duplicate symbol + after-hours tag.
+
     // Guard 1: skip if we already hold this symbol (prevents duplicates from repeat signals)
     if (signal.action === 'BUY') {
       const { data: existing } = await db.from('tb_trades')
@@ -236,8 +240,9 @@ export async function GET(req: Request) {
       })
     }
 
-    // ── SCHWAB LIVE (parallel, conservative) ──────────────────────────────────
-    // Only if: high confidence, market hours, BUY signal, under 3 positions
+    // ── SCHWAB LIVE (parallel) ────────────────────────────────────────────────
+    // TG signals bypass VIX/market-tier scanner gates — Pavan's conviction IS the filter.
+    // Schwab uses its own hard limits: conf≥78%, ≤3 positions, market hours only.
     let schwabNote = ''
     const schwabProfile = PROFILES.schwab
     if (signal.action === 'BUY' && !afterHours && signal.confidence >= schwabProfile.min_confidence) {
