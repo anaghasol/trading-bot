@@ -67,9 +67,15 @@ ACCOUNT: $${equity.toFixed(0)} | MODE: ${isPaper ? 'PAPER (fake money — be agg
 MARKET: ${regime.label} | VIX ${regime.vix.toFixed(0)} | SPY 200SMA: ${regime.spy_above_200sma ? 'above' : 'below'}
 HELD: ${held.join(', ') || 'none'}
 
-${isPaper ? `PAPER MODE INSTRUCTIONS: This is fake money for learning. Rate EVERY setup >= ${minConf}% if it has any positive momentum. Be generous. We need data.` : `LIVE MODE: Only rate high-conviction setups >= ${minConf}%.`}
+ADVISOR CONTEXT (SF Essential Trades by Pavan Sailesh — professional trader whose signals we follow):
+${learning}
 
-SETUPS (rs_rank=percentile vs all scanned stocks today 0-100, higher=stronger relative momentum; from_52wh=% below 52w high):
+IMPORTANT: Stocks mentioned as bullish or in advisor's watch zone should get +5-10 confidence bonus if the setup is valid.
+Stocks marked bearish/stopped-out by advisor should be skipped even if chart looks good.
+
+${isPaper ? `PAPER MODE: Rate EVERY setup >= ${minConf}% with any positive momentum. Be generous — we need data.` : `LIVE MODE: Only high-conviction setups >= ${minConf}%.`}
+
+SETUPS to rate (rs_rank=relative momentum percentile 0-100; from_52wh=% below 52w high):
 ${JSON.stringify(setups.map((s) => ({
   sym: s.symbol, type: s.setup_type, price: s.price,
   dist_ema20: `${s.dist_from_ema20_pct.toFixed(1)}%`,
@@ -188,9 +194,30 @@ export async function getRecommendations(
 ): Promise<AdvisorResult> {
 
   const profile = profileFor(broker)
-  const symbols = broker === 'alpaca_paper'
+
+  // Pull Pavan's recent picks from tb_learning (last 7 days, bullish or watch_zone)
+  // These are NOT in the static watchlist so we add them dynamically
+  let advisorSymbols: string[] = []
+  try {
+    const db = (await import('./supabase-server')).createServiceClient()
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    const { data } = await db
+      .from('tb_learning')
+      .select('symbol')
+      .gte('created_at', sevenDaysAgo)
+      .in('sentiment', ['bullish', 'neutral'])
+      .not('symbol', 'is', null)
+    const seen = new Set<string>()
+    advisorSymbols = (data ?? []).map((r: { symbol: string }) => r.symbol).filter((s: string) => s && !seen.has(s) && seen.add(s))
+  } catch { /* non-fatal */ }
+
+  const baseSymbols = broker === 'alpaca_paper'
     ? ALL_ALPACA_SYMBOLS
     : ALL_SYMBOLS.filter((s) => !['SPY', 'QQQ'].includes(s))
+
+  // Merge: Pavan's picks first (priority), then static universe, deduplicated
+  const seen2 = new Set<string>()
+  const symbols = [...advisorSymbols, ...baseSymbols].filter((s) => !seen2.has(s) && seen2.add(s))
 
   // 1. Market regime check (free)
   const regime = await getMarketRegime()
