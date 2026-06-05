@@ -112,12 +112,50 @@ export async function GET(req: Request) {
 
     if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
+    // EXIT signal — channel says a stock hit SL or target → close our position
+    if (signal.type === 'exit') {
+      const { data: openTrade } = await db.from('tb_trades')
+        .select('id, quantity, broker').eq('symbol', signal.symbol).eq('status', 'OPEN').limit(1).single()
+
+      if (openTrade) {
+        const broker = openTrade.broker as string
+        const sellOrder = broker === 'schwab'
+          ? await Schwab.placeOrder(signal.symbol, openTrade.quantity, 'SELL', 'MARKET')
+          : await Alpaca.placeOrder(signal.symbol, openTrade.quantity, 'SELL', 'MARKET')
+
+        if (sellOrder.status === 'PLACED') {
+          await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString(), reason: `TG exit: ${signal.reason}` }).eq('id', openTrade.id)
+        }
+
+        await db.from('tb_alerts').insert({ type: 'SELL', symbol: signal.symbol, message: `🚨 TG EXIT ${signal.symbol} — ${signal.summary} [${sellOrder.status}]` })
+        await tgSend(`🚨 *Advisor Exit: ${signal.symbol}*\n${signal.summary}\nStatus: ${sellOrder.status} · ${broker}`)
+        return { id: msg.id, type: 'exit', symbol: signal.symbol, reason: signal.reason }
+      }
+
+      // Not held — just log the insight
+      await tgSend(`📌 *${signal.symbol} exit signal* (not held)\n${signal.summary}`)
+      return { id: msg.id, type: 'exit_not_held', symbol: signal.symbol }
+    }
+
+    // LEARN signal — save with full context for AI scanner to use
     if (signal.type === 'learn') {
-      await db.from('tb_alerts').insert({
-        type: 'INFO',
-        symbol: signal.symbols[0] ?? null,
-        message: `📚 SF Trades insight: ${signal.summary}${signal.symbols.length ? ` [${signal.symbols.join(', ')}]` : ''}`,
-      })
+      const learnMsg = `📚 SF Trades [${signal.sentiment}${signal.sector ? ' · ' + signal.sector : ''}]: ${signal.summary}${signal.symbols.length ? ` [${signal.symbols.join(', ')}]` : ''}`
+      await db.from('tb_alerts').insert({ type: 'INFO', symbol: signal.symbols[0] ?? null, message: learnMsg })
+
+      // Save actionable insights to learning table so AI scanner picks them up
+      if (signal.actionable && signal.symbols.length > 0) {
+        for (const sym of signal.symbols) {
+          await db.from('tb_learning').insert({
+            symbol: sym,
+            source: 'sf_essential_trades',
+            sentiment: signal.sentiment,
+            sector: signal.sector,
+            insight: signal.summary,
+            created_at: new Date().toISOString(),
+          })
+        }
+      }
+
       await tgSend(`📚 *SF Trades insight*\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
       return { id: msg.id, type: 'learn', summary: signal.summary }
     }

@@ -49,9 +49,15 @@ export async function POST(req: Request) {
         message: `📚 SF Trades insight: ${signal.summary}`,
       })
       await tgSend(chatId, `📚 *Insight logged*\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
-      console.log('[telegram] insight saved:', signal.summary)
       return NextResponse.json({ ok: true, type: 'learn', signal })
     }
+
+    // ── EXIT ──────────────────────────────────────────────────────────────────
+    if (signal.type === 'exit') {
+      return NextResponse.json({ ok: true, type: 'exit', signal })
+    }
+
+    if (signal.type !== 'trade') return NextResponse.json({ ok: true, type: 'skip' })
 
     // ── TRADE ─────────────────────────────────────────────────────────────────
     const qty = 1

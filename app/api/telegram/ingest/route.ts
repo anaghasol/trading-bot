@@ -46,6 +46,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, type: 'learn', signal })
     }
 
+    // exit — advisor says close position
+    if (signal.type === 'exit') {
+      const { data: openTrade } = await db.from('tb_trades')
+        .select('id, quantity').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1).single()
+      if (openTrade) {
+        const sellOrder = await Alpaca.placeOrder(signal.symbol, openTrade.quantity, 'SELL', 'MARKET')
+        if (sellOrder.status === 'PLACED') await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString() }).eq('id', openTrade.id)
+        await notify(`🚨 *Advisor Exit: ${signal.symbol}*\n${signal.summary}\nStatus: ${sellOrder.status}`)
+      }
+      return NextResponse.json({ ok: true, type: 'exit', signal })
+    }
+
+    if (signal.type !== 'trade') return NextResponse.json({ ok: true, type: 'skip' })
+
     // trade — always size on live price; execute at market
     const profile = PROFILES.alpaca_paper
     const equity = (await Alpaca.getAccountBalance()) ?? 100_000
