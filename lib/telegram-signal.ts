@@ -103,6 +103,7 @@ Critical rules:
 - type:exit ONLY when Pavan explicitly says to close — NOT when he reports "X hit SL" (that is his subscribers' trade, not a command to us)
 - "X hit stop loss / target" = type:learn, bearish or bullish accordingly
 - "Watch X near $Y" = type:learn, watch_zone set
+- "buy on dips", "accumulation opportunity", "stocks at discount, re-entry" (no specific ticker) = type:learn, sentiment:bullish, symbols:[], actionable:true — this tells the bot to run the AI scanner immediately
 - confidence < 70 → demote trade to learn
 - Default to learn over exit when unsure`,
       }],

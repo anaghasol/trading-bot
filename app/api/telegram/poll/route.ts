@@ -161,6 +161,18 @@ export async function GET(req: Request) {
       const sentimentTag = signal.sentiment === 'bearish' ? '🔴' : signal.sentiment === 'bullish' ? '🟢' : '⚪'
       const watchTag = signal.watch_zone ? `\n👁 Watch zone: ${signal.watch_zone}` : ''
       await tgSend(`📚 *SF Trades insight* ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}${watchTag}`)
+
+      // If advisor signals a broad buy-on-dips / accumulation opportunity with no specific ticker,
+      // trigger the AI scanner immediately instead of waiting for the 30-min cron
+      const isDipSignal = signal.actionable && signal.sentiment === 'bullish' && signal.symbols.length === 0
+      if (isDipSignal) {
+        const appUrl = process.env.VERCEL_APP_URL ?? 'https://trading-bot-hazel-one.vercel.app'
+        fetch(`${appUrl}/api/engine?secret=${process.env.CRON_SECRET}&source=tg_dip_signal`, {
+          method: 'POST',
+        }).catch(() => {})
+        await tgSend(`🔍 *Dip signal detected — triggering AI scanner now*\nLooking for buy setups across watchlist...`)
+      }
+
       return { id: msg.id, type: 'learn', summary: signal.summary }
     }
 
