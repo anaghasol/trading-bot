@@ -42,18 +42,18 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     scan_universe: 'core',
   },
 
-  // ── PAPER money: aggressive but controlled — tune here until expectancy proven ──
+  // ── PAPER money: tuned after June 4 -10% day — still aggressive but survivable ──
   alpaca_paper: {
     key: 'alpaca_paper',
     label: 'Alpaca · Paper (Aggressive Lab)',
     vibe: 'aggressive',
-    risk_pct: 0.07,             // 7% per trade
-    max_positions: 15,          // 15 concurrent positions
-    min_confidence: 50,         // 50% gate — max activity for learning phase
+    risk_pct: 0.055,            // 5.5% per trade (down from 7% — survived June 4 review)
+    max_positions: 10,          // 10 concurrent (down from 15 — reduces coordinated-drop exposure)
+    min_confidence: 55,         // 55% gate (up from 50%)
     allow_day_trades: true,
-    initial_stop_pct: 0.05,
-    trail_pct: 0.10,
-    daily_loss_stop_pct: 0.20,  // −20% daily breaker (paper testing only)
+    initial_stop_pct: 0.035,    // 3.5% initial stop (tighter — was 5%)
+    trail_pct: 0.06,            // 6% trailing (was 10%)
+    daily_loss_stop_pct: 0.15,  // −15% daily breaker (was −20%)
     max_hold_days: 5,
     scan_universe: 'wide',
   },

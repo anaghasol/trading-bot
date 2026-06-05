@@ -116,15 +116,24 @@ export function checkExitCondition(
   }
 
   // ── Trailing stop (once in profit) ───────────────────────────────────────
-  // Once up 5%+, lock in at least breakeven (stop rises to entry)
-  // Once up 10%+, stop rises to +5% (never give back more than half the gain)
-  let trailing_stop = new_peak * (1 - trail_pct)
+  // Accelerating trail: tighter once profit grows — protect gains on the way up
+  // +3%  → trail tightens to 4% (was 6%)    — lock in early gains quickly
+  // +6%  → stop rises to breakeven           — never let a winner become a loser
+  // +10% → stop rises to +5%                 — lock in half the big move
+  let effective_trail = trail_pct  // default (6% for paper, 5% for live)
+  if (new_peak >= entry_price * 1.06) {
+    effective_trail = 0.04  // tighter once well in profit
+  } else if (new_peak >= entry_price * 1.03) {
+    effective_trail = 0.05  // slightly tighter at early profit
+  }
+
+  let trailing_stop = new_peak * (1 - effective_trail)
   if (new_peak >= entry_price * 1.10) {
-    // Lock in at least +5% once peaked at +10%
-    trailing_stop = Math.max(trailing_stop, entry_price * 1.05)
-  } else if (new_peak >= entry_price * 1.05) {
-    // Lock in at least breakeven once peaked at +5%
-    trailing_stop = Math.max(trailing_stop, entry_price * 1.001)
+    trailing_stop = Math.max(trailing_stop, entry_price * 1.05)   // lock in +5%
+  } else if (new_peak >= entry_price * 1.06) {
+    trailing_stop = Math.max(trailing_stop, entry_price * 1.02)   // lock in +2%
+  } else if (new_peak >= entry_price * 1.03) {
+    trailing_stop = Math.max(trailing_stop, entry_price * 1.001)  // at least breakeven
   }
 
   if (in_profit && current_price <= trailing_stop) {

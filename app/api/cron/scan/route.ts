@@ -89,6 +89,15 @@ async function runScan(
   const { recommendations, regime, scanned, candidates } =
     await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining, broker)
 
+  // ── Market filter: tighten confidence gate on bad market days ──────────────
+  // VIX > 28 or SPY in downtrend (below 50SMA) = dangerous — require higher conviction
+  const isHighVix     = regime.vix > 28
+  const isDowntrend   = !regime.spy_above_200sma
+  const isBadMarket   = isHighVix || isDowntrend
+  const dynamicMinConf = isBadMarket
+    ? Math.max(profile.min_confidence + 12, 65)   // raise gate by 12pts, floor 65
+    : profile.min_confidence
+
   // Telegram signal boost: symbols mentioned in recent Telegram trade signals
   // (last 4 hours) get +8 confidence points — channel confirms our own scan.
   const since = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
@@ -115,7 +124,8 @@ async function runScan(
         tg_confirmed: tgSymbols.has(r.symbol),
       }
     })
-    .filter((x) => isSchwab ? x.bias > 0 : true)  // live: drop COLD; paper: keep everything
+    .filter((x) => isSchwab ? x.bias > 0 : true)                    // live: drop COLD
+    .filter((x) => x.rec.confidence >= dynamicMinConf)               // market-adjusted gate
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
   let tradesMade = 0
@@ -191,9 +201,10 @@ async function runScan(
   }
 
   const hot = rotation.hottest ? ` Hot:${rotation.hottest}` : ''
+  const mktFilter = isBadMarket ? ` [MKT_FILTER VIX${regime.vix.toFixed(0)} gate→${dynamicMinConf}%]` : ''
   return {
     trades_made: tradesMade,
-    message: `[${broker}] Regime:${regime.regime}${hot} PDT:${pdt.day_trades_used}/3 Scanned:${scanned} Candidates:${candidates} Ranked:${ranked.length} Trades:${tradesMade}`,
+    message: `[${broker}] Regime:${regime.regime}${hot}${mktFilter} PDT:${pdt.day_trades_used}/3 Scanned:${scanned} Candidates:${candidates} Ranked:${ranked.length} Trades:${tradesMade}`,
   }
 }
 
