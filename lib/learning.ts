@@ -80,15 +80,42 @@ export async function buildLearningContext(): Promise<LearningContext> {
   const avgWin  = wins.length  ? wins.reduce((s, t)  => s + t.pnl_pct, 0) / wins.length  : 0
   const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl_pct, 0) / losses.length : 0
 
+  // SF Trades advisor insights from last 3 days
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+  const { data: advisorInsights } = await db
+    .from('tb_learning')
+    .select('symbol, sentiment, sector, insight, created_at')
+    .gte('created_at', threeDaysAgo)
+    .order('created_at', { ascending: false })
+    .limit(30)
+
+  // Summarise advisor sentiment per ticker
+  const bullish: string[] = []
+  const bearish: string[] = []
+  const sectorNotes: string[] = []
+
+  for (const ins of advisorInsights ?? []) {
+    if (ins.sentiment === 'bullish' && ins.symbol && !bullish.includes(ins.symbol)) bullish.push(ins.symbol)
+    if (ins.sentiment === 'bearish' && ins.symbol && !bearish.includes(ins.symbol)) bearish.push(ins.symbol)
+    if (ins.sector && !sectorNotes.includes(ins.sector)) sectorNotes.push(ins.sector)
+  }
+
+  const advisorLine = [
+    bullish.length ? `SF Trades advisor bullish on: ${bullish.join(', ')}.` : '',
+    bearish.length ? `SF Trades advisor bearish/stopped on: ${bearish.join(', ')} — avoid re-entry.` : '',
+    sectorNotes.length ? `Hot sectors per advisor: ${sectorNotes.join(', ')}.` : '',
+  ].filter(Boolean).join(' ')
+
   const summary = [
     `7-day performance: ${wins.length}W/${losses.length}L (${win_rate_7d.toFixed(0)}% win rate).`,
     `Avg win: +${avgWin.toFixed(1)}%, Avg loss: ${avgLoss.toFixed(1)}%.`,
     best_setups.length  ? `Best setups: ${best_setups.join(', ')}.` : '',
-    avoid_setups.length ? `Avoid: ${avoid_setups.join(', ')} (underperforming).` : '',
+    avoid_setups.length ? `Avoid setups: ${avoid_setups.join(', ')} (underperforming).` : '',
     recent_losses.length ? `Recent losses: ${recent_losses.join('; ')}.` : '',
     Object.keys(regime_performance).length
       ? `Regime P&L: ${Object.entries(regime_performance).map(([r, v]) => `${r}=${v > 0 ? '+' : ''}${v}%`).join(', ')}.`
       : '',
+    advisorLine,
   ].filter(Boolean).join(' ')
 
   return {

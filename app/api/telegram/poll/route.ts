@@ -198,6 +198,16 @@ export async function GET(req: Request) {
     })
 
     if (order.status === 'PLACED' && signal.action === 'BUY') {
+      // Save trade recommendation to learning context so AI scanner knows advisor likes this stock
+      await db.from('tb_learning').insert({
+        symbol: signal.symbol,
+        source: 'sf_essential_trades',
+        sentiment: 'bullish',
+        sector: null,
+        insight: `Advisor recommended BUY at market, SL $${stopPrice ?? 'N/A'}, confidence ${signal.confidence}%`,
+        created_at: new Date().toISOString(),
+      })
+
       // Place broker-level GTC stop order immediately — protects position even if monitor cron is down
       if (stopPrice && !afterHours) {
         await placeStopOrder(signal.symbol, qty, stopPrice).catch(() => {})
