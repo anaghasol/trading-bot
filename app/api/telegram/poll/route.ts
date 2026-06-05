@@ -152,14 +152,15 @@ export async function GET(req: Request) {
             source: 'sf_essential_trades',
             sentiment: signal.sentiment,
             sector: signal.sector,
-            insight: signal.summary,
+            insight: signal.summary + (signal.watch_zone ? ` Watch zone: ${signal.watch_zone}` : ''),
             created_at: new Date().toISOString(),
           })
         }
       }
 
       const sentimentTag = signal.sentiment === 'bearish' ? '🔴' : signal.sentiment === 'bullish' ? '🟢' : '⚪'
-      await tgSend(`📚 *SF Trades insight* ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
+      const watchTag = signal.watch_zone ? `\n👁 Watch zone: ${signal.watch_zone}` : ''
+      await tgSend(`📚 *SF Trades insight* ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}${watchTag}`)
       return { id: msg.id, type: 'learn', summary: signal.summary }
     }
 

@@ -100,10 +100,20 @@ export async function buildLearningContext(): Promise<LearningContext> {
     if (ins.sector && !sectorNotes.includes(ins.sector)) sectorNotes.push(ins.sector)
   }
 
+  // Watch zones — stocks advisor flagged for future entry
+  const watchZones: string[] = []
+  for (const ins of advisorInsights ?? []) {
+    if (ins.insight?.includes('Watch zone:') && ins.symbol) {
+      const zone = ins.insight.match(/Watch zone: ([^\s]+)/)?.[1]
+      if (zone) watchZones.push(`${ins.symbol} @ ${zone}`)
+    }
+  }
+
   const advisorLine = [
     bullish.length ? `SF Trades advisor bullish on: ${bullish.join(', ')}.` : '',
     bearish.length ? `SF Trades advisor bearish/stopped on: ${bearish.join(', ')} — avoid re-entry.` : '',
     sectorNotes.length ? `Hot sectors per advisor: ${sectorNotes.join(', ')}.` : '',
+    watchZones.length ? `Advisor watching for entry: ${watchZones.join(', ')}.` : '',
   ].filter(Boolean).join(' ')
 
   const summary = [

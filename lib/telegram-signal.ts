@@ -50,8 +50,9 @@ export interface LearnSignal {
   summary: string
   symbols: string[]
   sentiment: 'bullish' | 'bearish' | 'neutral'
-  sector: string | null   // e.g. 'nuclear', 'tech', 'biotech'
-  actionable: boolean     // should the AI scanner consider this context?
+  sector: string | null     // e.g. 'nuclear', 'tech', 'biotech'
+  watch_zone: string | null // price range to watch for future entry, e.g. '$45-48'
+  actionable: boolean       // should the AI scanner consider this context?
   raw: string
 }
 
@@ -66,35 +67,44 @@ export async function parseSignal(text: string): Promise<ParsedSignal> {
       max_tokens: 500,
       messages: [{
         role: 'user',
-        content: `You are an expert trading assistant reading messages from a paid stock signals channel (SF Essential Trades by Pavan Sailesh). You must classify each message and act like a professional human trader would.
+        content: `You are reading messages from "SF Essential Trades" — a paid channel by Pavan Sailesh, a professional trader. Read like a human trader would and classify the intent precisely.
+
+Pavan communicates in these patterns:
+1. DIRECT ENTRY — gives ticker + price + stop loss → we must execute
+   e.g. "Buy SPIR at 20.5 With SL of 18.5", "06/04: Buy TEM at 52 SL 46"
+2. DIRECT EXIT — explicitly tells subscribers to close/exit a position NOW
+   e.g. "Exit SPIR", "Sell SPIR now", "Close your SPIR position", "Book profits on X"
+3. POSITION UPDATE — tells what happened to a past recommendation (not a command to us)
+   e.g. "INTU hit stop loss", "LPTH hit our target of $17", "SIDU was stopped out"
+4. WATCH / SETUP ALERT — flags a stock to watch for future entry, not actionable yet
+   e.g. "OKLO could pull back to $45, watch for re-entry", "TEM looks good near $48"
+5. MARKET / SECTOR INSIGHT — general knowledge, macro views, sector commentary
+   e.g. "QQQ needs to correct", "nuclear sector heating up", portfolio risk summaries
+6. NOISE — webinars, referral links, greetings, admin → ignore
 
 Message: "${text}"
 
-Reply with ONLY a JSON object — one of these four shapes:
+Reply with ONLY a JSON object:
 
-1. EXPLICIT TRADE INSTRUCTION (buy/sell a specific stock now):
-{"type":"trade","symbol":"TICKER","action":"BUY","order_type":"MARKET","entry_price":null,"stop_loss":18.5,"target":null,"confidence":95}
+DIRECT ENTRY → {"type":"trade","symbol":"TICKER","action":"BUY","entry_price":20.5,"stop_loss":18.5,"target":null,"confidence":95}
 
-2. EXIT SIGNAL (channel says a held stock hit stop-loss, hit target, or advisor says exit/close):
-{"type":"exit","symbol":"TICKER","reason":"SL_HIT","summary":"INTU hit stop-loss at $180, trade closed for a loss"}
-reason must be one of: SL_HIT | TARGET_HIT | ADVISOR_EXIT
+DIRECT EXIT → {"type":"exit","symbol":"TICKER","reason":"ADVISOR_EXIT","summary":"one-line reason"}
 
-3. MARKET INSIGHT (analysis, sector news, holding commentary, earnings, risk summary — worth saving for AI context):
-{"type":"learn","summary":"one-line insight","symbols":["TICKER"],"sentiment":"bullish","sector":"nuclear","actionable":true}
-- sentiment: bullish / bearish / neutral
-- sector: the industry if identifiable, else null
-- actionable: true if this should influence future trade decisions
+POSITION UPDATE / WATCH / MARKET INSIGHT → {"type":"learn","summary":"one clear sentence","symbols":["TICKER"],"sentiment":"bullish","sector":"nuclear","watch_zone":"$45-48","actionable":true}
+  sentiment: bullish / bearish / neutral
+  sector: industry name if clear, else null
+  watch_zone: price range mentioned for watching/re-entry, else null
+  actionable: true if it should influence future AI stock picks
 
-4. NOISE (promos, admin, greetings, webinars, referral links):
-{"type":"ignore"}
+NOISE → {"type":"ignore"}
 
-Classification rules:
-- "buy X at Y" / "SL at Z" / clear entry instruction → type:trade
-- EXPLICIT direct command to close/sell NOW (e.g. "exit SPIR now", "sell all SPIR", "close your position in X immediately") → type:exit
-  Do NOT use exit for: "X hit stop loss", "X stopped out", "X dropped" — those are general commentary, not commands to us
-- General market commentary, "X hit SL" updates, sector news, analyst opinions, hold/watch guidance → type:learn with appropriate sentiment
-- confidence < 70 on a trade → demote to learn
-- When in doubt between exit and learn, choose learn`,
+Critical rules:
+- type:trade ONLY for explicit entry with ticker + price/instruction. Never guess.
+- type:exit ONLY when Pavan explicitly says to close — NOT when he reports "X hit SL" (that is his subscribers' trade, not a command to us)
+- "X hit stop loss / target" = type:learn, bearish or bullish accordingly
+- "Watch X near $Y" = type:learn, watch_zone set
+- confidence < 70 → demote trade to learn
+- Default to learn over exit when unsure`,
       }],
     })
 
@@ -110,7 +120,7 @@ Classification rules:
           type: 'learn',
           summary: `Possible ${parsed.action ?? 'trade'} on ${parsed.symbol ?? 'unknown'} — low confidence`,
           symbols: parsed.symbol ? [parsed.symbol] : [],
-          sentiment: 'neutral', sector: null, actionable: false,
+          sentiment: 'neutral', sector: null, watch_zone: null, actionable: false,
           raw: text,
         }
       }
@@ -145,6 +155,7 @@ Classification rules:
         symbols: Array.isArray(parsed.symbols) ? parsed.symbols.map((s: string) => String(s).toUpperCase()) : [],
         sentiment: parsed.sentiment ?? 'neutral',
         sector: parsed.sector ?? null,
+        watch_zone: parsed.watch_zone ?? null,
         actionable: parsed.actionable ?? false,
         raw: text,
       }
