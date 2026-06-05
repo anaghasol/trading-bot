@@ -409,48 +409,32 @@ export default function DashboardPage() {
           <button className={`seg-btn ${broker === 'schwab' ? 'on-red' : ''}`} onClick={() => setBroker('schwab')}><span className="dot" style={{ background: broker === 'schwab' ? 'var(--red)' : 'var(--fg-3)' }} /> Live · Schwab</button>
           <button className={`seg-btn ${isPaper ? 'on-blue' : ''}`} onClick={() => setBroker('alpaca_paper')}><span className="dot" style={{ background: isPaper ? 'var(--blue)' : 'var(--fg-3)' }} /> Paper · Alpaca</button>
         </div>
+        {/* ── System health dots — compact, in header ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 4 }} className="sys-dots">
+          {(() => {
+            const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
+            const afterHrs = etH >= 18 || etH < 9
+            const tgOk = tg?.connected
+            const tgColor = tg == null ? 'var(--fg-3)' : tgOk ? 'var(--green)' : afterHrs ? '#888' : 'var(--red)'
+            const alpOk = !!summary
+            const mktColor = market.open ? 'var(--green)' : '#888'
+            const dots = [
+              { label: 'TG', color: tgColor, title: tgOk ? 'TG: connected' : afterHrs ? 'TG: market closed' : `TG: ${tg?.minutes_silent ?? '?'}m silent` },
+              { label: 'ALP', color: alpOk ? 'var(--green)' : 'var(--red)', title: alpOk ? 'Alpaca: ok' : 'Alpaca: error' },
+              { label: 'SCH', color: broker === 'schwab' && alpOk ? 'var(--green)' : '#888', title: 'Schwab' },
+              { label: 'AI', color: 'var(--green)', title: 'Claude AI: ok' },
+              { label: 'MKT', color: mktColor, title: market.open ? 'Market open' : 'Market closed' },
+            ]
+            return dots.map(({ label, color, title }) => (
+              <span key={label} title={title} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.6rem', color: 'var(--fg-3)' }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
+                <span className="sys-label">{label}</span>
+              </span>
+            ))
+          })()}
+        </div>
         <button className="iconbtn" onClick={() => load(broker)}>↻ {stamp || '—'}</button>
       </header>
-
-      {/* ════ SYSTEM HEALTH BAR ════ */}
-      <div className="health-bar">
-        <span className="faint" style={{ marginRight: 4, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.6rem' }}>Systems</span>
-        {/* TG Poller */}
-        {(() => {
-          const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
-          const afterHrs = etH >= 18 || etH < 9
-          const color = tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : afterHrs ? 'var(--fg-3)' : 'var(--red)'
-          const bg = tg == null ? 'var(--bg-3)' : tg.connected ? 'rgba(19,201,142,0.1)' : afterHrs ? 'var(--bg-3)' : 'rgba(255,80,80,0.1)'
-          const label = tg?.connected ? '✓' : tg == null ? '…' : afterHrs ? '🌙 closed' : `✗ ${tg.minutes_silent ?? '?'}m`
-          return (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: bg, border: `1px solid ${color}` }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block' }} />
-              <span style={{ color }}>TG Poller {label}</span>
-            </span>
-          )
-        })()}
-        {/* Alpaca */}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: summary ? 'rgba(19,201,142,0.1)' : 'rgba(255,80,80,0.1)', border: `1px solid ${summary ? 'var(--green)' : 'var(--red)'}` }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: summary ? 'var(--green)' : 'var(--red)', display: 'inline-block' }} />
-          <span style={{ color: summary ? 'var(--green)' : 'var(--red)' }}>Alpaca {summary ? '✓' : '✗'}</span>
-        </span>
-        {/* Schwab */}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: broker === 'schwab' && summary ? 'rgba(19,201,142,0.1)' : broker !== 'schwab' ? 'var(--bg-3)' : 'rgba(255,80,80,0.1)', border: `1px solid ${broker === 'schwab' && summary ? 'var(--green)' : 'var(--border)'}` }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: broker === 'schwab' && summary ? 'var(--green)' : 'var(--fg-3)', display: 'inline-block' }} />
-          <span style={{ color: broker === 'schwab' && summary ? 'var(--green)' : 'var(--fg-3)' }}>Schwab {broker === 'schwab' ? (summary ? '✓' : '✗') : '—'}</span>
-        </span>
-        {/* Claude AI */}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: 'rgba(19,201,142,0.1)', border: '1px solid var(--green)' }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', display: 'inline-block' }} />
-          <span style={{ color: 'var(--green)' }}>Claude AI ✓</span>
-        </span>
-        {/* Market */}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: market.open ? 'rgba(19,201,142,0.1)' : 'var(--bg-3)', border: `1px solid ${market.open ? 'var(--green)' : 'var(--border)'}` }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: market.open ? 'var(--green)' : 'var(--fg-3)', display: 'inline-block' }} />
-          <span style={{ color: market.open ? 'var(--green)' : 'var(--fg-3)' }}>Market {market.open ? 'Open' : 'Closed'}</span>
-        </span>
-        <span className="faint" style={{ marginLeft: 'auto', fontSize: '0.6rem' }}>{stamp || '—'}</span>
-      </div>
 
       <div className="desk-wrap">
         {/* ════ LEFT RAIL ════ */}

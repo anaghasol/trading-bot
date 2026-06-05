@@ -105,6 +105,9 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
   -webkit-overflow-scrolling: touch; scrollbar-width: none;
 }
 .health-bar::-webkit-scrollbar { display: none; }
+.sys-dots { flex-shrink: 0; }
+.sys-label { font-size: 0.58rem; color: var(--fg-3); }
+@media(max-width:900px) { .sys-label { display: none; } }
 .col, .desk-col { display: flex; flex-direction: column; gap: 14px; }
 .page { max-width: 1440px; margin: 0 auto; padding: 20px 20px 48px; }
 
