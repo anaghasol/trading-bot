@@ -69,9 +69,7 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Daily loss limit hit (−5%)` }
   }
 
-  if (positions.length >= profile.max_positions) {
-    return { trades_made: 0, message: `[${broker}] Full: ${positions.length}/${profile.max_positions}` }
-  }
+  // (position cap enforced after regime check using dynamicMaxPos below)
 
   // Total exposure cap: don't open new positions if already > 75% equity deployed
   // Prevents margin usage on volatile names like MARA/SOUN that size up fast
@@ -89,14 +87,34 @@ async function runScan(
   const { recommendations, regime, scanned, candidates } =
     await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining, broker)
 
-  // ── Market filter: tighten confidence gate on bad market days ──────────────
-  // VIX > 28 or SPY in downtrend (below 50SMA) = dangerous — require higher conviction
-  const isHighVix     = regime.vix > 28
-  const isDowntrend   = !regime.spy_above_200sma
-  const isBadMarket   = isHighVix || isDowntrend
-  const dynamicMinConf = isBadMarket
-    ? Math.max(profile.min_confidence + 12, 65)   // raise gate by 12pts, floor 65
-    : profile.min_confidence
+  // ── 3-tier dynamic market gate ────────────────────────────────────────────
+  // Good (VIX<22, SPY above 200SMA) → base gate, full positions
+  // Tough (VIX 22-28)               → gate +5pts, same positions
+  // Bad  (VIX>28 or below 200SMA)   → gate +12pts (floor 65%), cap positions at 6
+  const vix = regime.vix
+  const aboveSma = regime.spy_above_200sma
+
+  let marketTier: 'GOOD' | 'TOUGH' | 'BAD'
+  let dynamicMinConf: number
+  let dynamicMaxPos: number
+
+  if (!aboveSma || vix > 28) {
+    marketTier    = 'BAD'
+    dynamicMinConf = Math.max(profile.min_confidence + 12, 65)
+    dynamicMaxPos  = Math.min(profile.max_positions, 6)
+  } else if (vix > 22) {
+    marketTier    = 'TOUGH'
+    dynamicMinConf = profile.min_confidence + 5
+    dynamicMaxPos  = profile.max_positions
+  } else {
+    marketTier    = 'GOOD'
+    dynamicMinConf = profile.min_confidence
+    dynamicMaxPos  = profile.max_positions
+  }
+
+  if (positions.length >= dynamicMaxPos) {
+    return { trades_made: 0, message: `[${broker}] Full ${marketTier}: ${positions.length}/${dynamicMaxPos} | VIX${vix.toFixed(0)}` }
+  }
 
   // Telegram signal boost: symbols mentioned in recent Telegram trade signals
   // (last 4 hours) get +8 confidence points — channel confirms our own scan.
@@ -129,8 +147,7 @@ async function runScan(
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
   let tradesMade = 0
-  const openSlots = profile.max_positions - positions.length
-  // Paper mode: review up to 12 candidates to fill slots; live: stick to openSlots
+  const openSlots = dynamicMaxPos - positions.length
   const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 25)
 
   for (const { rec, bias, tg_confirmed } of ranked.slice(0, reviewLimit)) {
@@ -201,10 +218,9 @@ async function runScan(
   }
 
   const hot = rotation.hottest ? ` Hot:${rotation.hottest}` : ''
-  const mktFilter = isBadMarket ? ` [MKT_FILTER VIX${regime.vix.toFixed(0)} gate→${dynamicMinConf}%]` : ''
   return {
     trades_made: tradesMade,
-    message: `[${broker}] Regime:${regime.regime}${hot}${mktFilter} PDT:${pdt.day_trades_used}/3 Scanned:${scanned} Candidates:${candidates} Ranked:${ranked.length} Trades:${tradesMade}`,
+    message: `[${broker}] Market:${marketTier} VIX${vix.toFixed(0)} Gate:${dynamicMinConf}% MaxPos:${dynamicMaxPos}${hot} PDT:${pdt.day_trades_used}/3 Scanned:${scanned} Candidates:${candidates} Ranked:${ranked.length} Trades:${tradesMade}`,
   }
 }
 
