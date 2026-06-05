@@ -416,10 +416,19 @@ export default function DashboardPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 20px', background: 'var(--bg-2)', borderBottom: '1px solid var(--border)', fontSize: '0.68rem', flexWrap: 'wrap' }}>
         <span className="faint" style={{ marginRight: 4, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.6rem' }}>Systems</span>
         {/* TG Poller */}
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: tg == null ? 'var(--bg-3)' : tg.connected ? 'rgba(19,201,142,0.1)' : 'rgba(255,80,80,0.1)', border: `1px solid ${tg == null ? 'var(--border)' : tg.connected ? 'var(--green)' : 'var(--red)'}` }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : 'var(--red)', display: 'inline-block' }} />
-          <span style={{ color: tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : 'var(--red)' }}>TG Poller {tg?.connected ? '✓' : tg == null ? '…' : `✗ ${tg.minutes_silent ?? '?'}m silent`}</span>
-        </span>
+        {(() => {
+          const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
+          const afterHrs = etH >= 18 || etH < 9
+          const color = tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : afterHrs ? 'var(--fg-3)' : 'var(--red)'
+          const bg = tg == null ? 'var(--bg-3)' : tg.connected ? 'rgba(19,201,142,0.1)' : afterHrs ? 'var(--bg-3)' : 'rgba(255,80,80,0.1)'
+          const label = tg?.connected ? '✓' : tg == null ? '…' : afterHrs ? '🌙 closed' : `✗ ${tg.minutes_silent ?? '?'}m`
+          return (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: bg, border: `1px solid ${color}` }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block' }} />
+              <span style={{ color }}>TG Poller {label}</span>
+            </span>
+          )
+        })()}
         {/* Alpaca */}
         <span style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 20, background: summary ? 'rgba(19,201,142,0.1)' : 'rgba(255,80,80,0.1)', border: `1px solid ${summary ? 'var(--green)' : 'var(--red)'}` }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: summary ? 'var(--green)' : 'var(--red)', display: 'inline-block' }} />
@@ -694,14 +703,25 @@ export default function DashboardPage() {
                     </span>
                   </div>
                 )}
-                {tg != null && tg.has_session && !tg.connected && (
-                  <div style={{ fontSize: '0.75rem', color: '#f5a623', background: 'rgba(245,166,35,0.08)', borderRadius: 6, padding: '6px 10px' }}>
-                    {tg.tg_status?.startsWith('error:')
-                      ? <>Poller error: <b>{tg.tg_status.replace('error:', '')}</b></>
-                      : <>Poller silent — {tg.minutes_silent ?? '?'}min since last poll</>}
-                    <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Vercel cron may be down · check Vercel dashboard</span>
-                  </div>
-                )}
+                {tg != null && tg.has_session && !tg.connected && (() => {
+                  const etHour = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
+                  const h = parseInt(etHour)
+                  const isAfterHours = h >= 18 || h < 9
+                  if (isAfterHours) return (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)', background: 'var(--bg-3)', borderRadius: 6, padding: '6px 10px' }}>
+                      🌙 Market closed — poller resumes 9 AM ET
+                      <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Last active: {tg.last_poll ? new Date(tg.last_poll).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' }) + ' ET' : '—'}</span>
+                    </div>
+                  )
+                  return (
+                    <div style={{ fontSize: '0.75rem', color: '#f5a623', background: 'rgba(245,166,35,0.08)', borderRadius: 6, padding: '6px 10px' }}>
+                      {tg.tg_status?.startsWith('error:')
+                        ? <>Poller error: <b>{tg.tg_status.replace('error:', '')}</b></>
+                        : <>Poller silent — {tg.minutes_silent ?? '?'}min since last poll</>}
+                      <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Vercel cron may be down · check Vercel dashboard</span>
+                    </div>
+                  )
+                })()}
                 {tg != null && tg.signals.length === 0 && tg.connected && (
                   <div className="desk-empty">No signals yet — watching channel.</div>
                 )}
