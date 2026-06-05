@@ -98,6 +98,13 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
   display: grid; grid-template-columns: 298px 1fr;
   gap: 14px; padding: 14px 18px 26px; align-items: start;
 }
+.health-bar {
+  display: flex; align-items: center; gap: 6px; padding: 5px 20px;
+  background: var(--bg-2); border-bottom: 1px solid var(--border);
+  font-size: 0.68rem; overflow-x: auto; white-space: nowrap;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.health-bar::-webkit-scrollbar { display: none; }
 .col, .desk-col { display: flex; flex-direction: column; gap: 14px; }
 .page { max-width: 1440px; margin: 0 auto; padding: 20px 20px 48px; }
 
@@ -334,7 +341,83 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
 }
 
 /* ── Responsive ─────────────────────────────────────────────── */
+
+/* ── Tablet (≤1150px) ── */
 @media(max-width:1150px) {
   .wrap, .desk-wrap { grid-template-columns: 1fr; }
   .section-row { grid-template-columns: 1fr; }
+  .desk-col { max-width: 100%; }
+}
+
+/* ── Tablet header (≤1024px): hide indices, compress nav ── */
+@media(max-width:1024px) {
+  .desk-top { gap: 10px; padding: 8px 14px; flex-wrap: nowrap; overflow: hidden; }
+  .desk-idx { display: none; }          /* hide SPY/QQQ prices */
+  .desk-rt  { display: none; }          /* hide 'Realtime data' */
+  .desk-nav { gap: 1px; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
+  .desk-nav a { padding: 4px 8px; font-size: 11.5px; white-space: nowrap; }
+  .desk-spacer { min-width: 0; flex: 1; }
+  .seg { flex-shrink: 0; }
+  .seg-btn { padding: 5px 10px; font-size: 11px; }
+  .countdown { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+}
+
+/* ── Mobile (≤640px): full mobile layout ── */
+@media(max-width:640px) {
+  /* Header: brand + scrollable nav + broker switcher only */
+  .desk-top {
+    flex-wrap: nowrap; padding: 7px 12px; gap: 8px;
+    overflow: hidden; min-height: 0;
+  }
+  .desk-brand > div > div:last-child { display: none; }  /* hide 'Live Desk' subtitle */
+  .desk-nav {
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; flex-shrink: 1;
+  }
+  .desk-nav::-webkit-scrollbar { display: none; }
+  .desk-nav a { padding: 4px 9px; font-size: 11px; white-space: nowrap; }
+  .countdown { display: none; }         /* hide countdown on mobile */
+  .seg-btn { padding: 4px 8px; font-size: 10.5px; gap: 4px; }
+  .seg-btn .dot { width: 5px; height: 5px; }
+
+  /* Health bar: scroll horizontally on mobile */
+  .desk-top + div[style*='flex'] {
+    overflow-x: auto; flex-wrap: nowrap !important;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+
+  /* Main layout: single column, no sidebar */
+  .wrap, .desk-wrap { grid-template-columns: 1fr; padding: 10px; gap: 10px; }
+  .desk-col { gap: 10px; }
+
+  /* Cards: full width, tighter padding */
+  .card { border-radius: 10px; }
+  .card-body { padding: 10px 12px; }
+  .card-head { padding: 10px 12px; }
+
+  /* Positions table: scroll horizontally */
+  .card table { min-width: 580px; }
+  .card > div { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Account card: stack grid */
+  .spread { flex-wrap: wrap; gap: 6px; }
+
+  /* Quick trade: full width inputs */
+  .qt-row { flex-wrap: wrap; }
+
+  /* Section rows: always 1 col */
+  .section-row { grid-template-columns: 1fr; }
+
+  /* Watchlist: compact */
+  .wl { grid-template-columns: 1fr auto auto; font-size: 12px; }
+
+  /* Metric values smaller on mobile */
+  .metric-value { font-size: 1.4rem; }
+}
+
+/* ── Small mobile (≤400px) ── */
+@media(max-width:400px) {
+  .desk-nav a { padding: 3px 7px; font-size: 10.5px; }
+  .bmark { width: 26px; height: 26px; }
+  .seg { display: none; }   /* hide broker switcher — use dashboard default */
 }

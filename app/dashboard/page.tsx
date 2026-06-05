@@ -413,7 +413,7 @@ export default function DashboardPage() {
       </header>
 
       {/* ════ SYSTEM HEALTH BAR ════ */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 20px', background: 'var(--bg-2)', borderBottom: '1px solid var(--border)', fontSize: '0.68rem', flexWrap: 'wrap' }}>
+      <div className="health-bar">
         <span className="faint" style={{ marginRight: 4, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.6rem' }}>Systems</span>
         {/* TG Poller */}
         {(() => {
