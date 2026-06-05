@@ -137,13 +137,15 @@ export async function GET(req: Request) {
       return { id: msg.id, type: 'exit_not_held', symbol: signal.symbol }
     }
 
-    // LEARN signal — save with full context for AI scanner to use
+    // LEARN signal — digest as context, never blindly act
+    // Our own GTC stop orders and monitor cron handle exits; advisor commentary informs future decisions
     if (signal.type === 'learn') {
       const learnMsg = `📚 SF Trades [${signal.sentiment}${signal.sector ? ' · ' + signal.sector : ''}]: ${signal.summary}${signal.symbols.length ? ` [${signal.symbols.join(', ')}]` : ''}`
       await db.from('tb_alerts').insert({ type: 'INFO', symbol: signal.symbols[0] ?? null, message: learnMsg })
 
-      // Save actionable insights to learning table so AI scanner picks them up
-      if (signal.actionable && signal.symbols.length > 0) {
+      // Save to learning table — AI scanner uses this context for future picks
+      // Bearish signals on held stocks are noted but our own stop orders decide exit
+      if (signal.symbols.length > 0) {
         for (const sym of signal.symbols) {
           await db.from('tb_learning').insert({
             symbol: sym,
@@ -156,7 +158,8 @@ export async function GET(req: Request) {
         }
       }
 
-      await tgSend(`📚 *SF Trades insight*\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
+      const sentimentTag = signal.sentiment === 'bearish' ? '🔴' : signal.sentiment === 'bullish' ? '🟢' : '⚪'
+      await tgSend(`📚 *SF Trades insight* ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
       return { id: msg.id, type: 'learn', summary: signal.summary }
     }
 

@@ -89,10 +89,12 @@ reason must be one of: SL_HIT | TARGET_HIT | ADVISOR_EXIT
 {"type":"ignore"}
 
 Classification rules:
-- "buy X at Y" / "SL at Z" / clear entry → type:trade
-- "X hit its stop loss" / "X stopped out" / "X hit target" / "exit X" / "close X position" → type:exit
-- Market commentary, sector news, portfolio updates, holding opinions → type:learn
-- confidence < 70 on a trade → demote to learn`,
+- "buy X at Y" / "SL at Z" / clear entry instruction → type:trade
+- EXPLICIT direct command to close/sell NOW (e.g. "exit SPIR now", "sell all SPIR", "close your position in X immediately") → type:exit
+  Do NOT use exit for: "X hit stop loss", "X stopped out", "X dropped" — those are general commentary, not commands to us
+- General market commentary, "X hit SL" updates, sector news, analyst opinions, hold/watch guidance → type:learn with appropriate sentiment
+- confidence < 70 on a trade → demote to learn
+- When in doubt between exit and learn, choose learn`,
       }],
     })
 
