@@ -35,9 +35,11 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
 
 /* ── Top bar ────────────────────────────────────────────────── */
 .top, .desk-top {
-  display: flex; align-items: center; gap: 18px; padding: 9px 18px;
+  display: flex; align-items: center; gap: 12px; padding: 0 16px;
+  height: 48px; min-height: 48px; max-height: 48px;
   background: linear-gradient(180deg,#11161f,#0d1219);
   border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 30;
+  overflow: hidden; flex-wrap: nowrap;
 }
 .brand, .desk-brand { display: flex; align-items: center; gap: 9px; }
 .bmark { width: 30px; height: 30px; border-radius: 9px; background: var(--green-dim); border: 1px solid rgba(19,201,142,.35); display: grid; place-items: center; }
@@ -68,6 +70,7 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
   background: var(--amber-dim); border: 1px solid rgba(245,166,35,.3);
   color: var(--amber); padding: 5px 11px; border-radius: var(--r-pill);
   font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  white-space: nowrap; flex-shrink: 0; line-height: 1;
 }
 .countdown.open { background: var(--green-dim); border-color: rgba(19,201,142,.35); color: var(--green); }
 
