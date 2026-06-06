@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Card, CardHead, Chip, Meter, Donut, Empty } from '@/components/ui/kit'
+import TopNav from '@/components/layout/TopNav'
 
 interface LearningContext { summary: string; win_rate_7d: number; best_setups: string[]; avoid_setups: string[]; best_times: string[]; regime_performance: Record<string, number>; recent_losses: string[] }
 interface Lesson { id?: number; symbol: string; strategy: string; pnl_pct: number; hold_days: number; regime: string; outcome: string; lesson: string; created_at: string }
@@ -26,6 +27,8 @@ export default function LearningPage() {
   const regimes = Object.entries(ctx?.regime_performance ?? {})
 
   return (
+    <>
+    <TopNav />
     <div className="page">
       <div className="page-head">
         <div>
@@ -107,5 +110,6 @@ export default function LearningPage() {
         </div>
       </div>
     </div>
+    </>
   )
 }

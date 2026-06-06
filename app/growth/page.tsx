@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from 'recharts'
 import { Card, CardHead, Metric, Chip, Meter, Donut, money, signed, pnlColor } from '@/components/ui/kit'
+import TopNav from '@/components/layout/TopNav'
 
 interface DailyRow { date: string; daily_pnl: number; wins: number; losses: number; win_rate: number }
 
@@ -55,6 +56,8 @@ export default function GrowthPage() {
   const incomeBars = rows.slice(-14).map((r) => ({ date: r.date.slice(5), v: Number(r.daily_pnl.toFixed(2)) }))
 
   return (
+    <>
+    <TopNav />
     <div className="page">
       <div className="page-head">
         <div>
@@ -148,5 +151,6 @@ export default function GrowthPage() {
         </div>
       </Card>
     </div>
+    </>
   )
 }
