@@ -1,9 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
-
-const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/learning', 'Learning'], ['/settings', 'Settings']]
 
 type Source = 'sf_trades' | 'ai_scan'
 type Filter = 'all' | Source
@@ -92,16 +89,7 @@ export default function PortfolioPage() {
   const tdStyle: React.CSSProperties = { padding: '10px 12px', textAlign: 'right', fontSize: '0.8rem', borderBottom: '1px solid var(--border)' }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-1)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)' }}>
-      <header className="desk-top">
-        <div className="desk-brand">
-          <div className="bmark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></svg></div>
-          <div><div style={{ fontWeight: 700, fontSize: '0.95rem', lineHeight: 1 }}>MyTrade</div><div className="eyebrow" style={{ marginTop: 2 }}>Portfolio</div></div>
-        </div>
-        <nav className="desk-nav">{NAV.map(([href, label]) => <Link key={href} href={href} className={href === '/portfolio' ? 'on' : ''}>{label}</Link>)}</nav>
-      </header>
-
-      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '20px 20px' }}>
+    <div style={{ padding: '20px 20px' }}>
 
         {/* Summary row */}
         <div style={{ display: 'flex', gap: 14, marginBottom: 20 }}>
@@ -213,6 +201,5 @@ export default function PortfolioPage() {
                   </table>}
         </div>
       </div>
-    </div>
   )
 }
