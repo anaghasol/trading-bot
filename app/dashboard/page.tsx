@@ -401,19 +401,26 @@ export default function DashboardPage() {
         </div>
         <nav className="desk-nav">{NAV.map(([href, label]) => <Link key={href} href={href} className={href === '/dashboard' ? 'on' : ''}>{label}</Link>)}</nav>
         <div className="desk-spacer" />
-        {idx('SPY') && <div className="desk-idx"><span className="lab">S&amp;P · SPY</span><span className="tabular">{num(idx('SPY')!.price)}</span><span className="tabular" style={{ fontSize: '0.72rem', color: pnlColor(idx('SPY')!.change_pct) }}>{p2(idx('SPY')!.change_pct)}</span></div>}
-        {idx('QQQ') && <div className="desk-idx"><span className="lab">NDQ · QQQ</span><span className="tabular">{num(idx('QQQ')!.price)}</span></div>}
-        <div className="desk-rt"><span className="dot live" style={{ background: 'var(--green)' }} /> Realtime data</div>
-        <span className={`countdown ${market.open ? 'open' : ''}`}>{market.open && <span className="dot live" style={{ background: 'var(--green)' }} />}⏱ {market.txt}</span>
+        {/* Indices — compact, tooltip for label */}
+        {idx('SPY') && <div className="desk-idx" title="S&P 500 · SPY"><span className="tabular" style={{ fontSize: '0.78rem' }}>{num(idx('SPY')!.price)}</span><span className="tabular" style={{ fontSize: '0.68rem', color: pnlColor(idx('SPY')!.change_pct) }}>{p2(idx('SPY')!.change_pct)}</span></div>}
+        {idx('QQQ') && <div className="desk-idx" title="Nasdaq · QQQ"><span className="tabular" style={{ fontSize: '0.78rem', color: 'var(--fg-2)' }}>{num(idx('QQQ')!.price)}</span></div>}
+        {/* Market status — icon + short text, no ⏱ */}
+        <span className={`countdown ${market.open ? 'open' : ''}`} title={market.txt}>
+          {market.open ? <span className="dot live" style={{ background: 'var(--green)' }} /> : null}
+          {market.open ? market.txt.split('·')[0].trim() : market.txt.split('·')[0].trim()}
+        </span>
+        {/* Broker switcher */}
         <div className="seg">
-          <button className={`seg-btn ${broker === 'schwab' ? 'on-red' : ''}`} onClick={() => setBroker('schwab')}><span className="dot" style={{ background: broker === 'schwab' ? 'var(--red)' : 'var(--fg-3)' }} /> Live · Schwab</button>
-          <button className={`seg-btn ${isPaper ? 'on-blue' : ''}`} onClick={() => setBroker('alpaca_paper')}><span className="dot" style={{ background: isPaper ? 'var(--blue)' : 'var(--fg-3)' }} /> Paper · Alpaca</button>
+          <button className={`seg-btn ${broker === 'schwab' ? 'on-red' : ''}`} onClick={() => setBroker('schwab')} title="Live · Schwab"><span className="dot" style={{ background: broker === 'schwab' ? 'var(--red)' : 'var(--fg-3)' }} /> Live</button>
+          <button className={`seg-btn ${isPaper ? 'on-blue' : ''}`} onClick={() => setBroker('alpaca_paper')} title="Paper · Alpaca"><span className="dot" style={{ background: isPaper ? 'var(--blue)' : 'var(--fg-3)' }} /> Paper</button>
         </div>
         {/* ── System health dots — compact, in header ── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 4 }} className="sys-dots">
           {(() => {
             const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
-            const afterHrs = etH >= 18 || etH < 9
+            const dayName = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'long' })
+            const isWeekend = dayName === 'Saturday' || dayName === 'Sunday'
+            const afterHrs = isWeekend || etH >= 18 || etH < 9
             const tgOk = tg?.connected
             const tgColor = tg == null ? 'var(--fg-3)' : tgOk ? 'var(--green)' : afterHrs ? '#888' : 'var(--red)'
             const alpOk = !!summary
@@ -688,9 +695,19 @@ export default function DashboardPage() {
                   </div>
                 )}
                 {tg != null && tg.has_session && !tg.connected && (() => {
-                  const etHour = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
-                  const h = parseInt(etHour)
-                  const isAfterHours = h >= 18 || h < 9
+                  const now = new Date()
+                  const etDay = parseInt(now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' }).slice(0,2) === 'Sa' ? '6' : now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' }).slice(0,2) === 'Su' ? '0' : '1')
+                  const dayName = now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'long' })
+                  const isWeekend = dayName === 'Saturday' || dayName === 'Sunday'
+                  const etHour = parseInt(now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
+                  const isAfterHours = etHour >= 18 || etHour < 9
+
+                  if (isWeekend) return (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)', background: 'var(--bg-3)', borderRadius: 6, padding: '6px 10px' }}>
+                      📅 Weekend — poller resumes Monday 9 AM ET
+                      <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Last active: {tg.last_poll ? new Date(tg.last_poll).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' }) + ' ET Fri' : '—'}</span>
+                    </div>
+                  )
                   if (isAfterHours) return (
                     <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)', background: 'var(--bg-3)', borderRadius: 6, padding: '6px 10px' }}>
                       🌙 Market closed — poller resumes 9 AM ET
