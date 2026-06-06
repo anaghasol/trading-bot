@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useSearchParams } from 'next/navigation'
-import TopNav from '@/components/layout/TopNav'
+
 
 export default function SettingsPage() {
   const searchParams = useSearchParams()
@@ -60,7 +60,7 @@ export default function SettingsPage() {
 
   return (
     <>
-    <TopNav />
+    
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 22px 40px' }}>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--fg-1)', margin: '0 0 4px' }}>Settings</h1>

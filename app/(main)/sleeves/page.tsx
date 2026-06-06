@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Card, Chip, Meter, money } from '@/components/ui/kit'
-import TopNav from '@/components/layout/TopNav'
+
 
 type Key = 'aggressive' | 'short' | 'little_long' | 'long'
 interface SleeveMeta { key: Key; name: string; color: string; tone: 'down' | 'amber' | 'blue' | 'up'; horizon: string; risk: number; setups: string; note: string }
@@ -58,7 +58,7 @@ export default function SleevesPage() {
 
   return (
     <>
-    <TopNav />
+    
     <div className="page">
       <div className="page-head">
         <div>

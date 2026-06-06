@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from 'recharts'
 import { Card, CardHead, Metric, Chip, Meter, Donut, money, signed, pnlColor } from '@/components/ui/kit'
-import TopNav from '@/components/layout/TopNav'
+
 
 interface DailyRow { date: string; daily_pnl: number; wins: number; losses: number; win_rate: number }
 
@@ -57,7 +57,7 @@ export default function GrowthPage() {
 
   return (
     <>
-    <TopNav />
+    
     <div className="page">
       <div className="page-head">
         <div>

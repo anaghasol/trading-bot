@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import type { PdtStatus } from '@/lib/pdt'
-import TopNav from '@/components/layout/TopNav'
+
 
 interface RoundTrip { symbol: string; pnl: number; pnl_pct: number; buy_date: string; sell_date: string; held_days: number }
 interface SchwabOrder { symbol: string; instruction: string; quantity: number; price: number; entered_time: string; status: string; order_type: string }
@@ -95,7 +95,7 @@ export default function TradesPage() {
 
   return (
     <>
-    <TopNav />
+    
     <div style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 22px 40px' }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--fg-1)', margin: '0 0 4px' }}>Trade History</h1>
