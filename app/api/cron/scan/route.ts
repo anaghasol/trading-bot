@@ -69,6 +69,18 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Daily loss limit hit (−5%)` }
   }
 
+  // Macro bearish gate: if Pavan said "hold off on new purchases" within last 18h, pause entries
+  try {
+    const { data: macroRow } = await db.from('tb_settings').select('value').eq('key', 'tg_macro_stance').single()
+    if (macroRow?.value) {
+      const macro = JSON.parse(macroRow.value) as { stance: string; set_at: string }
+      const hoursAgo = (Date.now() - new Date(macro.set_at).getTime()) / 3600000
+      if (macro.stance === 'bearish' && hoursAgo < 18) {
+        return { trades_made: 0, message: `[${broker}] Macro bearish pause — advisor said hold off ${hoursAgo.toFixed(0)}h ago` }
+      }
+    }
+  } catch { /* non-fatal — if this fails, scan continues */ }
+
   // (position cap enforced after regime check using dynamicMaxPos below)
 
   // Total exposure cap: don't open new positions if already > 75% equity deployed

@@ -80,12 +80,28 @@ export async function buildLearningContext(): Promise<LearningContext> {
   const avgWin  = wins.length  ? wins.reduce((s, t)  => s + t.pnl_pct, 0) / wins.length  : 0
   const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl_pct, 0) / losses.length : 0
 
+  // Current macro stance (set by TG poller when Pavan gives broad market call)
+  const { data: macroRow } = await db.from('tb_settings').select('value').eq('key', 'tg_macro_stance').single()
+  let macroStanceLine = ''
+  if (macroRow?.value) {
+    try {
+      const macro = JSON.parse(macroRow.value) as { stance: string; set_at: string; insight: string }
+      const hoursAgo = (Date.now() - new Date(macro.set_at).getTime()) / 3600000
+      if (hoursAgo < 18) {
+        macroStanceLine = macro.stance === 'bearish'
+          ? `⚠️ ADVISOR MACRO: BEARISH (${hoursAgo.toFixed(0)}h ago) — ${macro.insight} DO NOT open new positions.`
+          : `✅ ADVISOR MACRO: BULLISH (${hoursAgo.toFixed(0)}h ago) — ${macro.insight}`
+      }
+    } catch { /* ignore parse error */ }
+  }
+
   // SF Trades advisor insights from last 3 days
   const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
   const { data: advisorInsights } = await db
     .from('tb_learning')
     .select('symbol, sentiment, sector, insight, created_at')
     .gte('created_at', threeDaysAgo)
+    .not('symbol', 'is', null)   // ticker-specific only; macro already captured above
     .order('created_at', { ascending: false })
     .limit(30)
 
@@ -117,6 +133,7 @@ export async function buildLearningContext(): Promise<LearningContext> {
   ].filter(Boolean).join(' ')
 
   const summary = [
+    macroStanceLine,   // always first so Claude sees it immediately
     `7-day performance: ${wins.length}W/${losses.length}L (${win_rate_7d.toFixed(0)}% win rate).`,
     `Avg win: +${avgWin.toFixed(1)}%, Avg loss: ${avgLoss.toFixed(1)}%.`,
     best_setups.length  ? `Best setups: ${best_setups.join(', ')}.` : '',

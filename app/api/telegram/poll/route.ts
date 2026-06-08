@@ -147,8 +147,31 @@ export async function GET(req: Request) {
       await db.from('tb_alerts').insert({ type: 'INFO', symbol: signal.symbols[0] ?? null, message: learnMsg })
 
       // Save to learning table — AI scanner uses this context for future picks
-      // Bearish signals on held stocks are noted but our own stop orders decide exit
-      if (signal.symbols.length > 0) {
+      // Always save macro signals (symbol=null) so buildLearningContext picks them up
+      const isMacroSignal = signal.symbols.length === 0
+      if (isMacroSignal) {
+        await db.from('tb_learning').insert({
+          symbol: null,
+          source: 'sf_essential_trades',
+          sentiment: signal.sentiment,
+          sector: signal.sector ?? null,
+          insight: signal.summary,
+          created_at: new Date().toISOString(),
+        })
+        // Persist macro stance in tb_settings so scan cron can check it before opening new trades
+        if (signal.sentiment === 'bearish') {
+          await db.from('tb_settings').upsert({
+            key: 'tg_macro_stance',
+            value: JSON.stringify({ stance: 'bearish', set_at: new Date().toISOString(), insight: signal.summary }),
+          })
+          await tgSend(`🛑 *Macro bearish stance saved* — AI scanner will pause new entries for 18h\n${signal.summary}`)
+        } else if (signal.sentiment === 'bullish') {
+          await db.from('tb_settings').upsert({
+            key: 'tg_macro_stance',
+            value: JSON.stringify({ stance: 'bullish', set_at: new Date().toISOString(), insight: signal.summary }),
+          })
+        }
+      } else {
         for (const sym of signal.symbols) {
           await db.from('tb_learning').insert({
             symbol: sym,
@@ -167,7 +190,7 @@ export async function GET(req: Request) {
 
       // If advisor signals a broad buy-on-dips / accumulation opportunity with no specific ticker,
       // trigger the AI scanner immediately instead of waiting for the 30-min cron
-      const isDipSignal = signal.actionable && signal.sentiment === 'bullish' && signal.symbols.length === 0
+      const isDipSignal = signal.actionable && signal.sentiment === 'bullish' && isMacroSignal
       if (isDipSignal) {
         const appUrl = process.env.VERCEL_APP_URL ?? 'https://trading-bot-hazel-one.vercel.app'
         fetch(`${appUrl}/api/engine?secret=${process.env.CRON_SECRET}&source=tg_dip_signal`, {
