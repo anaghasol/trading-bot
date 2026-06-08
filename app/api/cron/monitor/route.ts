@@ -9,6 +9,7 @@ import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceede
 import { profileFor } from '@/lib/strategy-profiles'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
+import { getActiveIntentions } from '@/lib/tg-intentions'
 import { alertStopHit, alertTelegramDown, alertTelegramReconnected } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 
@@ -49,6 +50,10 @@ async function monitorBroker(
   ])
 
   if (positions.length === 0) return { closed: 0, partial: 0, statuses: [] }
+
+  // Load Pavan's hold intentions — if he says "don't exit TEM", we skip our own stops for it
+  const intentions = await getActiveIntentions().catch(() => [])
+  const holdSymbols = new Set(intentions.filter((i) => i.type === 'hold_position').map((i) => i.symbol))
 
   const equity = balance ?? (broker === 'schwab' ? 2000 : 100000)
   const pdt    = analyzePdtStatus(recentOrders, equity)
@@ -155,6 +160,13 @@ async function monitorBroker(
     }
 
     if (!exit.should_exit) { statuses.push(`${pos.symbol}: ${exit.reason}`); continue }
+
+    // Pavan said hold — override our trailing stop (but NOT emergency initial-stop loss)
+    const isEmergencyStop = exit.exit_type === 'INITIAL_STOP' && exit.pnl_pct < -6
+    if (holdSymbols.has(pos.symbol) && !isEmergencyStop) {
+      statuses.push(`${pos.symbol}: HOLD override — Pavan says don't exit (${exit.exit_type})`)
+      continue
+    }
 
     // PDT gate for Schwab same-day exits only
     const isEmergency = exit.exit_type === 'INITIAL_STOP' && exit.pnl_pct < -6

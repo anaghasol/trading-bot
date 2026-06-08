@@ -12,6 +12,7 @@ import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal, isWorthClassifying } from '@/lib/telegram-signal'
+import { addIntention, parseZonePrices } from '@/lib/tg-intentions'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -181,6 +182,50 @@ export async function GET(req: Request) {
             insight: signal.summary + (signal.watch_zone ? ` Watch zone: ${signal.watch_zone}` : ''),
             created_at: new Date().toISOString(),
           })
+
+          // Create engine intention — this is what makes the engine "act when time comes"
+          // rather than acting immediately OR forgetting completely.
+          if (signal.sentiment === 'bullish' || signal.sentiment === 'neutral') {
+            const priceZone = signal.watch_zone ? parseZonePrices(signal.watch_zone) : null
+            const isHoldSignal = /hold|don'?t.exit|remain.bullish|stay.in|keep/i.test(signal.summary)
+
+            if (isHoldSignal) {
+              // Pavan says don't exit — monitor cron will respect this
+              await addIntention({
+                symbol: sym, type: 'hold_position',
+                urgency: 'high',
+                price_zone: null,
+                context: signal.summary.slice(0, 120),
+                expires_hours: 24,
+              })
+            } else if (priceZone) {
+              // Pavan gave a specific price zone → wait for price to enter zone, then buy
+              await addIntention({
+                symbol: sym, type: 'buy_zone',
+                urgency: 'medium',
+                price_zone: priceZone,
+                context: signal.summary.slice(0, 120),
+                expires_hours: 72,
+              })
+            } else if (signal.actionable) {
+              // Pavan bullish but no specific price → engine watches and buys on next good setup
+              await addIntention({
+                symbol: sym, type: 'watch_only',
+                urgency: 'low',
+                price_zone: null,
+                context: signal.summary.slice(0, 120),
+                expires_hours: 48,
+              })
+            }
+          } else if (signal.sentiment === 'bearish') {
+            await addIntention({
+              symbol: sym, type: 'avoid',
+              urgency: 'high',
+              price_zone: null,
+              context: signal.summary.slice(0, 120),
+              expires_hours: 48,
+            })
+          }
         }
       }
 

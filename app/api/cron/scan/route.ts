@@ -22,6 +22,7 @@ import { createServiceClient } from '@/lib/supabase-server'
 import { profileFor } from '@/lib/strategy-profiles'
 import { getCategoryMomentum, biasForSymbol, categoryLabel, type RotationResult } from '@/lib/category-rotation'
 import { getSleeveAllocation, sleeveForSetup, sleeveSizing } from '@/lib/sleeves'
+import { getActiveIntentions, markActed } from '@/lib/tg-intentions'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -128,6 +129,11 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Full ${marketTier}: ${positions.length}/${dynamicMaxPos} | VIX${vix.toFixed(0)}` }
   }
 
+  // Load Pavan's active intentions — these shape every execution decision this tick
+  const intentions = await getActiveIntentions().catch(() => [])
+  const intentionMap = new Map(intentions.map((i) => [i.symbol, i]))
+  const avoidSymbols = new Set(intentions.filter((i) => i.type === 'avoid').map((i) => i.symbol))
+
   // Telegram signal boost: symbols mentioned in recent Telegram trade signals
   // (last 4 hours) get +8 confidence points — channel confirms our own scan.
   const since = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
@@ -145,28 +151,50 @@ async function runScan(
   // Telegram-confirmed symbols get +8 confidence bonus before ranking.
   const ranked = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
+    .filter((r) => !avoidSymbols.has(r.symbol))   // Pavan said avoid — never enter
     .map((r) => {
       const rawBias = biasForSymbol(r.symbol, rotation)
-      const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias  // paper: never hard-zero
+      const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias
+
+      const intent = intentionMap.get(r.symbol)
+      // Intention confidence boosts: buy_zone in range > watch_only > tg_alert
+      let intentBoost = 0
+      if (intent?.type === 'buy_zone' && intent.price_zone) {
+        // Will get quote below — for now mark as high-intent; actual zone check happens on execution
+        intentBoost = intent.urgency === 'high' ? 15 : 10
+      } else if (intent?.type === 'watch_only') {
+        intentBoost = 5
+      } else if (tgSymbols.has(r.symbol)) {
+        intentBoost = 8
+      }
+
       return {
-        rec: { ...r, confidence: tgSymbols.has(r.symbol) ? Math.min(100, r.confidence + 8) : r.confidence },
+        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost) },
         bias,
-        tg_confirmed: tgSymbols.has(r.symbol),
+        tg_confirmed: tgSymbols.has(r.symbol) || !!intent,
+        intent,
       }
     })
-    .filter((x) => isSchwab ? x.bias > 0 : true)                    // live: drop COLD
-    .filter((x) => x.rec.confidence >= dynamicMinConf)               // market-adjusted gate
+    .filter((x) => isSchwab ? x.bias > 0 : true)
+    .filter((x) => x.rec.confidence >= dynamicMinConf)
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
   let tradesMade = 0
   const openSlots = dynamicMaxPos - positions.length
   const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 25)
 
-  for (const { rec, bias, tg_confirmed } of ranked.slice(0, reviewLimit)) {
+  for (const { rec, bias, tg_confirmed, intent } of ranked.slice(0, reviewLimit)) {
     const quote = isSchwab
       ? await SchwabBroker.getQuote(rec.symbol)
       : await AlpacaBroker.getQuote(rec.symbol)
     if (!quote || quote.price <= 0) continue
+
+    // buy_zone intent: only execute if live price is actually inside Pavan's zone.
+    // If price is outside zone → skip this tick, wait for the right entry point.
+    if (intent?.type === 'buy_zone' && intent.price_zone) {
+      const { low, high } = intent.price_zone
+      if (quote.price < low || quote.price > high) continue  // not at the right price yet
+    }
 
     // Route the pick to its sleeve and size against that horizon's budget.
     const sleeve = sleeveForSetup(rec.setup)
@@ -183,7 +211,11 @@ async function runScan(
       const initialStop = quote.price * (1 - sizing.stop_pct)
       const target      = quote.price * (1 + sizing.stop_pct * 2)
       const cat      = categoryLabel(rec.symbol)
-      const tgNote   = tg_confirmed ? ' 📡TG-confirmed' : ''
+      // Mark the intention as acted so we don't buy twice on the same signal
+      if (intent) await markActed(rec.symbol, intent.type).catch(() => {})
+
+      const intentNote = intent?.type === 'buy_zone' ? ' 🎯TG-zone' : intent?.type === 'watch_only' ? ' 👁TG-watch' : ''
+      const tgNote   = tg_confirmed ? ` 📡TG${intentNote}` : ''
       const riskNote = ` | sleeve=${sleeve} cat=${cat} ema=${rec.ema_score}/10 claude=${rec.claude_conf}% oai=${rec.openai_conf}% stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}${tgNote}`
 
       const tradeRow: Record<string, unknown> = {

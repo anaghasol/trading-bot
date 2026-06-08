@@ -4,6 +4,7 @@
  * so the AI improves its picks based on what's actually working.
  */
 import { createServiceClient } from './supabase-server'
+import { buildIntentionContext } from './tg-intentions'
 
 export interface LearningContext {
   summary: string
@@ -132,8 +133,13 @@ export async function buildLearningContext(): Promise<LearningContext> {
     watchZones.length ? `Advisor watching for entry: ${watchZones.join(', ')}.` : '',
   ].filter(Boolean).join(' ')
 
+  // Pavan's active intentions — the most actionable part of the context
+  let intentionContext = ''
+  try { intentionContext = await buildIntentionContext() } catch { /* non-fatal */ }
+
   const summary = [
-    macroStanceLine,   // always first so Claude sees it immediately
+    macroStanceLine,       // macro stance first (may block all new trades)
+    intentionContext,      // specific per-stock intentions from Pavan
     `7-day performance: ${wins.length}W/${losses.length}L (${win_rate_7d.toFixed(0)}% win rate).`,
     `Avg win: +${avgWin.toFixed(1)}%, Avg loss: ${avgLoss.toFixed(1)}%.`,
     best_setups.length  ? `Best setups: ${best_setups.join(', ')}.` : '',
