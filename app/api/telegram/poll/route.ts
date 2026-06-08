@@ -188,15 +188,32 @@ export async function GET(req: Request) {
       const watchTag = signal.watch_zone ? `\n👁 Watch zone: ${signal.watch_zone}` : ''
       await tgSend(`📚 *SF Trades insight* ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}${watchTag}`)
 
-      // If advisor signals a broad buy-on-dips / accumulation opportunity with no specific ticker,
-      // trigger the AI scanner immediately instead of waiting for the 30-min cron
-      const isDipSignal = signal.actionable && signal.sentiment === 'bullish' && isMacroSignal
+      // Only trigger scanner when Pavan explicitly says "buy / accumulate / prices are cheap".
+      // Defensive messages like "book gains, hold cash, precaution" are still bullish overall
+      // but are NOT a "buy now" signal — they caused false scanner triggers.
+      const DEFENSIVE_PATTERN = /book.*(gain|profit|partial)|hold.*(cash|off)|precaution|step\s*back|minor\s*pull|small\s*account|reduce|trim|caution|wait\s*for|not.*buy/i
+      const isDefensive = DEFENSIVE_PATTERN.test(signal.summary)
+
+      // Also respect an active macro bearish stance — if Pavan said "hold off" recently,
+      // don't fire the scanner even if a subsequent message sounds generally bullish.
+      let macroIsBearish = false
+      try {
+        const { data: macroRow } = await db.from('tb_settings').select('value').eq('key', 'tg_macro_stance').single()
+        if (macroRow?.value) {
+          const macro = JSON.parse(macroRow.value) as { stance: string; set_at: string }
+          macroIsBearish = macro.stance === 'bearish' && (Date.now() - new Date(macro.set_at).getTime()) < 18 * 3600000
+        }
+      } catch { /* non-fatal */ }
+
+      const isDipSignal = signal.actionable && signal.sentiment === 'bullish' && isMacroSignal && !isDefensive && !macroIsBearish
       if (isDipSignal) {
         const appUrl = process.env.VERCEL_APP_URL ?? 'https://trading-bot-hazel-one.vercel.app'
         fetch(`${appUrl}/api/engine?secret=${process.env.CRON_SECRET}&source=tg_dip_signal`, {
           method: 'POST',
         }).catch(() => {})
         await tgSend(`🔍 *Dip signal detected — triggering AI scanner now*\nLooking for buy setups across watchlist...`)
+      } else if (signal.actionable && signal.sentiment === 'bullish' && isMacroSignal && (isDefensive || macroIsBearish)) {
+        await tgSend(`📌 *Bullish but cautious* — scanner NOT triggered${macroIsBearish ? ' (macro bearish stance active)' : ' (defensive signal: book gains/hold cash)'}`)
       }
 
       return { id: msg.id, type: 'learn', summary: signal.summary }
