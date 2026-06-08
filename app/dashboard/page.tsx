@@ -14,7 +14,7 @@ interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
 interface TgSignal { id: number; type: string; message: string; symbol?: string; created_at: string }
-interface TgStatus { connected: boolean; has_session: boolean; last_poll: string | null; minutes_silent: number | null; tg_status: string | null; last_msg_id: number; signals: TgSignal[] }
+interface TgStatus { connected: boolean; cron_alive: boolean; has_session: boolean; last_poll: string | null; last_cron_ping: string | null; minutes_silent: number | null; minutes_since_cron_ping: number | null; tg_status: string | null; last_msg_id: number; signals: TgSignal[] }
 interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string }
 interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; market_open: boolean }
 interface Pdt { day_trades_remaining: number; is_pdt_protected: boolean; balance: number }
@@ -714,12 +714,19 @@ export default function DashboardPage() {
                       <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Last active: {tg.last_poll ? new Date(tg.last_poll).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' }) + ' ET' : '—'}</span>
                     </div>
                   )
+                  const cronPingAge = tg.last_cron_ping ? Math.round((Date.now() - new Date(tg.last_cron_ping).getTime()) / 60000) : null
                   return (
                     <div style={{ fontSize: '0.75rem', color: '#f5a623', background: 'rgba(245,166,35,0.08)', borderRadius: 6, padding: '6px 10px' }}>
-                      {tg.tg_status?.startsWith('error:')
-                        ? <>Poller error: <b>{tg.tg_status.replace('error:', '')}</b></>
-                        : <>Poller silent — {tg.minutes_silent ?? '?'}min since last poll</>}
-                      <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Vercel cron may be down · check Vercel dashboard</span>
+                      {tg.tg_status === 'no_session'
+                        ? <>Session expired — re-authenticate via <code>/api/telegram/auth</code></>
+                        : tg.tg_status?.startsWith('error:')
+                          ? <>Poller error: <b>{tg.tg_status.replace('error:', '').trim()}</b></>
+                          : tg.cron_alive
+                            ? <>Cron running — TG connect failing · check logs</>
+                            : <>Cron silent — {cronPingAge != null ? `${cronPingAge}m since last ping` : 'never reached'}</>}
+                      <br /><span className="faint" style={{ fontSize: '0.65rem' }}>
+                        {tg.cron_alive ? `Cron alive · TG unreachable` : `Vercel cron may be down · check Vercel dashboard`}
+                      </span>
                     </div>
                   )
                 })()}

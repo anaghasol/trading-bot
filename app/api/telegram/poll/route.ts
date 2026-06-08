@@ -45,8 +45,12 @@ export async function GET(req: Request) {
 
   const db = createServiceClient()
 
+  // Cron ping — written immediately so dashboard can tell if cron is alive even when TG fails
+  await db.from('tb_settings').upsert({ key: 'tg_cron_ping', value: new Date().toISOString() })
+
   const sessionStr = await getStoredSession()
   if (!sessionStr) {
+    await db.from('tb_settings').upsert({ key: 'tg_status', value: 'no_session' })
     return NextResponse.json({ error: 'Not authenticated. Visit /api/telegram/auth first.' })
   }
 
@@ -55,8 +59,7 @@ export async function GET(req: Request) {
     client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3, useWSS: true })
     await client.connect()
   } catch (e) {
-    const db2 = createServiceClient()
-    await db2.from('tb_settings').upsert({ key: 'tg_status', value: `error: ${String(e).slice(0, 100)}` })
+    await db.from('tb_settings').upsert({ key: 'tg_status', value: `error: ${String(e).slice(0, 100)}` })
     return NextResponse.json({ ok: false, error: 'TG connect failed', detail: String(e) })
   }
 
