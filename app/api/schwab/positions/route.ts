@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getPositions } from '@/lib/broker'
+import { getPositions } from '@/lib/schwab'
 import { createClient } from '@/lib/supabase-server'
 
 export async function GET() {

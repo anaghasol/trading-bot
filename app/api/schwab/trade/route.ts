@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { placeOrder } from '@/lib/broker'
+import { placeOrder } from '@/lib/schwab'
 import { createClient, createServiceClient } from '@/lib/supabase-server'
 
 export async function POST(req: Request) {
