@@ -550,6 +550,7 @@ export interface AccountSummary {
   day_pnl: number
   day_pnl_pct: number
   fetched_at: string
+  _raw?: Record<string, number | undefined>
 }
 
 export async function getAccountSummary(): Promise<AccountSummary | null> {
@@ -573,24 +574,36 @@ export async function getAccountSummary(): Promise<AccountSummary | null> {
   // rounded to the deposit amount — cashBalance is more precise in that case.
   // For accounts with positions, use liquidationValue (cash + market value of positions).
   const long_mkt = cur.longMarketValue ?? 0
-  const cash_bal = cur.cashBalance ?? cur.cashAvailableForWithdrawal ?? cur.totalCash ?? 0
-  const account_value = long_mkt > 0
-    ? (cur.liquidationValue ?? cur.equity ?? cash_bal)
-    : (cash_bal || (cur.liquidationValue ?? cur.equity ?? 0))
+  const day_pnl_pct = (cur.liquidationValue ?? 1) > 0
+    ? (day_pnl / Math.max((cur.liquidationValue ?? 1) - day_pnl, 1)) * 100 : 0
 
-  const day_pnl_pct = account_value > 0 ? (day_pnl / Math.max(account_value - day_pnl, 1)) * 100 : 0
-
+  // Return every balance field so the debug endpoint can identify the precise one
   return {
-    account_value,
-    cash:                   cash_bal,
+    account_value:          cur.liquidationValue ?? cur.equity ?? cur.cashBalance ?? 0,
+    cash:                   cur.cashBalance ?? cur.cashAvailableForTrading ?? 0,
     stock_buying_power:     proj.buyingPower ?? cur.buyingPower ?? cur.cashAvailableForTrading ?? 0,
     option_buying_power:    cur.buyingPowerNonMarginableTrade ?? cur.buyingPower ?? 0,
     day_trade_buying_power: cur.dayTradingBuyingPower ?? 0,
-    long_market_value:      cur.longMarketValue ?? 0,
+    long_market_value:      long_mkt,
     equity:                 cur.equity ?? cur.liquidationValue ?? 0,
     day_pnl:                Math.round(day_pnl * 100) / 100,
     day_pnl_pct:            Math.round(day_pnl_pct * 100) / 100,
     fetched_at:             new Date().toISOString(),
+    // Raw fields for diagnosis — remove once correct field is identified
+    _raw: {
+      liquidationValue:            cur.liquidationValue,
+      cashBalance:                 cur.cashBalance,
+      cashAvailableForTrading:     cur.cashAvailableForTrading,
+      cashAvailableForWithdrawal:  cur.cashAvailableForWithdrawal,
+      totalCash:                   cur.totalCash,
+      equity:                      cur.equity,
+      availableFunds:              cur.availableFunds,
+      availableFundsNonMarginable: cur.availableFundsNonMarginableTrade,
+      buyingPower:                 cur.buyingPower,
+      longMarketValue:             cur.longMarketValue,
+      pendingDeposits:             cur.pendingDeposits,
+      accruedInterest:             cur.accruedInterest,
+    },
   }
 }
 
