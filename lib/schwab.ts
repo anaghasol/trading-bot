@@ -566,19 +566,23 @@ export async function getAccountSummary(): Promise<AccountSummary | null> {
   const proj     = (sa.projectedBalances as Record<string, number>) ?? {}
   const positions = (sa.positions as Array<Record<string, unknown>>) ?? []
 
-  // Schwab API returns day P&L at account level in currentBalances
-  const day_pnl_acct = cur.currentDayProfitLoss ?? cur.todayNetLiquidationValue ?? null
-  // Fall back to summing per-position currentDayProfitLoss if account-level field missing
-  const day_pnl_pos = positions.reduce((sum, p) => sum + (Number(p.currentDayProfitLoss) || 0), 0)
-  const day_pnl = day_pnl_acct !== null ? day_pnl_acct : day_pnl_pos
+  // Day P&L: sum per-position (account-level field not reliable in Schwab individual API)
+  const day_pnl = positions.reduce((sum, p) => sum + (Number(p.currentDayProfitLoss) || 0), 0)
 
-  // Use most precise account value available — prefer totalValue > liquidationValue > equity
-  const account_value = cur.totalValue ?? cur.liquidationValue ?? cur.equity ?? 0
+  // Account value: for pure cash accounts (no positions) liquidationValue is often
+  // rounded to the deposit amount — cashBalance is more precise in that case.
+  // For accounts with positions, use liquidationValue (cash + market value of positions).
+  const long_mkt = cur.longMarketValue ?? 0
+  const cash_bal = cur.cashBalance ?? cur.cashAvailableForWithdrawal ?? cur.totalCash ?? 0
+  const account_value = long_mkt > 0
+    ? (cur.liquidationValue ?? cur.equity ?? cash_bal)
+    : (cash_bal || cur.liquidationValue ?? cur.equity ?? 0)
+
   const day_pnl_pct = account_value > 0 ? (day_pnl / Math.max(account_value - day_pnl, 1)) * 100 : 0
 
   return {
     account_value,
-    cash:                   cur.cashBalance ?? cur.cashAvailableForTrading ?? cur.totalCash ?? 0,
+    cash:                   cash_bal,
     stock_buying_power:     proj.buyingPower ?? cur.buyingPower ?? cur.cashAvailableForTrading ?? 0,
     option_buying_power:    cur.buyingPowerNonMarginableTrade ?? cur.buyingPower ?? 0,
     day_trade_buying_power: cur.dayTradingBuyingPower ?? 0,
