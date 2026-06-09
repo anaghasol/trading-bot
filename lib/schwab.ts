@@ -547,6 +547,9 @@ export interface AccountSummary {
   day_trade_buying_power: number
   long_market_value: number
   equity: number
+  day_pnl: number
+  day_pnl_pct: number
+  fetched_at: string
 }
 
 export async function getAccountSummary(): Promise<AccountSummary | null> {
@@ -558,18 +561,27 @@ export async function getAccountSummary(): Promise<AccountSummary | null> {
   )
   if (!data) return null
 
-  const sa   = (data.securitiesAccount as Record<string, unknown>) ?? {}
-  const cur  = (sa.currentBalances   as Record<string, number>) ?? {}
-  const proj = (sa.projectedBalances as Record<string, number>) ?? {}
+  const sa       = (data.securitiesAccount as Record<string, unknown>) ?? {}
+  const cur      = (sa.currentBalances   as Record<string, number>) ?? {}
+  const proj     = (sa.projectedBalances as Record<string, number>) ?? {}
+  const positions = (sa.positions as Array<Record<string, unknown>>) ?? []
+
+  // Sum currentDayProfitLoss across all positions — Schwab doesn't expose this at account level
+  const day_pnl = positions.reduce((sum, p) => sum + (Number(p.currentDayProfitLoss) || 0), 0)
+  const account_value = cur.liquidationValue ?? cur.equity ?? 0
+  const day_pnl_pct = account_value > 0 ? (day_pnl / (account_value - day_pnl)) * 100 : 0
 
   return {
-    account_value:          cur.liquidationValue ?? cur.equity ?? 0,
+    account_value,
     cash:                   cur.cashBalance ?? cur.cashAvailableForTrading ?? cur.totalCash ?? 0,
     stock_buying_power:     proj.buyingPower ?? cur.buyingPower ?? cur.cashAvailableForTrading ?? 0,
     option_buying_power:    cur.buyingPowerNonMarginableTrade ?? cur.buyingPower ?? 0,
     day_trade_buying_power: cur.dayTradingBuyingPower ?? 0,
     long_market_value:      cur.longMarketValue ?? 0,
     equity:                 cur.equity ?? cur.liquidationValue ?? 0,
+    day_pnl:                Math.round(day_pnl * 100) / 100,
+    day_pnl_pct:            Math.round(day_pnl_pct * 100) / 100,
+    fetched_at:             new Date().toISOString(),
   }
 }
 

@@ -9,7 +9,7 @@ const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/growth', 'Growth'], 
 
 type Broker = 'schwab' | 'alpaca_paper'
 interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string }
-interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number }
+interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number; fetched_at?: string }
 interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
@@ -460,6 +460,14 @@ export default function DashboardPage() {
               <div className="kv"><span className="k">Day trades left</span><span className="v" style={{ color: isPaper ? 'var(--green)' : (Number(dtLeft) > 0 ? 'var(--green)' : 'var(--amber)') }}>{dtLeft} <span className="faint" style={{ fontSize: '0.62rem' }}>{isPaper ? 'unlimited' : '/ 3'}</span></span></div>
               <div className="kv"><span className="k">P/L Day</span><span className="v" style={{ color: pnlColor(dayPnl) }}>{signed(dayPnl)}</span></div>
               <div className="kv"><span className="k">P/L Open</span><span className="v" style={{ color: pnlColor(unreal) }}>{signed(unreal)}</span></div>
+              {summary?.fetched_at && (
+                <div className="kv" style={{ marginTop: 4 }}>
+                  <span className="k faint" style={{ fontSize: '0.6rem' }}>Data as of</span>
+                  <span className="v faint" style={{ fontSize: '0.6rem' }}>
+                    {new Date(summary.fetched_at).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit' })} ET
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
