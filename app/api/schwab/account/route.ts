@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
-import { getAccountSummary } from '@/lib/schwab'
+import { getAccountSummary, getSchwabAuthStatus } from '@/lib/schwab'
 
 // GET /api/schwab/account  → full live balances for the dashboard rail.
 export async function GET() {
@@ -8,7 +8,16 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const summary = await getAccountSummary()
-  if (!summary) return NextResponse.json({ error: 'no_schwab_connection' }, { status: 200 })
-  return NextResponse.json(summary)
+  const [summary, authStatus] = await Promise.all([getAccountSummary(), getSchwabAuthStatus()])
+
+  if (!summary) {
+    return NextResponse.json({
+      error: 'schwab_auth_expired',
+      auth_status: authStatus,
+      reauth_url: '/api/schwab/auth',
+    }, { status: 200 })
+  }
+
+  // Include auth freshness so dashboard can warn before expiry
+  return NextResponse.json({ ...summary, auth_status: authStatus })
 }

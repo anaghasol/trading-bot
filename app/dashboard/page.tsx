@@ -9,7 +9,8 @@ const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/growth', 'Growth'], 
 
 type Broker = 'schwab' | 'alpaca_paper'
 interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string }
-interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number; fetched_at?: string }
+interface AuthStatus { ok: boolean; refresh_expires_at: string | null; hours_left: number | null }
+interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number; fetched_at?: string; auth_status?: AuthStatus; error?: string; reauth_url?: string }
 interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
@@ -320,7 +321,9 @@ export default function DashboardPage() {
     ])
     if (d.status === 'fulfilled') setDash((prev) => ({ ...prev, [b]: d.value }))
     if (p.status === 'fulfilled') setPosData({ broker: b, items: Array.isArray(p.value) ? p.value : (p.value?.positions ?? []) })
-    if (s.status === 'fulfilled' && s.value && !s.value.error) setSummaryData({ broker: b, data: s.value })
+    // Accept response even with auth_status warning — only reject hard errors
+    if (s.status === 'fulfilled' && s.value && s.value.error !== 'schwab_auth_expired') setSummaryData({ broker: b, data: s.value })
+    else if (s.status === 'fulfilled' && s.value?.error === 'schwab_auth_expired') setSummaryData({ broker: b, data: s.value as unknown as Summary })
     if (q.status === 'fulfilled') { const m: Record<string, Quote> = {}; for (const x of (q.value?.quotes ?? [])) m[x.symbol] = x; setQmap(m) }
     if (h.status === 'fulfilled' && h.value?.pdt) setPdt(h.value.pdt)
     if (o.status === 'fulfilled' && o.value?.orders) setOrders(o.value.orders)
@@ -452,6 +455,20 @@ export default function DashboardPage() {
           <div className="card">
             <div className="card-head plain"><h3 className="card-title neutral">💼 Account <span className="chip mut" style={{ fontSize: '0.6rem' }}>{isPaper ? 'Alpaca · Paper' : 'Schwab · Individual'}</span></h3><span className="eyebrow">{isPaper ? 'PAPER $' : 'REAL $'}</span></div>
             <div className="card-body">
+              {/* Schwab auth expired banner */}
+              {!isPaper && summary?.error === 'schwab_auth_expired' && (
+                <div style={{ background: 'rgba(245,100,100,0.12)', border: '1px solid var(--red)', borderRadius: 6, padding: '8px 10px', marginBottom: 10, fontSize: '0.73rem' }}>
+                  🔐 <b>Schwab token expired</b> — showing stale data.{' '}
+                  <a href="/api/schwab/auth" style={{ color: 'var(--green)', textDecoration: 'underline' }}>Re-authenticate now →</a>
+                </div>
+              )}
+              {/* Warn when refresh token expires within 48h */}
+              {!isPaper && summary?.auth_status && summary.auth_status.ok && (summary.auth_status.hours_left ?? 999) < 48 && (
+                <div style={{ background: 'rgba(245,166,35,0.1)', border: '1px solid var(--amber)', borderRadius: 6, padding: '6px 10px', marginBottom: 10, fontSize: '0.7rem' }}>
+                  ⚠️ Schwab token expires in <b>{summary.auth_status.hours_left}h</b>.{' '}
+                  <a href="/api/schwab/auth" style={{ color: 'var(--green)' }}>Refresh now →</a>
+                </div>
+              )}
               <div className="eyebrow">Account value</div>
               <div className="acctval" style={{ margin: '4px 0 10px' }}><Flash value={acctValue} fmt={(n) => '$' + num(n)} /></div>
               <div style={{ marginBottom: 12 }}><span className={`chip ${up ? 'up' : 'down'}`} style={{ fontSize: '0.76rem' }}>{up ? '▲' : '▼'} {signed(dayPnl)} ({p2(dayPct)}) day</span></div>

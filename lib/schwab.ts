@@ -102,12 +102,17 @@ async function refreshAccessToken(refreshToken: string, currentHash: string): Pr
   })
 
   if (!res.ok) {
+    // Mark auth as broken in Supabase so dashboard can show re-auth banner
+    const db = createServiceClient()
+    await db.from('tb_settings').upsert({ key: 'schwab_auth_status', value: 'expired' })
     console.error(`[schwab] Token refresh failed: ${res.status}`)
     return null
   }
 
   const data = await res.json()
   const expiry = new Date(Date.now() + (data.expires_in - 60) * 1000).toISOString()
+  // Schwab refresh tokens last 7 days — warn 24h before
+  const refreshExpiry = new Date(Date.now() + 6 * 24 * 60 * 60 * 1000).toISOString()
 
   await saveTokens({
     access_token: data.access_token,
@@ -116,7 +121,26 @@ async function refreshAccessToken(refreshToken: string, currentHash: string): Pr
     expiry,
   })
 
+  const db = createServiceClient()
+  await db.from('tb_settings').upsert({ key: 'schwab_auth_status', value: 'ok' })
+  await db.from('tb_settings').upsert({ key: 'schwab_refresh_expiry', value: refreshExpiry })
+
   return data.access_token
+}
+
+// Returns whether Schwab is connected — used by dashboard and monitor cron
+export async function getSchwabAuthStatus(): Promise<{ ok: boolean; refresh_expires_at: string | null; hours_left: number | null }> {
+  const db = createServiceClient()
+  const [statusRow, expiryRow] = await Promise.all([
+    db.from('tb_settings').select('value').eq('key', 'schwab_auth_status').single(),
+    db.from('tb_settings').select('value').eq('key', 'schwab_refresh_expiry').single(),
+  ])
+  const ok = statusRow.data?.value === 'ok'
+  const refresh_expires_at = expiryRow.data?.value ?? null
+  const hours_left = refresh_expires_at
+    ? Math.round((new Date(refresh_expires_at).getTime() - Date.now()) / 3600000)
+    : null
+  return { ok, refresh_expires_at, hours_left }
 }
 
 async function getAccessToken(): Promise<string | null> {
