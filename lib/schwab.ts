@@ -66,7 +66,7 @@ export interface SchwabTransaction {
 
 // ── Token Management ──────────────────────────────────────────────────────────
 
-async function getStoredTokens() {
+export async function getStoredTokens() {
   const db = createServiceClient()
   const { data } = await db
     .from('tb_schwab_tokens')
