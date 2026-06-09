@@ -566,10 +566,15 @@ export async function getAccountSummary(): Promise<AccountSummary | null> {
   const proj     = (sa.projectedBalances as Record<string, number>) ?? {}
   const positions = (sa.positions as Array<Record<string, unknown>>) ?? []
 
-  // Sum currentDayProfitLoss across all positions — Schwab doesn't expose this at account level
-  const day_pnl = positions.reduce((sum, p) => sum + (Number(p.currentDayProfitLoss) || 0), 0)
-  const account_value = cur.liquidationValue ?? cur.equity ?? 0
-  const day_pnl_pct = account_value > 0 ? (day_pnl / (account_value - day_pnl)) * 100 : 0
+  // Schwab API returns day P&L at account level in currentBalances
+  const day_pnl_acct = cur.currentDayProfitLoss ?? cur.todayNetLiquidationValue ?? null
+  // Fall back to summing per-position currentDayProfitLoss if account-level field missing
+  const day_pnl_pos = positions.reduce((sum, p) => sum + (Number(p.currentDayProfitLoss) || 0), 0)
+  const day_pnl = day_pnl_acct !== null ? day_pnl_acct : day_pnl_pos
+
+  // Use most precise account value available — prefer totalValue > liquidationValue > equity
+  const account_value = cur.totalValue ?? cur.liquidationValue ?? cur.equity ?? 0
+  const day_pnl_pct = account_value > 0 ? (day_pnl / Math.max(account_value - day_pnl, 1)) * 100 : 0
 
   return {
     account_value,

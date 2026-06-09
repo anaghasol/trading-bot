@@ -287,8 +287,10 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
 export default function DashboardPage() {
   const [broker, setBroker] = useState<Broker>('schwab')
   const [dash, setDash] = useState<Record<Broker, Dash | null>>({ schwab: null, alpaca_paper: null })
-  const [pos, setPos] = useState<Position[]>([])
-  const [summary, setSummary] = useState<Summary | null>(null)
+  const [posData, setPosData] = useState<{ broker: Broker; items: Position[] }>({ broker: 'schwab', items: [] })
+  const [summaryData, setSummaryData] = useState<{ broker: Broker; data: Summary | null }>({ broker: 'schwab', data: null })
+  const pos     = posData.broker     === broker ? posData.items    : []
+  const summary = summaryData.broker === broker ? summaryData.data : null
   const [qmap, setQmap] = useState<Record<string, Quote>>({})
   const [pdt, setPdt] = useState<Pdt | null>(null)
   const [orders, setOrders] = useState<SchwabOrder[]>([])
@@ -317,8 +319,8 @@ export default function DashboardPage() {
       fetch('/api/rotation').then((r) => r.json()),
     ])
     if (d.status === 'fulfilled') setDash((prev) => ({ ...prev, [b]: d.value }))
-    if (p.status === 'fulfilled') setPos(Array.isArray(p.value) ? p.value : (p.value?.positions ?? []))
-    if (s.status === 'fulfilled' && s.value && !s.value.error) setSummary(s.value)
+    if (p.status === 'fulfilled') setPosData({ broker: b, items: Array.isArray(p.value) ? p.value : (p.value?.positions ?? []) })
+    if (s.status === 'fulfilled' && s.value && !s.value.error) setSummaryData({ broker: b, data: s.value })
     if (q.status === 'fulfilled') { const m: Record<string, Quote> = {}; for (const x of (q.value?.quotes ?? [])) m[x.symbol] = x; setQmap(m) }
     if (h.status === 'fulfilled' && h.value?.pdt) setPdt(h.value.pdt)
     if (o.status === 'fulfilled' && o.value?.orders) setOrders(o.value.orders)
@@ -331,8 +333,8 @@ export default function DashboardPage() {
 
   // Clear stale data instantly when broker tab switches — no cross-contamination
   useEffect(() => {
-    setPos([])
-    setSummary(null)
+    setPosData({ broker, items: [] })
+    setSummaryData({ broker, data: null })
     setOrders([])
     setPdt(null)
   }, [broker])
