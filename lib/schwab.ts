@@ -576,7 +576,7 @@ export async function getAccountSummary(): Promise<AccountSummary | null> {
   const cash_bal = cur.cashBalance ?? cur.cashAvailableForWithdrawal ?? cur.totalCash ?? 0
   const account_value = long_mkt > 0
     ? (cur.liquidationValue ?? cur.equity ?? cash_bal)
-    : (cash_bal || cur.liquidationValue ?? cur.equity ?? 0)
+    : (cash_bal || (cur.liquidationValue ?? cur.equity ?? 0))
 
   const day_pnl_pct = account_value > 0 ? (day_pnl / Math.max(account_value - day_pnl, 1)) * 100 : 0
 
