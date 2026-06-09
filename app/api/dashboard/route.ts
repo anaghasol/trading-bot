@@ -12,31 +12,41 @@ export async function GET(req: Request) {
 
   const db = createServiceClient()
 
-  // Build trade queries — filter by broker if column exists
-  const tradesQ  = db.from('tb_trades').select('*').order('created_at', { ascending: false }).limit(20)
-  const alertsQ  = db.from('tb_alerts').select('*').order('created_at', { ascending: false }).limit(15)
+  // Strict per-broker queries — Schwab and Alpaca NEVER share data.
+  // Rows without a broker column (created before broker field existed) go to alpaca_paper.
+  const t = db.from('tb_trades').select('*').order('created_at', { ascending: false }).limit(20)
+  const a = db.from('tb_alerts').select('*').order('created_at', { ascending: false }).limit(15)
+  const p = db.from('tb_pnl_snapshots').select('*').eq('date', new Date().toISOString().split('T')[0]).order('hour')
+
+  const tradesStrict = broker === 'schwab'
+    ? db.from('tb_trades').select('*').eq('broker', 'schwab').order('created_at', { ascending: false }).limit(20)
+    : broker === 'alpaca_paper'
+      ? db.from('tb_trades').select('*').or('broker.eq.alpaca_paper,broker.is.null').order('created_at', { ascending: false }).limit(20)
+      : t
+
+  const alertsStrict = broker === 'schwab'
+    ? db.from('tb_alerts').select('*').eq('broker', 'schwab').order('created_at', { ascending: false }).limit(15)
+    : broker === 'alpaca_paper'
+      ? db.from('tb_alerts').select('*').or('broker.eq.alpaca_paper,broker.is.null').order('created_at', { ascending: false }).limit(15)
+      : a
+
+  const pnlStrict = broker !== 'all' ? p.eq('broker', broker) : p
 
   const [
     accountResult, tradesResult, alertsResult,
     dailySummaryResult, cronResult, pnlResult, engineResult,
   ] = await Promise.all([
     db.from('tb_account').select('*').order('id', { ascending: false }).limit(1).single(),
-    tradesQ,
-    alertsQ,
+    tradesStrict,
+    alertsStrict,
     db.from('tb_daily_summary').select('*').order('date', { ascending: false }).limit(7),
     db.from('tb_cron_log').select('*').order('created_at', { ascending: false }).limit(8),
-    db.from('tb_pnl_snapshots').select('*').eq('date', new Date().toISOString().split('T')[0]).order('hour'),
+    pnlStrict,
     db.from('tb_context').select('key, value').in('key', ['engine_schwab', 'engine_alpaca']),
   ])
 
-  // Filter by broker if column exists in returned data
-  let trades = tradesResult.data ?? []
-  let alerts = alertsResult.data ?? []
-
-  if (broker !== 'all') {
-    trades = trades.filter((t) => !t.broker || t.broker === broker)
-    alerts = alerts.filter((a) => !a.broker || a.broker === broker)
-  }
+  const trades = tradesResult.data ?? []
+  const alerts = alertsResult.data ?? []
 
   const engineCtx = engineResult.data ?? []
   const engineStatus = {
