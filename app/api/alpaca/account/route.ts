@@ -27,6 +27,7 @@ export async function GET() {
     const last_equity = parseFloat(String(a.last_equity ?? equity))
     const cash        = parseFloat(String(a.cash        ?? 0))
     const buying_power = parseFloat(String(a.buying_power ?? 0))
+    const day_trade_buying_power = parseFloat(String(a.daytrading_buying_power ?? buying_power))
     const day_pnl     = equity - last_equity
 
     return NextResponse.json({
@@ -34,7 +35,7 @@ export async function GET() {
       cash,
       stock_buying_power:     buying_power,
       option_buying_power:    buying_power,
-      day_trade_buying_power: buying_power * 4,
+      day_trade_buying_power,
       day_pnl,
       day_pnl_pct:            last_equity > 0 ? (day_pnl / last_equity) * 100 : 0,
       daytrade_count:         Number(a.daytrade_count ?? 0),

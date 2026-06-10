@@ -536,8 +536,8 @@ export async function getTransactions(daysBack = 30): Promise<SchwabTransaction[
   const hash = await getAccountHash()
   if (!hash) return []
 
-  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-  const to   = new Date().toISOString().split('T')[0]
+  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
+  const to   = new Date().toISOString()
 
   const data = await apiGet<unknown[]>(
     `${API_BASE}/accounts/${hash}/transactions?startDate=${from}&endDate=${to}&types=TRADE`
@@ -639,8 +639,8 @@ export async function getFundingEvents(daysBack = 120): Promise<FundingEvent[]> 
   const hash = await getAccountHash()
   if (!hash) return []
 
-  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-  const to   = new Date().toISOString().split('T')[0]
+  const from = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
+  const to   = new Date().toISOString()
 
   const data = await apiGet<unknown[]>(
     `${API_BASE}/accounts/${hash}/transactions?startDate=${from}&endDate=${to}`

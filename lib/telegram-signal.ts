@@ -60,6 +60,104 @@ export interface IgnoreSignal { type: 'ignore' }
 
 export type ParsedSignal = TradeSignal | ExitSignal | LearnSignal | IgnoreSignal
 
+// ── Thread-aware batch parser ─────────────────────────────────────────────────
+// Sends all new messages to Claude at once so context flows between them:
+// e.g. "watching OKLO near $45" (msg 1) + "entering now" (msg 3) = BUY OKLO @45
+
+function normalizeSignal(p: Record<string, unknown>, raw: string): ParsedSignal {
+  if (p.type === 'trade') {
+    if (!p.symbol || !p.action || ((p.confidence as number) ?? 0) < 70) {
+      return {
+        type: 'learn', summary: `Possible trade on ${p.symbol ?? 'unknown'}`,
+        symbols: p.symbol ? [String(p.symbol).toUpperCase()] : [],
+        sentiment: 'neutral', sector: null, watch_zone: null, actionable: false, raw,
+      }
+    }
+    return {
+      type: 'trade',
+      symbol: String(p.symbol).toUpperCase(),
+      action: p.action as 'BUY' | 'SELL',
+      order_type: (p.order_type as 'MARKET' | 'LIMIT') ?? 'MARKET',
+      entry_price: (p.entry_price as number) ?? null,
+      stop_loss: (p.stop_loss as number) ?? null,
+      target: (p.target as number) ?? null,
+      confidence: p.confidence as number,
+      raw,
+    }
+  }
+  if (p.type === 'exit') {
+    if (!p.symbol) return { type: 'ignore' }
+    return {
+      type: 'exit',
+      symbol: String(p.symbol).toUpperCase(),
+      reason: (p.reason as 'SL_HIT' | 'TARGET_HIT' | 'ADVISOR_EXIT') ?? 'ADVISOR_EXIT',
+      summary: String(p.summary ?? ''),
+      raw,
+    }
+  }
+  if (p.type === 'learn') {
+    return {
+      type: 'learn',
+      summary: String(p.summary ?? raw.slice(0, 120)),
+      symbols: Array.isArray(p.symbols) ? (p.symbols as string[]).map((s) => String(s).toUpperCase()) : [],
+      sentiment: (p.sentiment as 'bullish' | 'bearish' | 'neutral') ?? 'neutral',
+      sector: (p.sector as string) ?? null,
+      watch_zone: (p.watch_zone as string) ?? null,
+      actionable: (p.actionable as boolean) ?? false,
+      raw,
+    }
+  }
+  return { type: 'ignore' }
+}
+
+export async function parseSignalThread(
+  messages: Array<{ id: number; text: string }>
+): Promise<Array<{ id: number; signal: ParsedSignal }>> {
+  if (messages.length === 0) return []
+  try {
+    const numbered = messages.map((m, i) => `[${i + 1}] ${m.text}`).join('\n\n')
+    const msg = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      messages: [{
+        role: 'user',
+        content: `You are reading a THREAD of messages from "SF Essential Trades" by Pavan Sailesh. Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.
+
+${numbered}
+
+Thread-context rules:
+- If msg [1] says "watching OKLO near $45" and msg [3] says "entering now" or "buy here" → [3] is type:trade for OKLO at $45
+- If a macro bearish tone builds across messages, later neutral messages inherit that sentiment
+- If Pavan mentions a stock positively across multiple messages, mark actionable:true
+
+Per-message classification rules:
+- type:trade = explicit entry with ticker + price (e.g. "Buy SPIR at 20.5 SL 18.5")
+- type:exit = explicit instruction to close NOW
+- type:learn = insight, watch zone, position update, macro commentary
+- type:ignore = noise, greetings, links, admin
+
+Return ONLY a JSON array with exactly ${messages.length} objects (one per message, in order):
+[{"msg_index":1,"type":"learn","summary":"...","symbols":["X"],"sentiment":"bullish","sector":null,"watch_zone":"$45-48","actionable":true}, ...]
+
+For trade: {"msg_index":N,"type":"trade","symbol":"X","action":"BUY","entry_price":20.5,"stop_loss":18.5,"target":null,"confidence":95}
+For exit: {"msg_index":N,"type":"exit","symbol":"X","reason":"ADVISOR_EXIT","summary":"..."}
+For ignore: {"msg_index":N,"type":"ignore"}`,
+      }],
+    })
+    const raw = (msg.content[0] as { type: string; text: string }).text.trim()
+    const match = raw.match(/\[[\s\S]*\]/)
+    if (!match) return messages.map((m) => ({ id: m.id, signal: { type: 'ignore' as const } }))
+    const parsed = JSON.parse(match[0]) as Array<Record<string, unknown>>
+    return messages.map((m, i) => {
+      const p = parsed.find((x) => (x.msg_index as number) === i + 1) ?? { type: 'ignore' }
+      return { id: m.id, signal: normalizeSignal(p, m.text) }
+    })
+  } catch (e) {
+    console.error('[telegram-signal] thread parse error:', e)
+    return messages.map((m) => ({ id: m.id, signal: { type: 'ignore' as const } }))
+  }
+}
+
 export async function parseSignal(text: string): Promise<ParsedSignal> {
   try {
     const msg = await client.messages.create({
