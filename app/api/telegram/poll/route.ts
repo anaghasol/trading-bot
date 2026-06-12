@@ -37,6 +37,19 @@ interface ChannelCfg {
   tradeEnabled: boolean // false = learn/log only, no order execution
 }
 
+// Index symbols → tradeable ETF equivalents (indices can't be ordered on Alpaca)
+const INDEX_MAP: Record<string, string> = {
+  RUT: 'IWM', RTY: 'IWM',   // Russell 2000
+  SPX: 'SPY', ES: 'SPY',    // S&P 500
+  NDX: 'QQQ', NQ: 'QQQ',   // Nasdaq 100
+  DJI: 'DIA', YM: 'DIA',   // Dow Jones
+  VIX: 'UVXY',              // Volatility (closest tradeable proxy)
+}
+
+function resolveSymbol(sym: string): string {
+  return INDEX_MAP[sym.toUpperCase()] ?? sym.toUpperCase()
+}
+
 const CHANNELS: ChannelCfg[] = [
   {
     id:           parseInt(process.env.TELEGRAM_CHANNEL_ID ?? '-1002381909837'),
@@ -142,6 +155,18 @@ export async function GET(req: Request) {
       const signal = await parseSignal(text, ch.name)
       if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
+      // Resolve index symbols to their tradeable ETF equivalents
+      if ('symbol' in signal && signal.symbol) {
+        const resolved = resolveSymbol(signal.symbol)
+        if (resolved !== signal.symbol) {
+          console.log(`[tg-poll] ${ch.name}: mapped ${signal.symbol} → ${resolved}`)
+          ;(signal as unknown as Record<string, unknown>).symbol = resolved
+        }
+      }
+      if ('symbols' in signal && Array.isArray(signal.symbols)) {
+        ;(signal as unknown as Record<string, unknown>).symbols = signal.symbols.map(resolveSymbol)
+      }
+
       // ── EXIT ──────────────────────────────────────────────────────────────────
       if (signal.type === 'exit') {
         const { data: openTrade } = await db.from('tb_trades')
@@ -245,7 +270,7 @@ export async function GET(req: Request) {
         return { id: msg.id, type: 'muted', channel: ch.name }
       }
 
-      // Guard 1: skip if we already hold this symbol
+      // Guard 1: BUY — skip if we already hold this symbol
       if (signal.action === 'BUY') {
         const { data: existing } = await db.from('tb_trades')
           .select('id').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1)
@@ -255,7 +280,17 @@ export async function GET(req: Request) {
         }
       }
 
-      // Guard 2: block after market hours
+      // Guard 2: SELL — only execute if we actually hold the position (never naked short)
+      if (signal.action === 'SELL') {
+        const { data: openTrade } = await db.from('tb_trades')
+          .select('id, quantity').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1).single()
+        if (!openTrade) {
+          await tgSend(`📌 *Skipped SELL ${signal.symbol}* (${ch.name}) — not held, no short selling`)
+          return { id: msg.id, type: 'skip', reason: 'not_held' }
+        }
+      }
+
+      // Guard 3: block after market hours
       const etHour = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
       const afterHours = parseInt(etHour) >= 16 || parseInt(etHour) < 9
       const afterHoursTag = afterHours ? ' [FILLS AT OPEN]' : ''
