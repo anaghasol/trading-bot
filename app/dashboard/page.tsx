@@ -348,6 +348,7 @@ export default function DashboardPage() {
   const [alertOn, setAlertOn] = useState(true)
   const [tg, setTg] = useState<TgStatus | null>(null)
   const [lastScan, setLastScan] = useState<{ ts: string; regime: string; vix: number; market: string; candidates: number; trades: number } | null>(null)
+  const [scanning, setScanning] = useState(false)
   const market = useMarketClock()
   const profile = PROFILES[broker]
 
@@ -401,6 +402,17 @@ export default function DashboardPage() {
     const iv = setInterval(() => load(broker), ms)
     return () => clearInterval(iv)
   }, [broker, market.open, load])
+
+  async function forceScan() {
+    if (scanning) return
+    setScanning(true)
+    try {
+      await fetch('/api/scan-now', { method: 'POST' })
+    } finally {
+      setScanning(false)
+      load(broker)
+    }
+  }
 
   const data = dash[broker]
   const isPaper = broker === 'alpaca_paper'
@@ -503,6 +515,13 @@ export default function DashboardPage() {
           })()}
         </div>
         <button className="iconbtn" onClick={() => load(broker)}>↻ {stamp || '—'}</button>
+        <button
+          className="iconbtn"
+          onClick={forceScan}
+          disabled={scanning || !market.open}
+          title={market.open ? 'Force AI scan now' : 'Market closed'}
+          style={{ color: scanning ? 'var(--amber)' : market.open ? 'var(--green)' : 'var(--fg-3)', opacity: market.open ? 1 : 0.5 }}
+        >{scanning ? '⏳ Scanning…' : '⚡ Scan'}</button>
       </header>
 
       <div className="desk-wrap">
@@ -649,6 +668,8 @@ export default function DashboardPage() {
                 <span>VIX <b style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.vix}</b></span>
                 <span style={{ color: 'var(--divider)' }}>·</span>
                 <span><b style={{ fontFamily: 'var(--font-mono)', color: lastScan.candidates > 0 ? 'var(--green)' : 'var(--fg-2)' }}>{lastScan.candidates}</b> candidates · <b style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.trades}</b> trades this tick</span>
+                <span style={{ color: 'var(--divider)' }}>·</span>
+                <span><b style={{ fontFamily: 'var(--font-mono)' }}>{pos.length}</b> open · Day <b style={{ fontFamily: 'var(--font-mono)', color: pnlColor(dayPnl) }}>{p2(dayPct)}</b></span>
               </div>
             )
           })()}
