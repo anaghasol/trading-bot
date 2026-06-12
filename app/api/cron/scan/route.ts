@@ -48,6 +48,20 @@ async function runScan(
   rotation: RotationResult,
 ): Promise<{ trades_made: number; message: string }> {
 
+  // Distributed lock: skip if another instance of this broker's scan is already running.
+  // Lock expires after 100s (maxDuration is 60s, so 100s is safe overlap buffer).
+  const lockKey = `scan_lock_${broker}`
+  try {
+    const { data: lock } = await db.from('tb_settings').select('value').eq('key', lockKey).single()
+    if (lock?.value) {
+      const ageMs = Date.now() - new Date(lock.value).getTime()
+      if (ageMs < 100_000) {
+        return { trades_made: 0, message: `[${broker}] Skipped — scan already running (${Math.floor(ageMs / 1000)}s ago)` }
+      }
+    }
+    await db.from('tb_settings').upsert({ key: lockKey, value: new Date().toISOString() })
+  } catch { /* non-fatal — if lock check fails, proceed anyway */ }
+
   const isSchwab = broker === 'schwab'
   const api      = isSchwab ? SchwabBroker : AlpacaBroker
   const profile  = profileFor(broker)
@@ -217,8 +231,12 @@ async function runScan(
     }
 
     // Route the pick to its sleeve and size against that horizon's budget.
+    // High-conviction setups (EMA score ≥ 8 + AI confidence ≥ 85%) get 1.4×, others 1.0×.
+    // convictionMult is applied on top of categoryBias, combined cap is 1.8×.
     const sleeve = sleeveForSetup(rec.setup)
-    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias)
+    const convictionMult = (rec.ema_score >= 8 && rec.confidence >= 85) ? 1.4
+      : (rec.ema_score >= 6 && rec.confidence >= 78) ? 1.1 : 1.0
+    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, convictionMult)
     if (sizing.qty < 1) continue
 
     const { buy, stop_order_id } = isSchwab
@@ -303,6 +321,7 @@ async function runScan(
     discoveries: (new_discoveries ?? []).slice(0, 4).map((d) => ({ symbol: d.symbol, signal: d.signal })),
   }
   void db.from('tb_settings').upsert({ key: `last_scan_${broker}`, value: JSON.stringify(scanSnapshot) })
+  void db.from('tb_settings').upsert({ key: lockKey, value: '' })  // release lock
 
   return {
     trades_made: tradesMade,

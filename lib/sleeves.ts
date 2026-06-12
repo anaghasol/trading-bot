@@ -103,13 +103,15 @@ export function sleeveSizing(
   price: number,
   alloc: Record<SleeveKey, number>,
   categoryBias = 1,
+  convictionMult = 1,  // 1.0–1.4 for high-confidence setups; applied on top of categoryBias
 ): SleeveSizing {
   const spec   = SLEEVES[sleeve]
   const totalA = Object.values(alloc).reduce((a, b) => a + b, 0) || 100
   const weight = (alloc[sleeve] ?? 0) / totalA
   const budget = equity * weight
 
-  const bias        = Math.max(0.5, Math.min(1.5, categoryBias))
+  // Combined bias capped at 1.8× so category + conviction can't compound too aggressively
+  const bias        = Math.max(0.5, Math.min(1.8, categoryBias * convictionMult))
   const riskDollars = budget * profile.risk_pct * spec.risk_mult * bias
   const stopDist    = price * spec.stop_pct
 
@@ -119,6 +121,7 @@ export function sleeveSizing(
   const maxByShare = price > 0 ? Math.floor((budget * spec.max_position_share) / price) : 0
   qty = Math.max(0, Math.min(qty, maxByShare))
 
+  const biasNote = bias !== 1 ? ` bias×${bias.toFixed(2)}${convictionMult !== 1 ? `(conviction×${convictionMult.toFixed(1)})` : ''}` : ''
   return {
     sleeve,
     qty,
@@ -127,6 +130,6 @@ export function sleeveSizing(
     hold_days: spec.hold_days,
     budget:    Math.round(budget * 100) / 100,
     risk_dollars: Math.round(riskDollars * 100) / 100,
-    note: `${spec.label} ${(weight * 100).toFixed(0)}% budget=$${budget.toFixed(0)} risk=$${riskDollars.toFixed(0)}${bias !== 1 ? ` bias×${bias.toFixed(2)}` : ''}`,
+    note: `${spec.label} ${(weight * 100).toFixed(0)}% budget=$${budget.toFixed(0)} risk=$${riskDollars.toFixed(0)}${biasNote}`,
   }
 }
