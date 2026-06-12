@@ -6,7 +6,7 @@ import { Card, CardHead, Metric, Chip, Meter, Donut, money, signed, pnlColor } f
 
 
 interface DailyRow { date: string; daily_pnl: number; wins: number; losses: number; win_rate: number }
-interface StratRow  { trades: number; wins: number; win_rate: number; total_pnl: number; avg_pnl: number }
+interface StratRow  { trades: number; wins: number; win_rate: number; total_pnl: number; avg_pnl: number; profit_factor: number }
 
 const GOAL = 25000          // PDT threshold — unlimited day-trading unlocks here
 const TRADING_DAYS = 252
@@ -149,7 +149,9 @@ export default function GrowthPage() {
                   <div style={{ fontSize: '0.78rem', color: 'var(--fg-2)', marginTop: 3 }}>
                     {s.wins}/{s.trades} wins · <span style={{ color: s.win_rate >= 50 ? 'var(--green)' : 'var(--red)' }}>{s.win_rate}%</span>
                   </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--fg-3)', marginTop: 2 }}>avg {signed(s.avg_pnl)}/trade</div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--fg-3)', marginTop: 2 }}>
+                    avg {signed(s.avg_pnl)}/trade · PF <span style={{ color: s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--amber)' : 'var(--red)' }}>{s.profit_factor === 999 ? '∞' : s.profit_factor.toFixed(2)}</span>
+                  </div>
                 </div>
               ))}
             </div>

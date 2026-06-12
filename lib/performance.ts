@@ -5,11 +5,12 @@
 import { createServiceClient } from './supabase-server'
 
 export interface StrategyStats {
-  trades:    number
-  wins:      number
-  win_rate:  number   // %
-  total_pnl: number   // $ realized
-  avg_pnl:   number   // average $ per trade
+  trades:        number
+  wins:          number
+  win_rate:      number   // %
+  total_pnl:     number   // $ realized
+  avg_pnl:       number   // average $ per trade
+  profit_factor: number   // gross wins / gross losses (>1 = profitable)
 }
 
 export interface PerformanceStats {
@@ -77,22 +78,24 @@ export async function getPerformanceStats(days = 30): Promise<PerformanceStats> 
   const total_pnl     = trades.reduce((s, t) => s + t.pnl, 0)
 
   // Per-strategy breakdown (MOMENTUM, EMA20_BOUNCE, TG_SIGNAL, etc.)
-  const stratMap: Record<string, { trades: number; wins: number; total_pnl: number }> = {}
+  const stratMap: Record<string, { trades: number; wins: number; total_pnl: number; gross_win: number; gross_loss: number }> = {}
   for (const t of trades) {
     const key = (t.strategy as string | null)?.split('_').slice(0, 2).join('_') ?? 'OTHER'
-    if (!stratMap[key]) stratMap[key] = { trades: 0, wins: 0, total_pnl: 0 }
+    if (!stratMap[key]) stratMap[key] = { trades: 0, wins: 0, total_pnl: 0, gross_win: 0, gross_loss: 0 }
     stratMap[key].trades++
-    if (t.pnl > 0) stratMap[key].wins++
     stratMap[key].total_pnl += t.pnl
+    if (t.pnl > 0) { stratMap[key].wins++; stratMap[key].gross_win += t.pnl }
+    else            { stratMap[key].gross_loss += Math.abs(t.pnl) }
   }
   const by_strategy: Record<string, StrategyStats> = {}
   for (const [k, v] of Object.entries(stratMap)) {
     by_strategy[k] = {
-      trades:    v.trades,
-      wins:      v.wins,
-      win_rate:  Math.round((v.wins / v.trades) * 1000) / 10,
-      total_pnl: Math.round(v.total_pnl * 100) / 100,
-      avg_pnl:   Math.round((v.total_pnl / v.trades) * 100) / 100,
+      trades:        v.trades,
+      wins:          v.wins,
+      win_rate:      Math.round((v.wins / v.trades) * 1000) / 10,
+      total_pnl:     Math.round(v.total_pnl * 100) / 100,
+      avg_pnl:       Math.round((v.total_pnl / v.trades) * 100) / 100,
+      profit_factor: v.gross_loss > 0 ? Math.round((v.gross_win / v.gross_loss) * 100) / 100 : v.gross_win > 0 ? 999 : 0,
     }
   }
 
