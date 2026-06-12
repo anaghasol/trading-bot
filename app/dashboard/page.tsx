@@ -347,6 +347,7 @@ export default function DashboardPage() {
   const [stamp, setStamp] = useState('')
   const [alertOn, setAlertOn] = useState(true)
   const [tg, setTg] = useState<TgStatus | null>(null)
+  const [lastScan, setLastScan] = useState<{ ts: string; regime: string; vix: number; market: string; candidates: number; trades: number } | null>(null)
   const market = useMarketClock()
   const profile = PROFILES[broker]
 
@@ -379,6 +380,10 @@ export default function DashboardPage() {
     setStamp(new Date().toLocaleTimeString('en-US', { hour12: false }))
     // Telegram status (broker-agnostic — same Railway service for both)
     fetch('/api/telegram/status').then(r => r.json()).then(setTg).catch(() => {})
+    // Last scan snapshot for the health bar (cheap Supabase read)
+    fetch(`/api/settings?key=last_scan_${b}`).then(r => r.json()).then(({ value }) => {
+      try { if (value) setLastScan(JSON.parse(value)) } catch { /* ignore */ }
+    }).catch(() => {})
   }, [])
 
   // Clear stale data instantly when broker tab switches — no cross-contamination
@@ -431,8 +436,9 @@ export default function DashboardPage() {
   const watch = WATCH.map((s) => qmap[s]).filter(Boolean) as Quote[]
   // Top movers: all universe symbols with ≥1% gain, sorted descending — reuses qmap, no extra fetch
   const movers = Object.values(qmap).filter((q) => q.change_pct >= 1).sort((a, b) => b.change_pct - a.change_pct).slice(0, 6)
-  // TG-confirmed symbols: any symbol that appeared in a recent TG signal → gets a blue dot on Top Movers
-  const tgSymSet = new Set((tg?.signals ?? []).map((s) => s.symbol).filter(Boolean) as string[])
+  // TG signal map: symbol → signal object, so Top Movers can show actual message in tooltip
+  const tgSigMap = new Map((tg?.signals ?? []).filter((s) => s.symbol).map((s) => [s.symbol!, s]))
+  const tgSymSet = new Set(tgSigMap.keys())
 
   // activity rows (schwab → real order book; paper → recorded trades)
   type Row = { time: string; side: string; symbol: string; qty: number; price: number; status: string }
@@ -579,18 +585,21 @@ export default function DashboardPage() {
               </div>
               <div className="card-body" style={{ padding: '6px 14px' }}>
                 <div className="wl">
-                  {movers.map((q) => (
+                  {movers.map((q) => {
+                    const sig = tgSigMap.get(q.symbol)
+                    return (
                     <>
-                      <span key={q.symbol + '-s'} className="wl sym" title={tgSymSet.has(q.symbol) ? '📡 TG signal confirmed' : undefined}>
+                      <span key={q.symbol + '-s'} className="wl sym" title={sig ? `📡 ${sig.message.slice(0, 120)}` : undefined}>
                         {q.symbol}
-                        {tgSymSet.has(q.symbol) && (
+                        {sig && (
                           <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--blue)', display: 'inline-block', marginLeft: 4, verticalAlign: 'middle', flexShrink: 0 }} />
                         )}
                       </span>
                       <span key={q.symbol + '-p'} className="wl mk"><Flash value={q.price} fmt={num} /></span>
                       <span key={q.symbol + '-c'} className="wl ch" style={{ color: 'var(--green)' }}>{p2(q.change_pct)}</span>
                     </>
-                  ))}
+                  )
+                  })}
                 </div>
                 {tgSymSet.size > 0 && <div style={{ fontSize: '0.62rem', color: 'var(--fg-3)', marginTop: 6 }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--blue)', display: 'inline-block', marginRight: 4, verticalAlign: 'middle' }} />TG signal confirmed</div>}
               </div>
@@ -624,6 +633,25 @@ export default function DashboardPage() {
             <span className="muted" style={{ fontSize: '0.78rem' }}>{isPaper ? 'Alpaca paper $' : 'Schwab real $'} · {(profile.risk_pct * 100).toFixed(1)}% risk/trade · up to {profile.max_positions} positions · {profile.allow_day_trades ? 'day-trades ON (no PDT)' : 'PDT-safe swing (1–5d holds)'} · −{(profile.daily_loss_stop_pct * 100).toFixed(0)}% daily breaker · {profile.min_confidence}% AI gate</span>
             {isPaper && <span className="chip blue" style={{ marginLeft: 'auto' }}>big balance — test hard</span>}
           </div>
+
+          {/* System health bar — last scan time, regime, VIX, candidates */}
+          {lastScan && (() => {
+            const scanEt = new Date(lastScan.ts).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })
+            const scanAgeMin = Math.floor((Date.now() - new Date(lastScan.ts).getTime()) / 60000)
+            const stale = scanAgeMin > 20
+            const mktColor = lastScan.market === 'GOOD' ? 'var(--green)' : lastScan.market === 'TOUGH' ? 'var(--amber)' : 'var(--red)'
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 12px', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, fontSize: '0.7rem', color: 'var(--fg-3)', flexWrap: 'wrap' }}>
+                <span style={{ color: stale ? 'var(--amber)' : 'var(--fg-2)' }}>⏱ Last scan: <b style={{ color: stale ? 'var(--amber)' : 'var(--fg-1)', fontFamily: 'var(--font-mono)' }}>{scanEt} ET</b>{stale ? ` (${scanAgeMin}m ago)` : ''}</span>
+                <span style={{ color: 'var(--divider)' }}>·</span>
+                <span>Regime: <b style={{ color: mktColor }}>{lastScan.market}</b></span>
+                <span style={{ color: 'var(--divider)' }}>·</span>
+                <span>VIX <b style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.vix}</b></span>
+                <span style={{ color: 'var(--divider)' }}>·</span>
+                <span><b style={{ fontFamily: 'var(--font-mono)', color: lastScan.candidates > 0 ? 'var(--green)' : 'var(--fg-2)' }}>{lastScan.candidates}</b> candidates · <b style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.trades}</b> trades this tick</span>
+              </div>
+            )
+          })()}
 
           {/* PDT equity-call alert (real money, protected) */}
           {!isPaper && alertOn && pdt?.is_pdt_protected !== false && (

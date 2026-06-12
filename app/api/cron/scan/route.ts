@@ -72,6 +72,20 @@ async function runScan(
   const api      = isSchwab ? SchwabBroker : AlpacaBroker
   const profile  = profileFor(broker)
 
+  // Strategy boost: Growth page can temporarily boost one strategy for 48h.
+  // Reads tb_settings 'strategy_boost' → { name, mult, expires_at }
+  let stratBoost: { name: string; mult: number } | null = null
+  try {
+    const { data: boostRow } = await db.from('tb_settings').select('value').eq('key', 'strategy_boost').single()
+    if (boostRow?.value) {
+      const b = JSON.parse(boostRow.value) as { name: string; mult: number; expires_at: string }
+      if (b.name && new Date(b.expires_at) > new Date()) {
+        stratBoost = { name: b.name.toUpperCase(), mult: b.mult ?? 1.2 }
+        console.log(`[${broker}] Strategy boost active: ${stratBoost.name} ×${stratBoost.mult}`)
+      }
+    }
+  } catch { /* non-fatal */ }
+
   const [positions, balance, orders] = await Promise.all([
     api.getPositions(),
     api.getAccountBalance(),
@@ -239,10 +253,13 @@ async function runScan(
     // Route the pick to its sleeve and size against that horizon's budget.
     // High-conviction setups (EMA score ≥ 8 + AI confidence ≥ 85%) get 1.4×, others 1.0×.
     // convictionMult is applied on top of categoryBias, combined cap is 1.8×.
+    // stratBoost: user-activated from Growth page — extra mult if setup prefix matches.
     const sleeve = sleeveForSetup(rec.setup)
     const convictionMult = (rec.ema_score >= 8 && rec.confidence >= 85) ? 1.4
       : (rec.ema_score >= 6 && rec.confidence >= 78) ? 1.1 : 1.0
-    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, convictionMult)
+    const setupPrefix = rec.setup?.split('_')[0]?.toUpperCase() ?? ''
+    const boostMult = stratBoost && setupPrefix === stratBoost.name ? stratBoost.mult : 1.0
+    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, convictionMult * boostMult)
     if (sizing.qty < 1) continue
 
     const { buy, stop_order_id } = isSchwab

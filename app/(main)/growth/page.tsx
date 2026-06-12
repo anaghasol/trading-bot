@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from 'recharts'
 import { Card, CardHead, Metric, Chip, Meter, Donut, money, signed, pnlColor } from '@/components/ui/kit'
 
-
 interface DailyRow { date: string; daily_pnl: number; wins: number; losses: number; win_rate: number }
 interface StratRow  { trades: number; wins: number; win_rate: number; total_pnl: number; avg_pnl: number; profit_factor: number }
+interface BoostState { name: string; mult: number; expires_at: string }
 
 const GOAL = 25000          // PDT threshold — unlimited day-trading unlocks here
 const TRADING_DAYS = 252
@@ -16,21 +16,54 @@ export default function GrowthPage() {
   const [balance, setBalance] = useState(2000)
   const [totPnl, setTotPnl]   = useState(0)
   const [byStrat, setByStrat] = useState<Record<string, StratRow>>({})
+  const [boost, setBoost]     = useState<BoostState | null>(null)
+  const [boostLoading, setBoostLoading] = useState(false)
 
   useEffect(() => {
     (async () => {
       try {
-        const [d, p] = await Promise.all([
+        const [d, p, b] = await Promise.all([
           fetch('/api/dashboard?broker=schwab').then((r) => r.json()),
           fetch('/api/performance?days=30').then((r) => r.json()),
+          fetch('/api/settings?key=strategy_boost').then((r) => r.json()),
         ])
         setRows((d?.daily_summary ?? []).slice().reverse())
         setBalance(d?.account?.balance ?? 2000)
         setTotPnl(d?.account?.total_pnl ?? 0)
         setByStrat(p?.by_strategy ?? {})
+        if (b?.value) {
+          try {
+            const parsed = JSON.parse(b.value) as BoostState
+            if (new Date(parsed.expires_at) > new Date()) setBoost(parsed)
+          } catch { /* ignore */ }
+        }
       } catch { /* ignore */ }
     })()
   }, [])
+
+  async function activateBoost(name: string) {
+    setBoostLoading(true)
+    const expires_at = new Date(Date.now() + 48 * 3600 * 1000).toISOString()
+    const payload: BoostState = { name, mult: 1.2, expires_at }
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'strategy_boost', value: JSON.stringify(payload) }),
+    }).catch(() => {})
+    setBoost(payload)
+    setBoostLoading(false)
+  }
+
+  async function clearBoost() {
+    setBoostLoading(true)
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'strategy_boost', value: '' }),
+    }).catch(() => {})
+    setBoost(null)
+    setBoostLoading(false)
+  }
 
   // ── derived metrics ────────────────────────────────────────────────
   const days = rows.length
@@ -158,8 +191,25 @@ export default function GrowthPage() {
                     <div><div className="metric-label">Profit factor</div><div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: best.profit_factor >= 1.5 ? 'var(--green)' : 'var(--amber)' }}>{best.profit_factor === 999 ? '∞' : best.profit_factor.toFixed(2)}</div></div>
                     <div><div className="metric-label">Avg / trade</div><div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{signed(best.avg_pnl)}</div></div>
                   </div>
-                  <div style={{ marginLeft: 'auto' }}>
-                    <Chip tone="up">→ boost with 1.4× conviction</Chip>
+                  <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {boost?.name === bestName.split('_')[0].toUpperCase() ? (
+                      <>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--green)' }}>
+                          ✓ Boosting ×{boost.mult} until {new Date(boost.expires_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                        </span>
+                        <button
+                          disabled={boostLoading}
+                          onClick={clearBoost}
+                          style={{ fontSize: '0.7rem', padding: '3px 8px', background: 'rgba(239,68,68,0.12)', border: '1px solid var(--red)', borderRadius: 4, color: 'var(--red)', cursor: 'pointer' }}
+                        >Remove</button>
+                      </>
+                    ) : (
+                      <button
+                        disabled={boostLoading}
+                        onClick={() => activateBoost(bestName.split('_')[0].toUpperCase())}
+                        style={{ fontSize: '0.72rem', padding: '4px 12px', background: 'var(--green)', border: 'none', borderRadius: 4, color: '#000', fontWeight: 700, cursor: boostLoading ? 'not-allowed' : 'pointer', opacity: boostLoading ? 0.6 : 1 }}
+                      >{boostLoading ? '…' : '⚡ Boost 48h  ×1.2'}</button>
+                    )}
                   </div>
                 </div>
               )}
