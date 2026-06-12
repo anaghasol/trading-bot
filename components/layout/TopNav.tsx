@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 
 const NAV = [
   ['/dashboard',  'Desk'],
+  ['/live',       '⚡ Live'],
   ['/growth',     'Growth'],
   ['/sleeves',    'Sleeves'],
   ['/portfolio',  'Portfolio'],
