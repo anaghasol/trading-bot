@@ -79,12 +79,32 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
   const [suggestions, setSuggestions] = useState<{ symbol: string; name: string }[]>([])
   const [sugIdx, setSugIdx] = useState(-1)
   const [showSug, setShowSug] = useState(false)
+  const [fetchedQuote, setFetchedQuote] = useState<{ price: number; change_pct: number } | null>(null)
+  const [quoteLoading, setQuoteLoading] = useState(false)
   const symRef = useRef<HTMLInputElement>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const quoteFetchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const upper = sym.toUpperCase().trim()
-  const liveQ = qmap[upper]
+  const liveQ = qmap[upper] ?? fetchedQuote ?? null
   const livePrice = liveQ?.price ?? 0
+
+  // Fetch live price for symbols not already in qmap
+  useEffect(() => {
+    if (quoteFetchRef.current) clearTimeout(quoteFetchRef.current)
+    if (!upper || upper.length < 1 || qmap[upper]) { setFetchedQuote(null); setQuoteLoading(false); return }
+    setQuoteLoading(true)
+    quoteFetchRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/schwab/quotes?symbols=${upper}`)
+        const data = await res.json()
+        const q = (data.quotes ?? [])[0]
+        setFetchedQuote(q ? { price: q.price, change_pct: q.change_pct } : null)
+      } catch { setFetchedQuote(null) }
+      setQuoteLoading(false)
+    }, 400)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [upper])
 
   const shares = mode === 'shares'
     ? parseFloat(qty) || 0
@@ -135,8 +155,16 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
         setSym(''); setQty(''); setLimitPx('')
         setTimeout(() => { setStatus('idle'); setMsg(''); onDone() }, 2500)
       } else {
-        setStatus('err'); setMsg(data.error ?? 'Order failed')
-        setTimeout(() => setStatus('idle'), 4000)
+        const errMsg: string = data.error ?? 'Order failed'
+        // IPO stocks require LIMIT orders — auto-switch and pre-fill price
+        if (errMsg.includes('only limit orders')) {
+          setOrderType('LIMIT')
+          if (livePrice > 0) setLimitPx(livePrice.toFixed(2))
+          setStatus('err'); setMsg(`IPO stock — switched to Limit order. Confirm price and retry.`)
+        } else {
+          setStatus('err'); setMsg(errMsg)
+        }
+        setTimeout(() => setStatus('idle'), 5000)
       }
     } catch {
       setStatus('err'); setMsg('Network error')
@@ -189,13 +217,34 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
               </div>
             )}
           </div>
-          {livePrice > 0 && (
+          {(livePrice > 0 || quoteLoading) && (
             <div style={{ textAlign: 'right', paddingTop: 18 }}>
-              <div className="tabular" style={{ fontWeight: 700, fontSize: '0.95rem' }}>${num(livePrice)}</div>
-              <div className="tabular" style={{ fontSize: '0.7rem', color: liveQ.change_pct >= 0 ? 'var(--green)' : 'var(--red)' }}>{p2(liveQ.change_pct)}</div>
+              {quoteLoading && !livePrice ? (
+                <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)' }}>…</div>
+              ) : livePrice > 0 ? (<>
+                <div className="tabular" style={{ fontWeight: 700, fontSize: '1.05rem', color: 'var(--fg-1)' }}>${num(livePrice)}</div>
+                <div className="tabular" style={{ fontSize: '0.7rem', color: (liveQ?.change_pct ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{p2(liveQ?.change_pct ?? 0)}</div>
+              </>) : null}
             </div>
           )}
         </div>
+
+        {/* Live price + total cost bar */}
+        {livePrice > 0 && upper && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-2)', borderRadius: 7, padding: '7px 12px', border: '1px solid var(--divider)' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span style={{ fontSize: '0.7rem', color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{upper}</span>
+              <span className="tabular" style={{ fontWeight: 700, fontSize: '1.1rem', color: 'var(--fg-1)' }}>${num(livePrice)}</span>
+              <span className="tabular" style={{ fontSize: '0.72rem', color: (liveQ?.change_pct ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{p2(liveQ?.change_pct ?? 0)}</span>
+            </div>
+            {shares > 0 && (
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: '0.68rem', color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{action === 'BUY' ? 'Total cost' : 'Proceeds'}</div>
+                <div className="tabular" style={{ fontWeight: 700, fontSize: '0.95rem', color: canAfford ? (action === 'BUY' ? 'var(--green)' : 'var(--red)') : 'var(--red)' }}>${num(estCost)}</div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Action + Order type */}
         <div style={{ display: 'flex', gap: 8 }}>
@@ -243,13 +292,11 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
           </div>
         )}
 
-        {/* Cost estimate + execute */}
+        {/* Execute row */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
           <div style={{ flex: 1, fontSize: '0.78rem', color: 'var(--fg-3)' }}>
-            {shares > 0 && livePrice > 0 && (
-              <span>Est. {action === 'BUY' ? 'cost' : 'proceeds'}: <b style={{ color: canAfford ? accent : 'var(--red)' }}>${num(estCost)}</b>
-                {mode === 'dollars' && <span className="faint"> · {shares} sh</span>}
-              </span>
+            {mode === 'dollars' && shares > 0 && livePrice > 0 && (
+              <span className="faint">{shares} sh</span>
             )}
           </div>
           <button
