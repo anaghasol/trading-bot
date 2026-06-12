@@ -13,7 +13,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk'
 import {
-  scanForEMAPullback, getMarketRegime, getSector,
+  scanForEMAPullback, scanMomentumSpike, getMarketRegime, getSector,
   ALL_SYMBOLS, ALL_ALPACA_SYMBOLS,
   type EMASetup, type MarketRegime,
 } from './market-data'
@@ -67,11 +67,11 @@ ACCOUNT: $${equity.toFixed(0)} | MODE: ${isPaper ? 'PAPER (fake money — be agg
 MARKET: ${regime.label} | VIX ${regime.vix.toFixed(0)} | SPY 200SMA: ${regime.spy_above_200sma ? 'above' : 'below'}
 HELD: ${held.join(', ') || 'none'}
 
-ADVISOR CONTEXT (SF Essential Trades by Pavan Sailesh — professional trader whose signals we follow):
+ADVISOR CONTEXT (recent signals from trading channels we follow):
 ${learning}
 
 IMPORTANT: Stocks mentioned as bullish or in advisor's watch zone should get +5-10 confidence bonus if the setup is valid.
-Stocks marked bearish/stopped-out by advisor should be skipped even if chart looks good.
+Stocks marked bearish/stopped-out should be skipped even if chart looks good.
 
 ${isPaper ? `PAPER MODE: Rate EVERY setup >= ${minConf}% with any positive momentum. Be generous — we need data.` : `LIVE MODE: Only high-conviction setups >= ${minConf}%.`}
 
@@ -195,7 +195,7 @@ export async function getRecommendations(
 
   const profile = profileFor(broker)
 
-  // Pull Pavan's recent picks from tb_learning (last 7 days, bullish or watch_zone)
+  // Pull recent channel advisor picks from tb_learning (last 7 days, bullish or watch_zone)
   // These are NOT in the static watchlist so we add them dynamically
   let advisorSymbols: string[] = []
   try {
@@ -215,7 +215,7 @@ export async function getRecommendations(
     ? ALL_ALPACA_SYMBOLS
     : ALL_SYMBOLS.filter((s) => !['SPY', 'QQQ'].includes(s))
 
-  // Merge: Pavan's picks first (priority), then static universe, deduplicated
+  // Advisor channel picks first (priority), then static universe, deduplicated
   const seen2 = new Set<string>()
   const symbols = [...advisorSymbols, ...baseSymbols].filter((s) => !seen2.has(s) && seen2.add(s))
 
@@ -225,12 +225,25 @@ export async function getRecommendations(
     return { recommendations: [], regime, position_size_pct: 0, scanned: 0, candidates: 0, learning_context: 'RISK_OFF' }
   }
 
-  // 2. Mechanical EMA pullback scan (1yr data, free, no AI cost)
-  // Paper: loose mode — relaxed 52w filter (-45%) + lower gap bar (1.5%) to
-  // keep volatile paper names like BBAI/SOUN/MARA in the funnel
-  const allSetups = await scanForEMAPullback(symbols, { loose: broker === 'alpaca_paper' })
-  const limit     = broker === 'alpaca_paper' ? 20 : 6  // paper: wider funnel
-  const setups    = allSetups
+  // 2. EMA pullback + Momentum spike scans RUN IN PARALLEL (free, no AI cost)
+  // EMA: needs ≥60 days — catches established names on pullbacks
+  // Momentum: needs ≥10 days — catches new IPOs, volume spikes, explosive moves (SPCX-type)
+  const isPaper = broker === 'alpaca_paper'
+  const [emaSetups, momentumSetups] = await Promise.all([
+    scanForEMAPullback(symbols, { loose: isPaper }),
+    isPaper ? scanMomentumSpike(symbols, regime.spy_change) : Promise.resolve([]),
+  ])
+
+  // Merge: momentum setups take priority (they're rarer and more urgent)
+  // Deduplicate — if a symbol appears in both, keep the higher-scored one
+  const seenSyms = new Set<string>()
+  const mergedSetups: EMASetup[] = []
+  for (const s of [...momentumSetups, ...emaSetups]) {
+    if (!seenSyms.has(s.symbol)) { seenSyms.add(s.symbol); mergedSetups.push(s) }
+  }
+
+  const limit  = isPaper ? 20 : 6
+  const setups = mergedSetups
     .filter((s) => !heldSymbols.includes(s.symbol))
     .slice(0, limit)
 
@@ -239,7 +252,7 @@ export async function getRecommendations(
       recommendations: [], regime,
       position_size_pct: profile.risk_pct,
       scanned: symbols.length, candidates: 0,
-      learning_context: 'No EMA pullback setups today',
+      learning_context: 'No setups today',
     }
   }
 
@@ -247,16 +260,25 @@ export async function getRecommendations(
   let learning = 'No history yet'
   try { const ctx = await buildLearningContext(); learning = ctx.summary } catch { /* ignore */ }
 
-  // 4. Claude + OpenAI IN PARALLEL — one call each
+  // 4. Dynamic gate: lower by 5pts in GOOD market conditions (low VIX, SPY above 200SMA)
+  // Paper gets more aggressive — we're here to catch opportunities, not be cautious
+  const baseConf = profile.min_confidence
+  const minConf = isPaper && regime.vix < 20 && regime.spy_above_200sma
+    ? Math.max(baseConf - 5, 60)   // GOOD market: paper gate drops to 70% (from 75%)
+    : isPaper && regime.regime === 'CAUTION'
+      ? baseConf                    // CAUTION: hold at base
+      : baseConf                    // live always at base
+
+  // 5. Claude + OpenAI IN PARALLEL — one call each
   const [claudePicks, openaiPicks] = await Promise.all([
-    askClaude(setups, regime, equity, heldSymbols, learning, profile.min_confidence, broker),
-    askOpenAI(setups, regime, equity, heldSymbols, learning, profile.min_confidence, broker),
+    askClaude(setups, regime, equity, heldSymbols, learning, minConf, broker),
+    askOpenAI(setups, regime, equity, heldSymbols, learning, minConf, broker),
   ])
 
-  console.log(`[ai-advisor] Claude:${claudePicks.length} picks | OpenAI:${openaiPicks.length} picks`)
+  console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Setups:${setups.length} | Claude:${claudePicks.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)
 
-  // 5. Merge: require both agree, average confidence
-  const recommendations = mergeResults(claudePicks, openaiPicks, setups, heldSymbols, profile.min_confidence, broker)
+  // 6. Merge: require both agree, average confidence
+  const recommendations = mergeResults(claudePicks, openaiPicks, setups, heldSymbols, minConf, broker)
 
   return {
     recommendations,

@@ -78,11 +78,12 @@ export const WATCHLIST = {
 // Alpaca paper — wide aggressive universe (high-beta, EMA-responsive)
 export const ALPACA_WATCHLIST = {
   MEGA:         ['NVDA', 'AMD', 'MSFT', 'AAPL', 'TSLA', 'META', 'GOOGL', 'AMZN', 'AVGO'],
-  GROWTH:       ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP', 'CRWD'],
-  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT', 'TSLL', 'NVDL', 'APP', 'UPST'],
-  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY', 'LUNR', 'OKLO', 'ASTS', 'RDDT'],
-  ETF:          ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ', 'LABU'],
-  CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK', 'IBIT', 'HOOD'],
+  GROWTH:       ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP', 'CRWD', 'INTC'],
+  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT', 'TSLL', 'NVDL', 'APP', 'UPST', 'SOXL'],
+  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY', 'LUNR', 'OKLO', 'ASTS', 'RDDT', 'SPIR', 'TEM', 'POET'],
+  SPACE_DEFENSE:['SPCX', 'RKLB', 'ASTS', 'LUNR', 'JOBY', 'ACHR', 'IONQ', 'OKLO'],
+  ETF:          ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ', 'IWM'],
+  CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK', 'IBIT'],
 }
 
 export const ALL_SYMBOLS        = Object.values(WATCHLIST).flat()
@@ -525,5 +526,109 @@ export function getSector(symbol: string): string {
   for (const [sector, syms] of Object.entries(WATCHLIST)) {
     if (syms.includes(symbol)) return sector
   }
+  for (const [sector, syms] of Object.entries(ALPACA_WATCHLIST)) {
+    if ((syms as string[]).includes(symbol)) return sector
+  }
   return 'OTHER'
+}
+
+// ── Momentum Spike Scanner ────────────────────────────────────────────────────
+// Catches explosive movers and new IPOs that the EMA scanner misses:
+//   - Works with as little as 20 days of data (EMA scanner needs ≥60)
+//   - Requires: strong today's move + volume spike + near recent high
+//   - Perfect for: new IPOs, short squeezes, news-driven breakouts (SPCX-type)
+
+export async function scanMomentumSpike(
+  symbols: string[],
+  spyChange1d = 0
+): Promise<EMASetup[]> {
+  const setups: EMASetup[] = []
+
+  await Promise.allSettled(
+    symbols.map(async (symbol) => {
+      try {
+        const ohlcv = await fetchOHLCV(symbol, '3mo')
+        if (!ohlcv || ohlcv.closes.length < 10) return  // need at least 10 days
+
+        const { opens, highs, lows, closes, volumes } = ohlcv
+        const price  = closes.at(-1)!
+        const prev   = closes.at(-2)!
+
+        const change_1d = ((price - prev) / prev) * 100
+
+        // Must be moving meaningfully today
+        if (change_1d < 1.5) return
+
+        const lookback = Math.min(20, volumes.length - 1)
+        const avgVol   = volumes.slice(-lookback - 1, -1).reduce((a, b) => a + b, 0) / lookback
+        const todayVol = volumes.at(-1) ?? 0
+        const vol_ratio = avgVol > 0 ? todayVol / avgVol : 1
+
+        // Volume must confirm the move
+        if (vol_ratio < 1.8) return
+
+        const change_5d = closes.length >= 6
+          ? ((price - closes.at(-6)!) / closes.at(-6)!) * 100 : change_1d
+
+        // 20-day high breakout
+        const high20d   = Math.max(...closes.slice(-21, -1))
+        const breakout  = price >= high20d * 0.99  // at or breaking 20d high
+
+        const high_all  = Math.max(...closes)
+        const pct_from_52w_high = Math.round(((price - high_all) / high_all) * 10000) / 100
+
+        const rsiVal = rsi(closes, Math.min(14, closes.length - 1))
+
+        // Don't fire on overbought spikes without breakout confirmation
+        if (rsiVal > 85 && !breakout) return
+
+        // Score: base from price move + volume spike + breakout bonus
+        let score = 4  // base — anything reaching here is notable
+        const reasons: string[] = [`Spike +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`]
+
+        if (vol_ratio >= 4)     { score += 3; reasons.push(`${vol_ratio.toFixed(0)}x vol surge`) }
+        else if (vol_ratio >= 2.5) { score += 2; reasons.push(`${vol_ratio.toFixed(1)}x vol`) }
+        else                    { score += 1 }
+
+        if (change_1d >= 8)     { score += 3; reasons.push(`+${change_1d.toFixed(1)}% explosive`) }
+        else if (change_1d >= 4){ score += 2; reasons.push(`+${change_1d.toFixed(1)}% strong`) }
+        else if (change_1d >= 2){ score += 1 }
+
+        if (breakout)           { score += 2; reasons.push('20d high breakout') }
+        if (pct_from_52w_high >= -5) { score += 2; reasons.push('near 52w high') }
+
+        const rs_vs_spy = Math.round((change_1d - spyChange1d) * 100) / 100
+        if (rs_vs_spy > 3)      { score += 2; reasons.push(`RS+${rs_vs_spy.toFixed(1)}% vs SPY`) }
+        else if (rs_vs_spy > 1) { score += 1 }
+
+        const candle_pattern = detectCandle(opens, highs, lows, closes)
+        score += candleScore(candle_pattern)
+
+        // Compute basic EMAs even for short history
+        const ema20arr = ema(closes, Math.min(20, closes.length))
+        const ema50arr = ema(closes, Math.min(50, closes.length))
+        const e20 = ema20arr.at(-1)!
+        const e50 = ema50arr.at(-1)!
+        const s200 = sma(closes, Math.min(200, closes.length))
+
+        setups.push({
+          symbol, price, ema20: e20, ema50: e50, sma200: s200,
+          rsi: rsiVal, volume_ratio: vol_ratio,
+          change_1d: Math.round(change_1d * 100) / 100,
+          change_5d: Math.round(change_5d * 100) / 100,
+          dist_from_ema20_pct: e20 > 0 ? Math.round(((price - e20) / e20) * 10000) / 100 : 0,
+          pullback_score: Math.min(10, score),
+          setup_type: 'MOMENTUM',
+          reason: reasons.join(', '),
+          candle_pattern,
+          rs_vs_spy,
+          earnings_soon: false,
+          pct_from_52w_high,
+          rs_rank: 0,
+        })
+      } catch { /* skip */ }
+    })
+  )
+
+  return setups.sort((a, b) => b.pullback_score - a.pullback_score)
 }

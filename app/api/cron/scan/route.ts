@@ -70,7 +70,7 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Daily loss limit hit (−5%)` }
   }
 
-  // Macro bearish gate: if Pavan said "hold off on new purchases" within last 18h, pause entries
+  // Macro bearish gate: if channel advisor said "hold off on new purchases" within last 18h, pause entries
   try {
     const { data: macroRow } = await db.from('tb_settings').select('value').eq('key', 'tg_macro_stance').single()
     if (macroRow?.value) {
@@ -129,7 +129,7 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Full ${marketTier}: ${positions.length}/${dynamicMaxPos} | VIX${vix.toFixed(0)}` }
   }
 
-  // Load Pavan's active intentions — these shape every execution decision this tick
+  // Load active intentions from TG channel signals — these shape every execution decision this tick
   const intentions = await getActiveIntentions().catch(() => [])
   const intentionMap = new Map(intentions.map((i) => [i.symbol, i]))
   const avoidSymbols = new Set(intentions.filter((i) => i.type === 'avoid').map((i) => i.symbol))
@@ -151,7 +151,7 @@ async function runScan(
   // Telegram-confirmed symbols get +8 confidence bonus before ranking.
   const ranked = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
-    .filter((r) => !avoidSymbols.has(r.symbol))   // Pavan said avoid — never enter
+    .filter((r) => !avoidSymbols.has(r.symbol))   // channel said avoid — never enter
     .map((r) => {
       const rawBias = biasForSymbol(r.symbol, rotation)
       const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias
@@ -189,7 +189,7 @@ async function runScan(
       : await AlpacaBroker.getQuote(rec.symbol)
     if (!quote || quote.price <= 0) continue
 
-    // buy_zone intent: only execute if live price is actually inside Pavan's zone.
+    // buy_zone intent: only execute if live price is actually inside the channel's zone.
     // If price is outside zone → skip this tick, wait for the right entry point.
     if (intent?.type === 'buy_zone' && intent.price_zone) {
       const { low, high } = intent.price_zone
