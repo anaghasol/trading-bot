@@ -139,7 +139,7 @@ export async function GET(req: Request) {
     const chResults = await Promise.all(newMsgs.map(async (msg) => {
       const text = msg.text ?? ''
       if (!isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
-      const signal = await parseSignal(text)
+      const signal = await parseSignal(text, ch.name)
       if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
       // ── EXIT ──────────────────────────────────────────────────────────────────

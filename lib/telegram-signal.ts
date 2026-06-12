@@ -111,7 +111,8 @@ function normalizeSignal(p: Record<string, unknown>, raw: string): ParsedSignal 
 }
 
 export async function parseSignalThread(
-  messages: Array<{ id: number; text: string }>
+  messages: Array<{ id: number; text: string }>,
+  channelName = 'Trading Channel'
 ): Promise<Array<{ id: number; signal: ParsedSignal }>> {
   if (messages.length === 0) return []
   try {
@@ -121,14 +122,14 @@ export async function parseSignalThread(
       max_tokens: 1500,
       messages: [{
         role: 'user',
-        content: `You are reading a THREAD of messages from "SF Essential Trades" by Pavan Sailesh. Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.
+        content: `You are reading a THREAD of messages from "${channelName}". Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.
 
 ${numbered}
 
 Thread-context rules:
 - If msg [1] says "watching OKLO near $45" and msg [3] says "entering now" or "buy here" → [3] is type:trade for OKLO at $45
 - If a macro bearish tone builds across messages, later neutral messages inherit that sentiment
-- If Pavan mentions a stock positively across multiple messages, mark actionable:true
+- If the channel mentions a stock positively across multiple messages, mark actionable:true
 
 Per-message classification rules:
 - type:trade = explicit entry with ticker + price (e.g. "Buy SPIR at 20.5 SL 18.5")
@@ -158,16 +159,16 @@ For ignore: {"msg_index":N,"type":"ignore"}`,
   }
 }
 
-export async function parseSignal(text: string): Promise<ParsedSignal> {
+export async function parseSignal(text: string, channelName = 'Trading Channel'): Promise<ParsedSignal> {
   try {
     const msg = await client.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 500,
       messages: [{
         role: 'user',
-        content: `You are reading messages from "SF Essential Trades" — a paid channel by Pavan Sailesh, a professional trader. Read like a human trader would and classify the intent precisely.
+        content: `You are reading messages from "${channelName}" — a professional trading signals channel. Read like a human trader would and classify the intent precisely.
 
-Pavan communicates in these patterns:
+The channel communicates in these patterns:
 1. DIRECT ENTRY — gives ticker + price + stop loss → we must execute
    e.g. "Buy SPIR at 20.5 With SL of 18.5", "06/04: Buy TEM at 52 SL 46"
 2. DIRECT EXIT — explicitly tells subscribers to close/exit a position NOW
@@ -188,7 +189,7 @@ DIRECT ENTRY → {"type":"trade","symbol":"TICKER","action":"BUY","entry_price":
 
 DIRECT EXIT → {"type":"exit","symbol":"TICKER","reason":"ADVISOR_EXIT","summary":"one-line reason"}
 
-POSITION UPDATE / WATCH / MARKET INSIGHT → {"type":"learn","summary":"one clear sentence","symbols":["TICKER"],"sentiment":"bullish","sector":"nuclear","watch_zone":"$45-48","actionable":true}
+POSITION UPDATE / WATCH / MARKET INSIGHT → {"type":"learn","summary":"one clear factual sentence (no names — just what the signal says)","symbols":["TICKER"],"sentiment":"bullish","sector":"nuclear","watch_zone":"$45-48","actionable":true}
   sentiment: bullish / bearish / neutral
   sector: industry name if clear, else null
   watch_zone: price range mentioned for watching/re-entry, else null
@@ -198,12 +199,13 @@ NOISE → {"type":"ignore"}
 
 Critical rules:
 - type:trade ONLY for explicit entry with ticker + price/instruction. Never guess.
-- type:exit ONLY when Pavan explicitly says to close — NOT when he reports "X hit SL" (that is his subscribers' trade, not a command to us)
+- type:exit ONLY when the channel explicitly says to close — NOT when it reports "X hit SL" (that is subscribers' trade, not a command to us)
 - "X hit stop loss / target" = type:learn, bearish or bullish accordingly
 - "Watch X near $Y" = type:learn, watch_zone set
 - "buy on dips", "accumulation opportunity", "stocks at discount, re-entry" (no specific ticker) = type:learn, sentiment:bullish, symbols:[], actionable:true — this tells the bot to run the AI scanner immediately
 - confidence < 70 → demote trade to learn
-- Default to learn over exit when unsure`,
+- Default to learn over exit when unsure
+- In the summary, do NOT use any person's name — describe the signal objectively`,
       }],
     })
 
