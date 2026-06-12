@@ -545,10 +545,15 @@ export async function scanMomentumSpike(
 ): Promise<EMASetup[]> {
   const setups: EMASetup[] = []
 
+  // How far through the 6.5-hour NYSE session are we? (9:30-16:00 ET = 13:30-20:00 UTC)
+  // Used to compute volume pace: "trading at Nx the normal rate for this exact time of day"
+  const hoursUTC = new Date().getUTCHours() + new Date().getUTCMinutes() / 60
+  const sessionFraction = hoursUTC < 13.5 ? 0 : hoursUTC > 20.0 ? 1 : (hoursUTC - 13.5) / 6.5
+  const sf = Math.max(0.15, sessionFraction)  // floor at 15% to avoid false spikes at open
+
   // Step 1: batch-fetch live quotes for ALL symbols — one call per 50 symbols.
-  // Using regularMarketChangePercent (real-time) and regularMarketVolume/averageDailyVolume3Month.
-  // This catches ROKU +20% at 10am even though partial volume hasn't reached 1.8× daily average yet.
-  // Threshold: partialVol / avg3m >= 0.4 means the stock is trading at ~2.5× normal pace intraday.
+  // regularMarketChangePercent is real-time (no partial-day ambiguity).
+  // volPace = vol / (avg3m * sf): >2.0 means trading at 2x the expected rate right now.
   const BATCH = 50
   const quoteMap: Record<string, { price: number; volume: number; avgVolume: number; changePct: number }> = {}
   for (let i = 0; i < symbols.length; i += BATCH) {
@@ -572,16 +577,16 @@ export async function scanMomentumSpike(
     } catch { /* skip batch */ }
   }
 
-  // Quick pre-filter: only fetch OHLCV for symbols actually moving with volume
-  // partialVolRatio >= 0.4 means the stock is on pace for ≥2.5× its average daily volume
+  // Quick pre-filter: only fetch OHLCV for symbols actually moving with elevated volume pace
   const candidates = symbols.filter(sym => {
     const q = quoteMap[sym]
     if (!q || q.price <= 0) return false
     if (q.changePct < 1.5) return false
-    const partialVolRatio = q.avgVolume > 0 ? q.volume / q.avgVolume : 0
-    return partialVolRatio >= 0.4
+    const volPace = q.avgVolume > 0 ? q.volume / (q.avgVolume * sf) : 0
+    return volPace >= 2.0   // 2x the expected volume pace for this time of day
   })
 
+  console.log(`[momentum] ${symbols.length} scanned → ${candidates.length} candidates (sf=${sf.toFixed(2)}): ${candidates.slice(0, 8).join(', ')}`)
   if (candidates.length === 0) return []
 
   // Step 2: OHLCV only for candidates — for EMA, RSI, breakout, 52w analysis
@@ -598,11 +603,10 @@ export async function scanMomentumSpike(
         const price     = qt?.price    || closes.at(-1)!
         const change_1d = qt?.changePct || ((closes.at(-1)! - closes.at(-2)!) / closes.at(-2)!) * 100
 
-        // Volume ratio: partial day vs 3-month daily average
-        // At 10am ~0.4 = 2.5× pace. Score bands calibrated for partial-day values.
+        // Time-normalized volume pace (same formula as the pre-filter above)
         const todayVol  = qt?.volume || volumes.at(-1) || 0
         const avgVol    = qt?.avgVolume || (volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / Math.min(20, volumes.length - 1))
-        const vol_ratio = avgVol > 0 ? todayVol / avgVol : 1
+        const vol_ratio = avgVol > 0 ? todayVol / (avgVol * sf) : 1
 
         // Historical closes only (exclude today's partial candle) for breakout analysis
         const histCloses   = closes.length > 1 ? closes.slice(0, -1) : closes
@@ -621,12 +625,12 @@ export async function scanMomentumSpike(
         if (rsiVal > 85 && !breakout) return
 
         let score = 4
-        const reasons: string[] = [`Spike +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol (partial day)`]
+        const reasons: string[] = [`Spike +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol pace`]
 
-        // Volume score: partial-day calibrated (0.4 ≈ 2.5× pace, 1.0 ≈ full-day 1× or massive intraday)
-        if (vol_ratio >= 1.5)      { score += 3; reasons.push(`${vol_ratio.toFixed(1)}x vol surge`) }
-        else if (vol_ratio >= 0.8) { score += 2; reasons.push(`${vol_ratio.toFixed(1)}x vol pace`) }
-        else if (vol_ratio >= 0.4) { score += 1 }
+        // vol_ratio is time-normalized pace (2.0 = twice expected rate for this time of day)
+        if (vol_ratio >= 5)        { score += 3; reasons.push(`${vol_ratio.toFixed(0)}x pace surge`) }
+        else if (vol_ratio >= 3)   { score += 2; reasons.push(`${vol_ratio.toFixed(1)}x pace`) }
+        else if (vol_ratio >= 2)   { score += 1 }
 
         if (change_1d >= 8)        { score += 3; reasons.push(`+${change_1d.toFixed(1)}% explosive`) }
         else if (change_1d >= 4)   { score += 2; reasons.push(`+${change_1d.toFixed(1)}% strong`) }
@@ -667,5 +671,10 @@ export async function scanMomentumSpike(
     })
   )
 
-  return setups.sort((a, b) => b.pullback_score - a.pullback_score)
+  const sorted = setups.sort((a, b) => b.pullback_score - a.pullback_score)
+  if (sorted.length > 0) {
+    const top = sorted.slice(0, 5).map(s => `${s.symbol} +${s.change_1d}% score=${s.pullback_score} (${s.reason})`).join('\n  ')
+    console.log(`[momentum] ${sorted.length} setups found:\n  ${top}`)
+  }
+  return sorted
 }
