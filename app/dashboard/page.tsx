@@ -431,6 +431,8 @@ export default function DashboardPage() {
   const watch = WATCH.map((s) => qmap[s]).filter(Boolean) as Quote[]
   // Top movers: all universe symbols with ≥1% gain, sorted descending — reuses qmap, no extra fetch
   const movers = Object.values(qmap).filter((q) => q.change_pct >= 1).sort((a, b) => b.change_pct - a.change_pct).slice(0, 6)
+  // TG-confirmed symbols: any symbol that appeared in a recent TG signal → gets a blue dot on Top Movers
+  const tgSymSet = new Set((tg?.signals ?? []).map((s) => s.symbol).filter(Boolean) as string[])
 
   // activity rows (schwab → real order book; paper → recorded trades)
   type Row = { time: string; side: string; symbol: string; qty: number; price: number; status: string }
@@ -579,12 +581,18 @@ export default function DashboardPage() {
                 <div className="wl">
                   {movers.map((q) => (
                     <>
-                      <span key={q.symbol + '-s'} className="wl sym">{q.symbol}</span>
+                      <span key={q.symbol + '-s'} className="wl sym" title={tgSymSet.has(q.symbol) ? '📡 TG signal confirmed' : undefined}>
+                        {q.symbol}
+                        {tgSymSet.has(q.symbol) && (
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--blue)', display: 'inline-block', marginLeft: 4, verticalAlign: 'middle', flexShrink: 0 }} />
+                        )}
+                      </span>
                       <span key={q.symbol + '-p'} className="wl mk"><Flash value={q.price} fmt={num} /></span>
                       <span key={q.symbol + '-c'} className="wl ch" style={{ color: 'var(--green)' }}>{p2(q.change_pct)}</span>
                     </>
                   ))}
                 </div>
+                {tgSymSet.size > 0 && <div style={{ fontSize: '0.62rem', color: 'var(--fg-3)', marginTop: 6 }}><span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--blue)', display: 'inline-block', marginRight: 4, verticalAlign: 'middle' }} />TG signal confirmed</div>}
               </div>
             </div>
           )}

@@ -137,27 +137,51 @@ export default function GrowthPage() {
       </div>
 
       {/* ── Strategy breakdown ── */}
-      {Object.keys(byStrat).length > 0 && (
-        <Card style={{ marginBottom: 14 }}>
-          <CardHead title="Performance by Strategy · last 30 days" tone="plain" right={<span className="faint" style={{ fontSize: '0.8rem' }}>which scanner is winning?</span>} />
-          <div className="card-body">
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
-              {Object.entries(byStrat).sort((a, b) => b[1].total_pnl - a[1].total_pnl).map(([name, s]) => (
-                <div key={name} style={{ background: 'var(--bg-2)', borderRadius: 8, padding: '10px 12px', border: '1px solid var(--divider)' }}>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--fg-3)', marginBottom: 4, fontFamily: 'var(--font-mono)', letterSpacing: '0.04em' }}>{name}</div>
-                  <div style={{ fontSize: '1.05rem', fontWeight: 700, color: s.total_pnl >= 0 ? 'var(--green)' : 'var(--red)', fontFamily: 'var(--font-mono)' }}>{signed(s.total_pnl)}</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--fg-2)', marginTop: 3 }}>
-                    {s.wins}/{s.trades} wins · <span style={{ color: s.win_rate >= 50 ? 'var(--green)' : 'var(--red)' }}>{s.win_rate}%</span>
+      {Object.keys(byStrat).length > 0 && (() => {
+        const sorted = Object.entries(byStrat).sort((a, b) => b[1].total_pnl - a[1].total_pnl)
+        const [bestName, best] = sorted[0]
+        const bestIsPositive = best.total_pnl > 0
+        return (
+          <Card style={{ marginBottom: 14 }}>
+            <CardHead title="Performance by Strategy · last 30 days" tone="plain" right={<span className="faint" style={{ fontSize: '0.8rem' }}>which scanner is winning?</span>} />
+            <div className="card-body">
+              {/* Best performer banner */}
+              {bestIsPositive && (
+                <div style={{ background: 'var(--green-faint)', border: '1px solid var(--green)', borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                  <div>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--green)', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', marginBottom: 2 }}>BEST STRATEGY · 30D</div>
+                    <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--fg-1)', fontFamily: 'var(--font-mono)' }}>{bestName}</div>
                   </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--fg-3)', marginTop: 2 }}>
-                    avg {signed(s.avg_pnl)}/trade · PF <span style={{ color: s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--amber)' : 'var(--red)' }}>{s.profit_factor === 999 ? '∞' : s.profit_factor.toFixed(2)}</span>
+                  <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                    <div><div className="metric-label">Total P&L</div><div style={{ color: 'var(--green)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{signed(best.total_pnl)}</div></div>
+                    <div><div className="metric-label">Win rate</div><div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{best.win_rate}%</div></div>
+                    <div><div className="metric-label">Profit factor</div><div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: best.profit_factor >= 1.5 ? 'var(--green)' : 'var(--amber)' }}>{best.profit_factor === 999 ? '∞' : best.profit_factor.toFixed(2)}</div></div>
+                    <div><div className="metric-label">Avg / trade</div><div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{signed(best.avg_pnl)}</div></div>
+                  </div>
+                  <div style={{ marginLeft: 'auto' }}>
+                    <Chip tone="up">→ boost with 1.4× conviction</Chip>
                   </div>
                 </div>
-              ))}
+              )}
+              {/* All strategy tiles */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
+                {sorted.map(([name, s]) => (
+                  <div key={name} style={{ background: 'var(--bg-2)', borderRadius: 8, padding: '10px 12px', border: `1px solid ${name === bestName && bestIsPositive ? 'var(--green)' : 'var(--divider)'}` }}>
+                    <div style={{ fontSize: '0.72rem', color: name === bestName && bestIsPositive ? 'var(--green)' : 'var(--fg-3)', marginBottom: 4, fontFamily: 'var(--font-mono)', letterSpacing: '0.04em' }}>{name}{name === bestName && bestIsPositive && ' ★'}</div>
+                    <div style={{ fontSize: '1.05rem', fontWeight: 700, color: s.total_pnl >= 0 ? 'var(--green)' : 'var(--red)', fontFamily: 'var(--font-mono)' }}>{signed(s.total_pnl)}</div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--fg-2)', marginTop: 3 }}>
+                      {s.wins}/{s.trades} wins · <span style={{ color: s.win_rate >= 50 ? 'var(--green)' : 'var(--red)' }}>{s.win_rate}%</span>
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--fg-3)', marginTop: 2 }}>
+                      avg {signed(s.avg_pnl)}/trade · PF <span style={{ color: s.profit_factor >= 1.5 ? 'var(--green)' : s.profit_factor >= 1 ? 'var(--amber)' : 'var(--red)' }}>{s.profit_factor === 999 ? '∞' : s.profit_factor.toFixed(2)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        </Card>
-      )}
+          </Card>
+        )
+      })()}
 
       {/* ── Fund-scaling ladder ── */}
       <Card>
