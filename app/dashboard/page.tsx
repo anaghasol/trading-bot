@@ -647,28 +647,28 @@ export default function DashboardPage() {
               </div>
             </div>
             <div style={{ overflowX: 'auto' }}>
-              <table className="ptbl" style={{ minWidth: 680 }}>
+              <table className="ptbl" style={{ minWidth: 760 }}>
                 <colgroup>
                   <col style={{ minWidth: 110 }} />{/* Symbol */}
                   <col style={{ minWidth: 50 }} /> {/* Qty */}
+                  <col style={{ minWidth: 88 }} /> {/* Entry/sh */}
+                  <col style={{ minWidth: 100 }} />{/* Live */}
                   <col style={{ minWidth: 90 }} /> {/* P/L Day */}
                   <col style={{ minWidth: 90 }} /> {/* P/L Open */}
                   <col style={{ minWidth: 70 }} /> {/* P/L % */}
-                  <col style={{ minWidth: 90 }} /> {/* Avg Cost */}
                   <col style={{ minWidth: 90 }} /> {/* Net Liq */}
-                  <col style={{ minWidth: 80 }} /> {/* Mark */}
                   <col style={{ minWidth: 80 }} /> {/* Action */}
                 </colgroup>
                 <thead>
                   <tr>
                     <th className="l">Symbol</th>
                     <th style={{ textAlign: 'right' }}>Qty</th>
+                    <th style={{ textAlign: 'right' }}>Entry/sh</th>
+                    <th style={{ textAlign: 'right' }}>Live Price</th>
                     <th style={{ textAlign: 'right' }}>P/L Day</th>
                     <th style={{ textAlign: 'right' }}>P/L Open</th>
                     <th style={{ textAlign: 'right' }}>P/L %</th>
-                    <th style={{ textAlign: 'right' }}>Avg Cost</th>
                     <th style={{ textAlign: 'right' }}>Net Liq</th>
-                    <th style={{ textAlign: 'right' }}>Mark</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -680,6 +680,10 @@ export default function DashboardPage() {
                         const day = dayChangeOf(p)
                         const cost = p.avg_cost * p.quantity * (opt ? 100 : 1)
                         const dayPnlPct = p.avg_cost > 0 && day != null ? (day / cost) * 100 : null
+                        // Prefer qmap live price (7s refresh) over broker snapshot
+                        const liveQ = qmap[p.symbol]
+                        const livePrice = liveQ?.price ?? p.current_price
+                        const liveChg = liveQ?.change_pct ?? null
                         return (
                           <tr key={p.symbol + i}>
                             <td className="l">
@@ -687,6 +691,15 @@ export default function DashboardPage() {
                               <span className={`pbadge ${opt ? 'opt' : 'eq'}`}>{opt ? 'OPT' : 'EQ'}</span>
                             </td>
                             <td style={{ textAlign: 'right' }}>{p.quantity > 0 ? '+' : ''}{p.quantity}</td>
+                            {/* Entry price per share — what we paid */}
+                            <td style={{ textAlign: 'right', color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>${num(p.avg_cost)}</td>
+                            {/* Live price per share — Flash on change, day % in muted sub */}
+                            <td style={{ textAlign: 'right' }}>
+                              <Flash value={livePrice} fmt={(n) => '$' + num(n)} />
+                              {liveChg != null && (
+                                <span style={{ fontSize: '0.65rem', marginLeft: 5, color: pnlColor(liveChg) }}>{p2(liveChg)}</span>
+                              )}
+                            </td>
                             <td style={{ textAlign: 'right', color: day == null ? 'var(--fg-3)' : pnlColor(day) }}>
                               {day == null ? '—' : signed(day)}
                               {dayPnlPct != null && <span style={{ fontSize: '0.68rem', marginLeft: 4, opacity: 0.7 }}>{p2(dayPnlPct)}</span>}
@@ -695,12 +708,9 @@ export default function DashboardPage() {
                             <td style={{ textAlign: 'right' }}>
                               <span style={{ color: pnlColor(p.pnl_pct), fontWeight: 600 }}>{p2(p.pnl_pct)}</span>
                             </td>
-                            <td style={{ textAlign: 'right', color: 'var(--fg-3)' }}>{money(cost)}</td>
                             <td style={{ textAlign: 'right' }}>{money(p.market_value)}</td>
-                            <td style={{ textAlign: 'right' }}><Flash value={p.current_price} fmt={num} /></td>
                             <td style={{ textAlign: 'right' }}>
                               <button className="closex" onClick={() => {
-                                const api = isPaper ? '/api/alpaca/trade' : '/api/schwab/trade'
                                 fetch('/api/trade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: p.symbol, quantity: Math.abs(p.quantity), action: 'SELL', broker }) }).then(() => setTimeout(() => load(broker), 1500))
                               }}>Close</button>
                             </td>
@@ -713,12 +723,12 @@ export default function DashboardPage() {
                     <tr>
                       <td className="l" style={{ fontWeight: 600 }}>Totals</td>
                       <td style={{ textAlign: 'right' }}>{pos.reduce((s, p) => s + p.quantity, 0)}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--fg-3)', fontSize: '0.72rem' }}>{money(totCost)}</td>
+                      <td>—</td>
                       <td style={{ textAlign: 'right', color: pnlColor(totDay) }}>{signed(totDay)}</td>
                       <td style={{ textAlign: 'right', color: pnlColor(unreal) }}>{signed(unreal)}</td>
                       <td>—</td>
-                      <td style={{ textAlign: 'right', color: 'var(--fg-3)' }}>{money(totCost)}</td>
                       <td style={{ textAlign: 'right' }}>{money(netLiq)}</td>
-                      <td>—</td>
                       <td></td>
                     </tr>
                   </tfoot>
