@@ -37,6 +37,7 @@ export interface OrderResult {
   action: string
   status: 'PLACED' | 'FAILED'
   order_id?: string
+  error?: string
 }
 
 export interface SchwabOrder {

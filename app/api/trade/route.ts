@@ -32,14 +32,16 @@ export async function POST(req: Request) {
     order = await Alpaca.placeOrder(sym, qty, action, orderType, limitPrice)
   }
 
-  if (order.status === 'PLACED') {
-    const db = createServiceClient()
-    await db.from('tb_alerts').insert({
-      type: action,
-      message: `Manual ${action}: ${qty} ${sym} via ${broker} — placed from dashboard`,
-      symbol: sym,
-    })
+  if (order.status === 'FAILED') {
+    return NextResponse.json({ error: order.error ?? 'Order failed' }, { status: 422 })
   }
+
+  const db = createServiceClient()
+  await db.from('tb_alerts').insert({
+    type: action,
+    message: `Manual ${action}: ${qty} ${sym} via ${broker} — placed from dashboard`,
+    symbol: sym,
+  })
 
   return NextResponse.json(order)
 }

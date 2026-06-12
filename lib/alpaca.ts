@@ -42,19 +42,22 @@ async function get<T>(path: string): Promise<T | null> {
   }
 }
 
-async function post<T>(path: string, body: object): Promise<T | null> {
+async function post<T>(path: string, body: object): Promise<{ data: T } | { error: string }> {
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
       method: 'POST', headers: headers(), body: JSON.stringify(body),
     })
     if (!res.ok) {
-      console.error(`[alpaca] POST ${path} → ${res.status}: ${await res.text()}`)
-      return null
+      const text = await res.text()
+      console.error(`[alpaca] POST ${path} → ${res.status}: ${text}`)
+      let message = `Alpaca ${res.status}`
+      try { message = (JSON.parse(text) as { message?: string }).message ?? text } catch { message = text }
+      return { error: message }
     }
-    return res.json()
+    return { data: await res.json() as T }
   } catch (e) {
     console.error(`[alpaca] POST ${path} error:`, e)
-    return null
+    return { error: String(e) }
   }
 }
 
@@ -118,11 +121,10 @@ export async function placeOrder(
   }
 
   const result = await post<{ id: string }>('/orders', body)
-  return {
-    symbol, quantity, action,
-    status: result ? 'PLACED' : 'FAILED',
-    order_id: result?.id,
+  if ('error' in result) {
+    return { symbol, quantity, action, status: 'FAILED', error: result.error }
   }
+  return { symbol, quantity, action, status: 'PLACED', order_id: result.data.id }
 }
 
 export async function placeBuyWithProtection(
@@ -145,7 +147,7 @@ export async function placeBuyWithProtection(
     trail_percent:  trailPct,
   })
 
-  return { buy, stop_order_id: stopResult?.id ?? null }
+  return { buy, stop_order_id: 'data' in stopResult ? stopResult.data.id : null }
 }
 
 export async function placeStopOrder(
@@ -162,7 +164,7 @@ export async function placeStopOrder(
     time_in_force: 'gtc',
     stop_price:    stopPrice.toFixed(2),
   })
-  return result?.id ?? null
+  return 'data' in result ? result.data.id : null
 }
 
 export async function cancelOrder(order_id: string): Promise<boolean> {
