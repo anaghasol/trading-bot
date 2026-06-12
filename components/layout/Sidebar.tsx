@@ -2,16 +2,17 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, TrendingUp, Layers, History, Brain, Settings, LogOut } from 'lucide-react'
+import { LayoutDashboard, TrendingUp, Layers, History, Brain, Settings, LogOut, Radio } from 'lucide-react'
 import { createClient } from '@/lib/supabase-client'
 
 const nav = [
-  { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { href: '/growth',    icon: TrendingUp,      label: 'Growth' },
-  { href: '/sleeves',   icon: Layers,          label: 'Sleeves' },
-  { href: '/trades',    icon: History,         label: 'Trade History' },
-  { href: '/learning',  icon: Brain,           label: 'Learning' },
-  { href: '/settings',  icon: Settings,        label: 'Settings' },
+  { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard',    pulse: false },
+  { href: '/live',      icon: Radio,           label: 'Live Monitor', pulse: true  },
+  { href: '/growth',    icon: TrendingUp,      label: 'Growth',       pulse: false },
+  { href: '/sleeves',   icon: Layers,          label: 'Sleeves',      pulse: false },
+  { href: '/trades',    icon: History,         label: 'Trade History',pulse: false },
+  { href: '/learning',  icon: Brain,           label: 'Learning',     pulse: false },
+  { href: '/settings',  icon: Settings,        label: 'Settings',     pulse: false },
 ]
 
 export default function Sidebar() {
@@ -40,7 +41,7 @@ export default function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {nav.map(({ href, icon: Icon, label }) => {
+        {nav.map(({ href, icon: Icon, label, pulse }) => {
           const active = path === href || path.startsWith(href + '/')
           return (
             <Link
@@ -52,7 +53,10 @@ export default function Sidebar() {
               style={active ? { background: 'var(--green-faint)', border: '1px solid rgba(16,185,129,0.2)' } : undefined}
             >
               <Icon className="w-4 h-4 shrink-0" />
-              {label}
+              <span className="flex-1">{label}</span>
+              {pulse && !active && (
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#13c98e', flexShrink: 0, animation: 'pulse 1.4s infinite', boxShadow: '0 0 6px #13c98e' }} />
+              )}
             </Link>
           )
         })}

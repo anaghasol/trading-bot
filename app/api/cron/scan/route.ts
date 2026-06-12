@@ -282,6 +282,28 @@ async function runScan(
   }
 
   const hot = rotation.hottest ? ` Hot:${rotation.hottest}` : ''
+
+  // Save scan snapshot to tb_settings so the Live Monitor page can display it
+  const scanSnapshot = {
+    ts:         new Date().toISOString(),
+    broker,
+    regime:     regime.label,
+    vix:        Math.round(vix * 10) / 10,
+    market:     marketTier,
+    scanned,
+    candidates,
+    ranked:     ranked.length,
+    trades:     tradesMade,
+    picks:      ranked.slice(0, 5).map((r) => ({
+      symbol:     r.rec.symbol,
+      confidence: r.rec.confidence,
+      setup:      r.rec.setup,
+      score:      r.rec.ema_score,
+    })),
+    discoveries: (new_discoveries ?? []).slice(0, 4).map((d) => ({ symbol: d.symbol, signal: d.signal })),
+  }
+  void db.from('tb_settings').upsert({ key: `last_scan_${broker}`, value: JSON.stringify(scanSnapshot) })
+
   return {
     trades_made: tradesMade,
     message: `[${broker}] Market:${marketTier} VIX${vix.toFixed(0)} Gate:${dynamicMinConf}% MaxPos:${dynamicMaxPos}${hot} PDT:${pdt.day_trades_used}/3 Scanned:${scanned} Candidates:${candidates} Ranked:${ranked.length} Trades:${tradesMade}`,
