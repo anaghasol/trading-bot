@@ -220,20 +220,21 @@ async function fetchChart(symbol: string, period = '15d'): Promise<number[] | nu
   return d?.closes ?? null
 }
 
-async function fetchQuoteBatch(symbols: string[]): Promise<Record<string, { price: number; volume: number; avgVolume: number }>> {
+async function fetchQuoteBatch(symbols: string[]): Promise<Record<string, { price: number; volume: number; avgVolume: number; changePct: number }>> {
   try {
     const res = await fetch(
-      `${YF_QUOTE}?symbols=${symbols.join(',')}&fields=regularMarketPrice,regularMarketVolume,averageDailyVolume3Month`,
+      `${YF_QUOTE}?symbols=${symbols.join(',')}&fields=regularMarketPrice,regularMarketVolume,averageDailyVolume3Month,regularMarketChangePercent`,
       { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 60 } }
     )
     if (!res.ok) return {}
     const data = await res.json()
-    const result: Record<string, { price: number; volume: number; avgVolume: number }> = {}
+    const result: Record<string, { price: number; volume: number; avgVolume: number; changePct: number }> = {}
     for (const q of data.quoteResponse?.result ?? []) {
       result[q.symbol] = {
-        price: q.regularMarketPrice || 0,
-        volume: q.regularMarketVolume || 0,
-        avgVolume: q.averageDailyVolume3Month || 1,
+        price:     q.regularMarketPrice        || 0,
+        volume:    q.regularMarketVolume        || 0,
+        avgVolume: q.averageDailyVolume3Month   || 1,
+        changePct: q.regularMarketChangePercent || 0,
       }
     }
     return result
@@ -544,72 +545,108 @@ export async function scanMomentumSpike(
 ): Promise<EMASetup[]> {
   const setups: EMASetup[] = []
 
+  // Step 1: batch-fetch live quotes for ALL symbols — one call per 50 symbols.
+  // Using regularMarketChangePercent (real-time) and regularMarketVolume/averageDailyVolume3Month.
+  // This catches ROKU +20% at 10am even though partial volume hasn't reached 1.8× daily average yet.
+  // Threshold: partialVol / avg3m >= 0.4 means the stock is trading at ~2.5× normal pace intraday.
+  const BATCH = 50
+  const quoteMap: Record<string, { price: number; volume: number; avgVolume: number; changePct: number }> = {}
+  for (let i = 0; i < symbols.length; i += BATCH) {
+    try {
+      const slice = symbols.slice(i, i + BATCH)
+      const res = await fetch(
+        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${slice.join(',')}&fields=regularMarketPrice,regularMarketVolume,averageDailyVolume3Month,regularMarketChangePercent`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 30 } }
+      )
+      if (res.ok) {
+        const data = await res.json()
+        for (const q of (data.quoteResponse?.result ?? [])) {
+          quoteMap[q.symbol] = {
+            price:     q.regularMarketPrice        || 0,
+            volume:    q.regularMarketVolume        || 0,
+            avgVolume: q.averageDailyVolume3Month   || 1,
+            changePct: q.regularMarketChangePercent || 0,
+          }
+        }
+      }
+    } catch { /* skip batch */ }
+  }
+
+  // Quick pre-filter: only fetch OHLCV for symbols actually moving with volume
+  // partialVolRatio >= 0.4 means the stock is on pace for ≥2.5× its average daily volume
+  const candidates = symbols.filter(sym => {
+    const q = quoteMap[sym]
+    if (!q || q.price <= 0) return false
+    if (q.changePct < 1.5) return false
+    const partialVolRatio = q.avgVolume > 0 ? q.volume / q.avgVolume : 0
+    return partialVolRatio >= 0.4
+  })
+
+  if (candidates.length === 0) return []
+
+  // Step 2: OHLCV only for candidates — for EMA, RSI, breakout, 52w analysis
   await Promise.allSettled(
-    symbols.map(async (symbol) => {
+    candidates.map(async (symbol) => {
       try {
         const ohlcv = await fetchOHLCV(symbol, '3mo')
-        if (!ohlcv || ohlcv.closes.length < 10) return  // need at least 10 days
+        if (!ohlcv || ohlcv.closes.length < 10) return
 
         const { opens, highs, lows, closes, volumes } = ohlcv
-        const price  = closes.at(-1)!
-        const prev   = closes.at(-2)!
 
-        const change_1d = ((price - prev) / prev) * 100
+        // Use real-time quote values — more accurate than daily close during trading hours
+        const qt        = quoteMap[symbol]
+        const price     = qt?.price    || closes.at(-1)!
+        const change_1d = qt?.changePct || ((closes.at(-1)! - closes.at(-2)!) / closes.at(-2)!) * 100
 
-        // Must be moving meaningfully today
-        if (change_1d < 1.5) return
-
-        const lookback = Math.min(20, volumes.length - 1)
-        const avgVol   = volumes.slice(-lookback - 1, -1).reduce((a, b) => a + b, 0) / lookback
-        const todayVol = volumes.at(-1) ?? 0
+        // Volume ratio: partial day vs 3-month daily average
+        // At 10am ~0.4 = 2.5× pace. Score bands calibrated for partial-day values.
+        const todayVol  = qt?.volume || volumes.at(-1) || 0
+        const avgVol    = qt?.avgVolume || (volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / Math.min(20, volumes.length - 1))
         const vol_ratio = avgVol > 0 ? todayVol / avgVol : 1
 
-        // Volume must confirm the move
-        if (vol_ratio < 1.8) return
+        // Historical closes only (exclude today's partial candle) for breakout analysis
+        const histCloses   = closes.length > 1 ? closes.slice(0, -1) : closes
+        const high20d      = Math.max(...histCloses.slice(-20))
+        const breakout     = price >= high20d * 0.99
+
+        const high_all     = Math.max(...histCloses, price)
+        const pct_from_52w_high = Math.round(((price - high_all) / high_all) * 10000) / 100
 
         const change_5d = closes.length >= 6
           ? ((price - closes.at(-6)!) / closes.at(-6)!) * 100 : change_1d
 
-        // 20-day high breakout
-        const high20d   = Math.max(...closes.slice(-21, -1))
-        const breakout  = price >= high20d * 0.99  // at or breaking 20d high
+        const priceSeries = [...histCloses, price]
+        const rsiVal = rsi(priceSeries, Math.min(14, priceSeries.length - 1))
 
-        const high_all  = Math.max(...closes)
-        const pct_from_52w_high = Math.round(((price - high_all) / high_all) * 10000) / 100
-
-        const rsiVal = rsi(closes, Math.min(14, closes.length - 1))
-
-        // Don't fire on overbought spikes without breakout confirmation
         if (rsiVal > 85 && !breakout) return
 
-        // Score: base from price move + volume spike + breakout bonus
-        let score = 4  // base — anything reaching here is notable
-        const reasons: string[] = [`Spike +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol`]
+        let score = 4
+        const reasons: string[] = [`Spike +${change_1d.toFixed(1)}% on ${vol_ratio.toFixed(1)}x vol (partial day)`]
 
-        if (vol_ratio >= 4)     { score += 3; reasons.push(`${vol_ratio.toFixed(0)}x vol surge`) }
-        else if (vol_ratio >= 2.5) { score += 2; reasons.push(`${vol_ratio.toFixed(1)}x vol`) }
-        else                    { score += 1 }
+        // Volume score: partial-day calibrated (0.4 ≈ 2.5× pace, 1.0 ≈ full-day 1× or massive intraday)
+        if (vol_ratio >= 1.5)      { score += 3; reasons.push(`${vol_ratio.toFixed(1)}x vol surge`) }
+        else if (vol_ratio >= 0.8) { score += 2; reasons.push(`${vol_ratio.toFixed(1)}x vol pace`) }
+        else if (vol_ratio >= 0.4) { score += 1 }
 
-        if (change_1d >= 8)     { score += 3; reasons.push(`+${change_1d.toFixed(1)}% explosive`) }
-        else if (change_1d >= 4){ score += 2; reasons.push(`+${change_1d.toFixed(1)}% strong`) }
-        else if (change_1d >= 2){ score += 1 }
+        if (change_1d >= 8)        { score += 3; reasons.push(`+${change_1d.toFixed(1)}% explosive`) }
+        else if (change_1d >= 4)   { score += 2; reasons.push(`+${change_1d.toFixed(1)}% strong`) }
+        else if (change_1d >= 2)   { score += 1 }
 
-        if (breakout)           { score += 2; reasons.push('20d high breakout') }
+        if (breakout)              { score += 2; reasons.push('20d high breakout') }
         if (pct_from_52w_high >= -5) { score += 2; reasons.push('near 52w high') }
 
         const rs_vs_spy = Math.round((change_1d - spyChange1d) * 100) / 100
-        if (rs_vs_spy > 3)      { score += 2; reasons.push(`RS+${rs_vs_spy.toFixed(1)}% vs SPY`) }
-        else if (rs_vs_spy > 1) { score += 1 }
+        if (rs_vs_spy > 3)         { score += 2; reasons.push(`RS+${rs_vs_spy.toFixed(1)}% vs SPY`) }
+        else if (rs_vs_spy > 1)    { score += 1 }
 
         const candle_pattern = detectCandle(opens, highs, lows, closes)
         score += candleScore(candle_pattern)
 
-        // Compute basic EMAs even for short history
-        const ema20arr = ema(closes, Math.min(20, closes.length))
-        const ema50arr = ema(closes, Math.min(50, closes.length))
-        const e20 = ema20arr.at(-1)!
-        const e50 = ema50arr.at(-1)!
-        const s200 = sma(closes, Math.min(200, closes.length))
+        const ema20arr = ema(priceSeries, Math.min(20, priceSeries.length))
+        const ema50arr = ema(priceSeries, Math.min(50, priceSeries.length))
+        const e20  = ema20arr.at(-1)!
+        const e50  = ema50arr.at(-1)!
+        const s200 = sma(priceSeries, Math.min(200, priceSeries.length))
 
         setups.push({
           symbol, price, ema20: e20, ema50: e50, sma200: s200,
