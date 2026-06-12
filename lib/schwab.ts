@@ -185,9 +185,9 @@ async function apiGet<T>(path: string): Promise<T | null> {
   return res.json()
 }
 
-async function apiPost<T>(path: string, body: object): Promise<T | null> {
+async function apiPost<T>(path: string, body: object): Promise<{ data: T } | { error: string }> {
   const token = await getAccessToken()
-  if (!token) return null
+  if (!token) return { error: 'No Schwab access token — re-authenticate' }
 
   const res = await fetch(path, {
     method: 'POST',
@@ -200,9 +200,17 @@ async function apiPost<T>(path: string, body: object): Promise<T | null> {
   })
 
   if (res.ok) {
-    try { return await res.json() } catch { return { status: 'ok' } as T }
+    try { return { data: await res.json() } } catch { return { data: { status: 'ok' } as T } }
   }
-  return null
+
+  const text = await res.text()
+  console.error(`[schwab] POST ${path} → ${res.status}: ${text}`)
+  let message = `Schwab ${res.status}`
+  try {
+    const j = JSON.parse(text) as { message?: string; errors?: { detail?: string }[] }
+    message = j.message ?? j.errors?.[0]?.detail ?? text
+  } catch { message = text }
+  return { error: message }
 }
 
 // ── Account ───────────────────────────────────────────────────────────────────
@@ -301,13 +309,10 @@ export async function placeOrder(
     payload
   )
 
-  return {
-    symbol,
-    quantity,
-    action,
-    status: result !== null ? 'PLACED' : 'FAILED',
-    order_id: result?.orderId,
+  if ('error' in result) {
+    return { symbol, quantity, action, status: 'FAILED', error: result.error }
   }
+  return { symbol, quantity, action, status: 'PLACED', order_id: result.data.orderId }
 }
 
 /**
@@ -354,7 +359,7 @@ export async function placeBuyWithProtection(
     stopPayload
   )
 
-  const stop_order_id = stopResult?.orderId ? String(stopResult.orderId) : null
+  const stop_order_id = 'data' in stopResult ? String(stopResult.data.orderId ?? '') || null : null
   console.log(`[schwab] Trailing stop placed for ${symbol}: order ${stop_order_id}`)
 
   return { buy, stop_order_id }
