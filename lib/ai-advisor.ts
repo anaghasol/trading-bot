@@ -17,11 +17,14 @@ import {
   ALL_SYMBOLS, ALL_ALPACA_SYMBOLS,
   type EMASetup, type MarketRegime,
 } from './market-data'
+import { getDiscoverySymbols, type DiscoverySymbol } from './trending'
 import { buildLearningContext } from './learning'
 import { profileFor } from './strategy-profiles'
 
 const claude  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const OAI_KEY = process.env.OPENAI_API_KEY
+
+const isPaperBroker = (broker: string) => broker === 'alpaca_paper'
 
 export interface Recommendation {
   symbol: string
@@ -45,6 +48,8 @@ export interface AdvisorResult {
   scanned: number
   candidates: number
   learning_context: string
+  discoveries: DiscoverySymbol[]   // trending/gainer stocks found this tick
+  new_discoveries: DiscoverySymbol[] // ones NOT in the static watchlist — worth alerting
 }
 
 // ── Shared prompt builder ─────────────────────────────────────────────────────
@@ -215,20 +220,29 @@ export async function getRecommendations(
     ? ALL_ALPACA_SYMBOLS
     : ALL_SYMBOLS.filter((s) => !['SPY', 'QQQ'].includes(s))
 
-  // Advisor channel picks first (priority), then static universe, deduplicated
-  const seen2 = new Set<string>()
-  const symbols = [...advisorSymbols, ...baseSymbols].filter((s) => !seen2.has(s) && seen2.add(s))
+  // 1. Market regime + live discovery IN PARALLEL (both free)
+  const [regime, discoveries] = await Promise.all([
+    getMarketRegime(),
+    isPaperBroker(broker) ? getDiscoverySymbols() : Promise.resolve([]),
+  ])
 
-  // 1. Market regime check (free)
-  const regime = await getMarketRegime()
+  const discoverySyms = discoveries.map((d) => d.symbol)
+  const staticSet     = new Set([...advisorSymbols, ...baseSymbols])
+  const newDiscoveries = discoveries.filter((d) => !staticSet.has(d.symbol))
+
   if (regime.regime === 'RISK_OFF') {
-    return { recommendations: [], regime, position_size_pct: 0, scanned: 0, candidates: 0, learning_context: 'RISK_OFF' }
+    return { recommendations: [], regime, position_size_pct: 0, scanned: 0, candidates: 0, learning_context: 'RISK_OFF', discoveries, new_discoveries: newDiscoveries }
   }
+
+  // Discovery symbols come first — they're the most time-sensitive
+  const seen2 = new Set<string>()
+  const symbols = [...discoverySyms, ...advisorSymbols, ...baseSymbols]
+    .filter((s) => !seen2.has(s) && seen2.add(s))
 
   // 2. EMA pullback + Momentum spike scans RUN IN PARALLEL (free, no AI cost)
   // EMA: needs ≥60 days — catches established names on pullbacks
   // Momentum: needs ≥10 days — catches new IPOs, volume spikes, explosive moves (SPCX-type)
-  const isPaper = broker === 'alpaca_paper'
+  const isPaper = isPaperBroker(broker)
   const [emaSetups, momentumSetups] = await Promise.all([
     scanForEMAPullback(symbols, { loose: isPaper }),
     isPaper ? scanMomentumSpike(symbols, regime.spy_change) : Promise.resolve([]),
@@ -253,6 +267,7 @@ export async function getRecommendations(
       position_size_pct: profile.risk_pct,
       scanned: symbols.length, candidates: 0,
       learning_context: 'No setups today',
+      discoveries, new_discoveries: newDiscoveries,
     }
   }
 
@@ -287,5 +302,7 @@ export async function getRecommendations(
     scanned: symbols.length,
     candidates: setups.length,
     learning_context: learning,
+    discoveries,
+    new_discoveries: newDiscoveries,
   }
 }

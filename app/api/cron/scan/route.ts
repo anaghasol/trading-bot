@@ -95,10 +95,30 @@ async function runScan(
   const heldSymbols = positions.map((p) => p.symbol)
   const alloc       = await getSleeveAllocation(db)
 
-  // Pass broker so EMA scanner uses correct watchlist (core vs wide)
-  // and Claude gets the right confidence gate (78% live, 68% paper)
-  const { recommendations, regime, scanned, candidates } =
+  const { recommendations, regime, scanned, candidates, new_discoveries } =
     await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining, broker)
+
+  // Alert on genuinely new discoveries (not in static watchlist) — once per symbol per day
+  if (new_discoveries.length > 0 && broker === 'alpaca_paper') {
+    const today = new Date().toISOString().slice(0, 10)
+    for (const d of new_discoveries.slice(0, 3)) {  // cap at 3 alerts per tick
+      const alertKey = `discovery_alert_${d.symbol}_${today}`
+      const { data: existing } = await db.from('tb_settings').select('value').eq('key', alertKey).single()
+      if (!existing) {
+        await db.from('tb_settings').upsert({ key: alertKey, value: new Date().toISOString() })
+        await db.from('tb_alerts').insert({ type: 'INFO', symbol: d.symbol, message: `🔍 Discovery: ${d.symbol} — ${d.signal}` })
+        const BOT = process.env.TELEGRAM_BOT_TOKEN
+        const GID = process.env.TELEGRAM_ALLOWED_CHAT_ID
+        if (BOT && GID) {
+          fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: GID, text: `🔍 *New Discovery: ${d.symbol}*\n${d.signal}\nNot in watchlist — scanning now`, parse_mode: 'Markdown' }),
+          }).catch(() => {})
+        }
+      }
+    }
+  }
 
   // ── 3-tier dynamic market gate ────────────────────────────────────────────
   // Good (VIX<22, SPY above 200SMA) → base gate, full positions
