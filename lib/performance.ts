@@ -4,6 +4,14 @@
  */
 import { createServiceClient } from './supabase-server'
 
+export interface StrategyStats {
+  trades:    number
+  wins:      number
+  win_rate:  number   // %
+  total_pnl: number   // $ realized
+  avg_pnl:   number   // average $ per trade
+}
+
 export interface PerformanceStats {
   total_trades:      number
   wins:              number
@@ -24,6 +32,7 @@ export interface PerformanceStats {
   sharpe_approx:     number           // simple Sharpe approximation
   streak_wins:       number           // current winning streak
   streak_losses:     number
+  by_strategy:       Record<string, StrategyStats>  // breakdown per setup type
 }
 
 export async function getPerformanceStats(days = 30): Promise<PerformanceStats> {
@@ -31,7 +40,7 @@ export async function getPerformanceStats(days = 30): Promise<PerformanceStats> 
   const from = new Date(Date.now() - days * 86_400_000).toISOString()
 
   const [tradesResult, accountResult, dailySummaryResult] = await Promise.all([
-    db.from('tb_trades').select('pnl, pnl_pct, strategy, created_at, closed_at')
+    db.from('tb_trades').select('pnl, pnl_pct, strategy, created_at, closed_at, symbol')
       .eq('status', 'CLOSED').gte('closed_at', from).order('closed_at'),
     db.from('tb_account').select('balance, total_pnl').order('id', { ascending: false }).limit(1).single(),
     db.from('tb_daily_summary').select('daily_pnl, date').order('date', { ascending: false }).limit(30),
@@ -50,6 +59,7 @@ export async function getPerformanceStats(days = 30): Promise<PerformanceStats> 
       goal_progress_pct: (balance / 25000) * 100,
       days_to_goal: balance < 25000 ? Math.ceil((25000 - balance) / 150) : 0,
       sharpe_approx: 0, streak_wins: 0, streak_losses: 0,
+      by_strategy: {},
     }
   }
 
@@ -65,6 +75,26 @@ export async function getPerformanceStats(days = 30): Promise<PerformanceStats> 
   const expectancy    = (win_rate / 100 * avg_win_pct) - ((1 - win_rate / 100) * avg_loss_pct)
   const profit_factor = total_loss_$ > 0 ? total_win_$ / total_loss_$ : total_win_$ > 0 ? 999 : 0
   const total_pnl     = trades.reduce((s, t) => s + t.pnl, 0)
+
+  // Per-strategy breakdown (MOMENTUM, EMA20_BOUNCE, TG_SIGNAL, etc.)
+  const stratMap: Record<string, { trades: number; wins: number; total_pnl: number }> = {}
+  for (const t of trades) {
+    const key = (t.strategy as string | null)?.split('_').slice(0, 2).join('_') ?? 'OTHER'
+    if (!stratMap[key]) stratMap[key] = { trades: 0, wins: 0, total_pnl: 0 }
+    stratMap[key].trades++
+    if (t.pnl > 0) stratMap[key].wins++
+    stratMap[key].total_pnl += t.pnl
+  }
+  const by_strategy: Record<string, StrategyStats> = {}
+  for (const [k, v] of Object.entries(stratMap)) {
+    by_strategy[k] = {
+      trades:    v.trades,
+      wins:      v.wins,
+      win_rate:  Math.round((v.wins / v.trades) * 1000) / 10,
+      total_pnl: Math.round(v.total_pnl * 100) / 100,
+      avg_pnl:   Math.round((v.total_pnl / v.trades) * 100) / 100,
+    }
+  }
 
   // Current streak
   let streak_wins = 0, streak_losses = 0
@@ -120,5 +150,6 @@ export async function getPerformanceStats(days = 30): Promise<PerformanceStats> 
     days_to_goal,
     sharpe_approx: Math.round(sharpe_approx * 100) / 100,
     streak_wins, streak_losses,
+    by_strategy,
   }
 }

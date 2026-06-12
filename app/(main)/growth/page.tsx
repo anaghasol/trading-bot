@@ -6,22 +6,28 @@ import { Card, CardHead, Metric, Chip, Meter, Donut, money, signed, pnlColor } f
 
 
 interface DailyRow { date: string; daily_pnl: number; wins: number; losses: number; win_rate: number }
+interface StratRow  { trades: number; wins: number; win_rate: number; total_pnl: number; avg_pnl: number }
 
 const GOAL = 25000          // PDT threshold — unlimited day-trading unlocks here
 const TRADING_DAYS = 252
 
 export default function GrowthPage() {
-  const [rows, setRows] = useState<DailyRow[]>([])
+  const [rows, setRows]       = useState<DailyRow[]>([])
   const [balance, setBalance] = useState(2000)
-  const [totPnl, setTotPnl] = useState(0)
+  const [totPnl, setTotPnl]   = useState(0)
+  const [byStrat, setByStrat] = useState<Record<string, StratRow>>({})
 
   useEffect(() => {
     (async () => {
       try {
-        const d = await fetch('/api/dashboard?broker=schwab').then((r) => r.json())
+        const [d, p] = await Promise.all([
+          fetch('/api/dashboard?broker=schwab').then((r) => r.json()),
+          fetch('/api/performance?days=30').then((r) => r.json()),
+        ])
         setRows((d?.daily_summary ?? []).slice().reverse())
         setBalance(d?.account?.balance ?? 2000)
         setTotPnl(d?.account?.total_pnl ?? 0)
+        setByStrat(p?.by_strategy ?? {})
       } catch { /* ignore */ }
     })()
   }, [])
@@ -129,6 +135,27 @@ export default function GrowthPage() {
           </div>
         </Card>
       </div>
+
+      {/* ── Strategy breakdown ── */}
+      {Object.keys(byStrat).length > 0 && (
+        <Card style={{ marginBottom: 14 }}>
+          <CardHead title="Performance by Strategy · last 30 days" tone="plain" right={<span className="faint" style={{ fontSize: '0.8rem' }}>which scanner is winning?</span>} />
+          <div className="card-body">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
+              {Object.entries(byStrat).sort((a, b) => b[1].total_pnl - a[1].total_pnl).map(([name, s]) => (
+                <div key={name} style={{ background: 'var(--bg-2)', borderRadius: 8, padding: '10px 12px', border: '1px solid var(--divider)' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--fg-3)', marginBottom: 4, fontFamily: 'var(--font-mono)', letterSpacing: '0.04em' }}>{name}</div>
+                  <div style={{ fontSize: '1.05rem', fontWeight: 700, color: s.total_pnl >= 0 ? 'var(--green)' : 'var(--red)', fontFamily: 'var(--font-mono)' }}>{signed(s.total_pnl)}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--fg-2)', marginTop: 3 }}>
+                    {s.wins}/{s.trades} wins · <span style={{ color: s.win_rate >= 50 ? 'var(--green)' : 'var(--red)' }}>{s.win_rate}%</span>
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--fg-3)', marginTop: 2 }}>avg {signed(s.avg_pnl)}/trade</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* ── Fund-scaling ladder ── */}
       <Card>
