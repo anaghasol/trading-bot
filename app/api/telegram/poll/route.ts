@@ -15,7 +15,7 @@ import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
-import { parseSignal, isWorthClassifying } from '@/lib/telegram-signal'
+import { parseSignal, isWorthClassifying, isOptionsSignal } from '@/lib/telegram-signal'
 import { addIntention, parseZonePrices } from '@/lib/tg-intentions'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
@@ -152,19 +152,23 @@ export async function GET(req: Request) {
     const chResults = await Promise.all(newMsgs.map(async (msg) => {
       const text = msg.text ?? ''
       if (!isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
+
+      // Options signals are never stock trades — fast-path to learn without AI call
+      if (isOptionsSignal(text)) {
+        await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `📊 ${ch.name} [options]: ${text.slice(0, 120)}` })
+        return { id: msg.id, type: 'options_learn' }
+      }
+
       const signal = await parseSignal(text, ch.name)
       if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
-      // Resolve index symbols to their tradeable ETF equivalents
-      if ('symbol' in signal && signal.symbol) {
+      // Resolve index symbols → ETF only for TRADE and EXIT signals (not learn — index context is fine)
+      if ((signal.type === 'trade' || signal.type === 'exit') && 'symbol' in signal && signal.symbol) {
         const resolved = resolveSymbol(signal.symbol)
         if (resolved !== signal.symbol) {
           console.log(`[tg-poll] ${ch.name}: mapped ${signal.symbol} → ${resolved}`)
           ;(signal as unknown as Record<string, unknown>).symbol = resolved
         }
-      }
-      if ('symbols' in signal && Array.isArray(signal.symbols)) {
-        ;(signal as unknown as Record<string, unknown>).symbols = signal.symbols.map(resolveSymbol)
       }
 
       // ── EXIT ──────────────────────────────────────────────────────────────────

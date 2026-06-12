@@ -15,6 +15,13 @@ const TRADE_KEYWORDS = /\b(buy|sell|long|short|entry|sl|stop.?loss|target|t1|t2|
 const HAS_TICKER    = /\b[A-Z]{2,5}\b/
 const HAS_PRICE     = /\$[\d,]+(\.\d+)?|\d+\.?\d*\s*%/
 
+// Options-specific patterns — these are NEVER stock trade signals
+const OPTIONS_PATTERN = /\b(call spread|put spread|bull put|bear call|iron condor|straddle|strangle|butterfly|debit spread|credit spread|vertical spread|covered call|cash.secured put|\d{4}\/\d{4}|\d+[Cc]\/?[\d.]+|options? (expir|premium|contract|chain)|IV rank|implied vol|theta|delta|gamma|vega|0DTE|weekly options)\b/i
+
+export function isOptionsSignal(text: string): boolean {
+  return OPTIONS_PATTERN.test(text)
+}
+
 export function isWorthClassifying(text: string): boolean {
   if (text.length < 15) return false
   if (TRADE_KEYWORDS.test(text)) return true
@@ -166,46 +173,45 @@ export async function parseSignal(text: string, channelName = 'Trading Channel')
       max_tokens: 500,
       messages: [{
         role: 'user',
-        content: `You are reading messages from "${channelName}" — a professional trading signals channel. Read like a human trader would and classify the intent precisely.
-
-The channel communicates in these patterns:
-1. DIRECT ENTRY — gives ticker + price + stop loss → we must execute
-   e.g. "Buy SPIR at 20.5 With SL of 18.5", "06/04: Buy TEM at 52 SL 46"
-2. DIRECT EXIT — explicitly tells subscribers to close/exit a position NOW
-   e.g. "Exit SPIR", "Sell SPIR now", "Close your SPIR position", "Book profits on X"
-3. POSITION UPDATE — tells what happened to a past recommendation (not a command to us)
-   e.g. "INTU hit stop loss", "LPTH hit our target of $17", "SIDU was stopped out"
-4. WATCH / SETUP ALERT — flags a stock to watch for future entry, not actionable yet
-   e.g. "OKLO could pull back to $45, watch for re-entry", "TEM looks good near $48"
-5. MARKET / SECTOR INSIGHT — general knowledge, macro views, sector commentary
-   e.g. "QQQ needs to correct", "nuclear sector heating up", portfolio risk summaries
-6. NOISE — webinars, referral links, greetings, admin → ignore
+        content: `You are a human stock trader reading a message from "${channelName}". Your job: decide exactly what action to take (if any) as a STOCK trader — not an options trader.
 
 Message: "${text}"
 
-Reply with ONLY a JSON object:
+STEP 1 — Is this about OPTIONS (spreads, calls, puts, strike prices like 2935/2945, premium, expiry dates)?
+→ If YES: ALWAYS return type:learn. Options signals are NEVER stock trades for us. Extract the market direction as sentiment.
 
-DIRECT ENTRY → {"type":"trade","symbol":"TICKER","action":"BUY","entry_price":20.5,"stop_loss":18.5,"target":null,"confidence":95}
+STEP 2 — Is this about INDICES (RUT, RTY, SPX, NDX, VIX, ES, NQ)?
+→ Index mentions alone = type:learn. We trade ETF proxies (IWM, SPY, QQQ) only on explicit actionable buy signals, not options commentary.
 
-DIRECT EXIT → {"type":"exit","symbol":"TICKER","reason":"ADVISOR_EXIT","summary":"one-line reason"}
+STEP 3 — Classify:
 
-POSITION UPDATE / WATCH / MARKET INSIGHT → {"type":"learn","summary":"one clear factual sentence (no names — just what the signal says)","symbols":["TICKER"],"sentiment":"bullish","sector":"nuclear","watch_zone":"$45-48","actionable":true}
-  sentiment: bullish / bearish / neutral
-  sector: industry name if clear, else null
-  watch_zone: price range mentioned for watching/re-entry, else null
-  actionable: true if it should influence future AI stock picks
+type:trade → ONLY when: explicit stock symbol + BUY/SELL instruction + price or "at market" + stop loss
+  e.g. "Buy NVDA at 200 SL 190", "Buy TEM at 52 SL 46 target 58"
+  Never use this for index/options signals.
 
-NOISE → {"type":"ignore"}
+type:exit → ONLY when: explicit instruction to close/exit a STOCK position we might hold
+  e.g. "Exit NVDA", "Sell SPIR now", "Book profits on TEM"
+  NOT for options exits (closing a spread ≠ stock exit for us)
+  NOT for "X hit SL/target" (that's their trade, not our command)
 
-Critical rules:
-- type:trade ONLY for explicit entry with ticker + price/instruction. Never guess.
-- type:exit ONLY when the channel explicitly says to close — NOT when it reports "X hit SL" (that is subscribers' trade, not a command to us)
-- "X hit stop loss / target" = type:learn, bearish or bullish accordingly
-- "Watch X near $Y" = type:learn, watch_zone set
-- "buy on dips", "accumulation opportunity", "stocks at discount, re-entry" (no specific ticker) = type:learn, sentiment:bullish, symbols:[], actionable:true — this tells the bot to run the AI scanner immediately
-- confidence < 70 → demote trade to learn
-- Default to learn over exit when unsure
-- In the summary, do NOT use any person's name — describe the signal objectively`,
+type:learn → Everything else: macro views, index commentary, options P&L updates, sector trends, watch alerts, conditional setups not yet triggered
+  Mark actionable:true only if bullish and it should influence AI scanner picks
+  Mark actionable:false for bearish, options-only, or conditional setups
+
+type:ignore → Greetings, referral links, admin, very short noise
+
+Reply with ONLY a JSON object — no explanation:
+
+trade: {"type":"trade","symbol":"TICKER","action":"BUY","entry_price":200,"stop_loss":190,"target":null,"confidence":90}
+exit:  {"type":"exit","symbol":"TICKER","reason":"ADVISOR_EXIT","summary":"one factual sentence"}
+learn: {"type":"learn","summary":"one factual sentence — no names","symbols":["TICKER"],"sentiment":"bullish","sector":"small-cap","watch_zone":null,"actionable":true}
+ignore: {"type":"ignore"}
+
+Rules:
+- confidence < 75 → demote trade to learn
+- Default to learn when unsure
+- No person's names in summary — describe the signal objectively
+- Options P&L updates (50% gain on spreads, buying back spreads) = type:learn, extract bullish/bearish direction`,
       }],
     })
 
