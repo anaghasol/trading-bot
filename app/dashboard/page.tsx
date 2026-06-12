@@ -429,6 +429,8 @@ export default function DashboardPage() {
   // indices + watchlist from quote map
   const idx = (sym: string) => qmap[sym]
   const watch = WATCH.map((s) => qmap[s]).filter(Boolean) as Quote[]
+  // Top movers: all universe symbols with ≥1% gain, sorted descending — reuses qmap, no extra fetch
+  const movers = Object.values(qmap).filter((q) => q.change_pct >= 1).sort((a, b) => b.change_pct - a.change_pct).slice(0, 6)
 
   // activity rows (schwab → real order book; paper → recorded trades)
   type Row = { time: string; side: string; symbol: string; qty: number; price: number; status: string }
@@ -565,6 +567,27 @@ export default function DashboardPage() {
                   </div>}
             </div>
           </div>
+
+          {/* Top Movers — reuses qmap, no extra fetch, refreshes with poll interval */}
+          {movers.length > 0 && (
+            <div className="card">
+              <div className="card-head plain">
+                <h3 className="card-title neutral">🚀 Top Movers</h3>
+                <span className="eyebrow">universe · gainers</span>
+              </div>
+              <div className="card-body" style={{ padding: '6px 14px' }}>
+                <div className="wl">
+                  {movers.map((q) => (
+                    <>
+                      <span key={q.symbol + '-s'} className="wl sym">{q.symbol}</span>
+                      <span key={q.symbol + '-p'} className="wl mk"><Flash value={q.price} fmt={num} /></span>
+                      <span key={q.symbol + '-c'} className="wl ch" style={{ color: 'var(--green)' }}>{p2(q.change_pct)}</span>
+                    </>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Category Trends (rotation engine) */}
           <div className="card">

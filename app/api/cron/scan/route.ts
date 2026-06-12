@@ -50,6 +50,7 @@ async function runScan(
 
   // Distributed lock: skip if another instance of this broker's scan is already running.
   // Lock expires after 100s (maxDuration is 60s, so 100s is safe overlap buffer).
+  // Stale fallback: if lock is > 5 min old, previous scan likely crashed — force-clear and log.
   const lockKey = `scan_lock_${broker}`
   try {
     const { data: lock } = await db.from('tb_settings').select('value').eq('key', lockKey).single()
@@ -57,6 +58,11 @@ async function runScan(
       const ageMs = Date.now() - new Date(lock.value).getTime()
       if (ageMs < 100_000) {
         return { trades_made: 0, message: `[${broker}] Skipped — scan already running (${Math.floor(ageMs / 1000)}s ago)` }
+      }
+      if (ageMs > 300_000) {
+        // > 5 min stale — scan crashed without releasing. Alert so it shows in Live Monitor.
+        console.warn(`[${broker}] Stale scan lock (${Math.floor(ageMs / 60000)}m) — force-clearing`)
+        void db.from('tb_alerts').insert({ type: 'WARN', message: `[${broker}] Stale scan lock cleared (${Math.floor(ageMs / 60000)}m old — previous scan may have crashed)` })
       }
     }
     await db.from('tb_settings').upsert({ key: lockKey, value: new Date().toISOString() })
