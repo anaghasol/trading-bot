@@ -128,7 +128,8 @@ export default function LiveMonitorPage() {
     const last = data?.cron.last_run[job]
     if (!last) return false
     const m = (Date.now() - new Date(last).getTime()) / 60000
-    if (job === 'scan')    return m < 45
+    if (job === 'scan')    return m < 30
+    if (job === 'spike')   return m < 15
     if (job === 'monitor') return m < 60
     return m < 1440  // EOD close: once per day
   }
@@ -193,7 +194,8 @@ export default function LiveMonitorPage() {
             )
           })}
           {[
-            { key: 'scan',    label: 'Scan Cron',    icon: '🔍', note: 'every 15m' },
+            { key: 'scan',    label: 'Scan Cron',    icon: '🔍', note: 'every 10m' },
+            { key: 'spike',   label: 'Spike Alert',  icon: '⚡', note: 'every 5m'  },
             { key: 'monitor', label: 'Monitor Cron', icon: '👁',  note: 'every 5m'  },
             { key: 'close',   label: 'EOD Close',    icon: '🔒', note: '3:45pm ET' },
           ].map(({ key, label, icon, note }) => {
