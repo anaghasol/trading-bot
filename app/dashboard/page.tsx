@@ -715,6 +715,23 @@ export default function DashboardPage() {
             <div className="card-head plain">
               <h3 className="card-title neutral">📊 Positions <span className="chip mut" style={{ fontSize: '0.6rem' }}>{pos.length} open</span></h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {isPaper && (
+                  <button
+                    className="iconbtn"
+                    style={{ fontSize: '0.65rem', color: 'var(--amber)' }}
+                    title="Sync entry prices from Alpaca actual fill prices (fixes stale IEX price bugs)"
+                    onClick={async () => {
+                      const res = await fetch('/api/alpaca/reconcile', { method: 'POST' })
+                      const d = await res.json()
+                      if (d.fixed_count > 0) {
+                        alert(`Fixed ${d.fixed_count} entry price(s):\n` + d.fixed.map((f: {symbol:string;old_price:number;new_price:number}) => `  ${f.symbol}: $${f.old_price.toFixed(2)} → $${f.new_price.toFixed(2)}`).join('\n'))
+                        load(broker)
+                      } else {
+                        alert('All entry prices match Alpaca — nothing to fix.')
+                      }
+                    }}
+                  >⚙ Fix Entries</button>
+                )}
                 <span className="eyebrow">Net liq</span>
                 <span className="tabular" style={{ fontWeight: 700 }}>{money(netLiq)}</span>
               </div>
