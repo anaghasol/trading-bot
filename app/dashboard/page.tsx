@@ -719,18 +719,24 @@ export default function DashboardPage() {
                   <button
                     className="iconbtn"
                     style={{ fontSize: '0.65rem', color: 'var(--amber)' }}
-                    title="Sync entry prices from Alpaca actual fill prices (fixes stale IEX price bugs)"
+                    title="Fix a wrong entry price using Yahoo Finance historical data at actual buy time"
                     onClick={async () => {
-                      const res = await fetch('/api/alpaca/reconcile', { method: 'POST' })
+                      const sym = window.prompt('Enter symbol to fix (e.g. SPCX):')?.trim().toUpperCase()
+                      if (!sym) return
+                      const res = await fetch('/api/alpaca/fix-entry', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ symbol: sym }),
+                      })
                       const d = await res.json()
-                      if (d.fixed_count > 0) {
-                        alert(`Fixed ${d.fixed_count} entry price(s):\n` + d.fixed.map((f: {symbol:string;old_price:number;new_price:number}) => `  ${f.symbol}: $${f.old_price.toFixed(2)} → $${f.new_price.toFixed(2)}`).join('\n'))
+                      if (d.ok) {
+                        alert(`✓ ${d.symbol} entry fixed\n\nBuy recorded at: ${new Date(d.buy_time).toLocaleTimeString('en-US', { timeZone: 'America/New_York' })} ET\nYahoo price at that time: $${d.new_price.toFixed(2)}\n\nOld entry: $${d.old_price.toFixed(2)}\nNew entry: $${d.new_price.toFixed(2)}`)
                         load(broker)
                       } else {
-                        alert('All entry prices match Alpaca — nothing to fix.')
+                        alert(`Could not fix ${sym}:\n${d.error}\n\nBuy time: ${d.buy_time ? new Date(d.buy_time).toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) + ' ET' : 'unknown'}`)
                       }
                     }}
-                  >⚙ Fix Entries</button>
+                  >⚙ Fix Entry</button>
                 )}
                 <span className="eyebrow">Net liq</span>
                 <span className="tabular" style={{ fontWeight: 700 }}>{money(netLiq)}</span>
