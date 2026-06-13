@@ -238,7 +238,13 @@ async function runScan(
   // self-qualify even when AI alone was borderline (e.g. 67% → 77% for score ≥ 7.5 on paper).
   const research = await batchResearch(rankedPre.map((x) => x.rec.symbol)).catch(() => new Map<string, import('@/lib/research-score').ResearchScore>())
   for (const item of rankedPre) {
-    item.rec.confidence = applyResearchBoost(item.rec.confidence, research.get(item.rec.symbol), !isSchwab)
+    const rs = research.get(item.rec.symbol)
+    const prevConf = item.rec.confidence
+    item.rec.confidence = applyResearchBoost(prevConf, rs, !isSchwab)
+    if (rs && rs.score >= 5) {
+      const boosted = item.rec.confidence > prevConf ? ` → conf ${prevConf}→${item.rec.confidence}%` : ''
+      console.log(`[RESEARCH][${broker}] ${item.rec.symbol} score=${rs.score} (RS+${rs.pts.rs} Vol+${rs.pts.vol} 52w+${rs.pts.high52} Range+${rs.pts.range}) label=${rs.label}${boosted}`)
+    }
   }
 
   const ranked = rankedPre

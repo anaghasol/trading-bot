@@ -21,8 +21,9 @@ export interface ResearchScore {
   vol_pace:          number   // vol / (avgVol × sessionFrac)
   pct_from_52w_high: number   // % below 52-week high (lower = closer to breakout)
   range_pct:         number   // 0–100, position within 52-week range
-  score:             number   // 0–10 composite
+  score:             number   // 0–10.5 composite
   label:             'STRONG' | 'GOOD' | 'NEUTRAL'
+  pts: { rs: number; vol: number; high52: number; range: number }  // component breakdown for logging
 }
 
 function sessionFrac(): number {
@@ -65,9 +66,9 @@ export async function batchResearch(symbols: string[]): Promise<Map<string, Rese
     const price  = (q.regularMarketPrice            ?? 0) as number
     const sym    = String(q.symbol)
 
-    // ── RS vs SPY (0–3 pts) ───────────────────────────────────────────────────
+    // ── RS vs SPY (0–3.5 pts) — heaviest factor, strongest predictor ────────────
     const rs = chg - spyChg
-    const rsScore = rs >= 5 ? 3 : rs >= 2 ? 2 : rs >= 0.5 ? 1 : 0
+    const rsScore = rs >= 6 ? 3.5 : rs >= 4 ? 3 : rs >= 2 ? 2 : rs >= 0.5 ? 1 : 0
 
     // ── Volume pace (0–3 pts) ─────────────────────────────────────────────────
     const vp = avgVol > 0 ? vol / (avgVol * sf) : 0
@@ -82,7 +83,8 @@ export async function batchResearch(symbols: string[]): Promise<Map<string, Rese
     const rangePct   = rangeSize > 0 ? (price - low52) / rangeSize : 0
     const rangeScore = rangePct >= 0.90 ? 2 : rangePct >= 0.75 ? 1 : 0
 
-    const score = Math.min(10, Math.round((rsScore + vpScore + highScore + rangeScore) * 10) / 10)
+    const raw   = rsScore + vpScore + highScore + rangeScore
+    const score = Math.min(10.5, Math.round(raw * 10) / 10)
 
     out.set(sym, {
       symbol:            sym,
@@ -92,6 +94,7 @@ export async function batchResearch(symbols: string[]): Promise<Map<string, Rese
       range_pct:         Math.round(rangePct * 100),
       score,
       label: score >= 8 ? 'STRONG' : score >= 6 ? 'GOOD' : 'NEUTRAL',
+      pts: { rs: rsScore, vol: vpScore, high52: highScore, range: rangeScore },
     })
   }
 
@@ -106,13 +109,15 @@ export function applyResearchBoost(
 ): number {
   if (!rs) return confidence
   if (isPaper) {
+    // Paper lab: aggressive — let strong research setups self-qualify
     if (rs.score >= 9.0) return Math.max(confidence, 68)   // auto-qualify very strong setups
     if (rs.score >= 7.5) return Math.min(100, confidence + 10)
     if (rs.score >= 5.0) return Math.min(100, confidence + 5)
   } else {
-    // Live — protect real money, smaller boosts
-    if (rs.score >= 8.5) return Math.min(100, confidence + 5)
-    if (rs.score >= 7.0) return Math.min(100, confidence + 3)
+    // Live (Schwab) — protect real money: max +5pts, only for genuinely strong research
+    if (rs.score >= 9.0) return Math.min(100, confidence + 5)
+    if (rs.score >= 7.5) return Math.min(100, confidence + 3)
+    // Below 7.5: no boost on live — AI alone must clear the 78% gate
   }
   return confidence
 }
