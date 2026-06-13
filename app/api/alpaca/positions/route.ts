@@ -1,8 +1,11 @@
 /**
- * GET /api/alpaca/positions — live positions from Alpaca paper account
+ * GET /api/alpaca/positions — live positions from Alpaca paper account.
+ * Applies entry_override_${symbol} corrections from tb_settings so that
+ * positions with stale IEX fill prices (e.g. SPCX bought at $26 IEX vs $166 real)
+ * display the correct real-market entry price and accurate P/L.
  */
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase-server'
+import { createClient, createServiceClient } from '@/lib/supabase-server'
 
 const BASE   = 'https://paper-api.alpaca.markets/v2'
 const KEY_ID = process.env.ALPACA_KEY_ID!
@@ -21,19 +24,52 @@ export async function GET() {
     if (!res.ok) return NextResponse.json({ positions: [] })
 
     const raw = await res.json() as Record<string, string | number>[]
-    const positions = raw.map((p) => ({
-      symbol:        String(p.symbol),
-      quantity:      parseFloat(String(p.qty ?? 0)),
-      avg_cost:      parseFloat(String(p.avg_entry_price ?? 0)),
-      current_price: parseFloat(String(p.current_price  ?? 0)),
-      market_value:  parseFloat(String(p.market_value   ?? 0)),
-      unrealized_pnl: parseFloat(String(p.unrealized_pl ?? 0)),
-      unrealized_pnl_pct: parseFloat(String(p.unrealized_plpc ?? 0)) * 100,
-      day_pnl:       parseFloat(String(p.unrealized_intraday_pl ?? 0)),
-      pnl_pct:       parseFloat(String(p.unrealized_plpc ?? 0)) * 100,
-      cost_basis:    parseFloat(String(p.cost_basis ?? 0)),
-      asset_type:    'EQUITY' as const,
-    }))
+
+    // Read entry overrides (set by /api/alpaca/fix-entry) from tb_settings
+    const symbols = raw.map((p) => String(p.symbol))
+    const overrideKeys = symbols.map((s) => `entry_override_${s}`)
+    const db = createServiceClient()
+    const { data: overrideRows } = await db
+      .from('tb_settings')
+      .select('key, value')
+      .in('key', overrideKeys)
+
+    const overrides: Record<string, number> = {}
+    for (const row of overrideRows ?? []) {
+      try {
+        const sym = row.key.replace('entry_override_', '')
+        const val = JSON.parse(row.value) as { price: number }
+        if (val.price > 0) overrides[sym] = val.price
+      } catch { /* ignore */ }
+    }
+
+    const positions = raw.map((p) => {
+      const symbol      = String(p.symbol)
+      const qty         = parseFloat(String(p.qty ?? 0))
+      const alpacaEntry = parseFloat(String(p.avg_entry_price ?? 0))
+      const cur_price   = parseFloat(String(p.current_price ?? alpacaEntry))
+      const market_val  = parseFloat(String(p.market_value ?? 0))
+
+      // Apply corrected entry price if override exists
+      const avg_cost    = overrides[symbol] ?? alpacaEntry
+      const unreal      = (cur_price - avg_cost) * qty
+      const pnl_pct     = avg_cost > 0 ? ((cur_price - avg_cost) / avg_cost) * 100 : 0
+
+      return {
+        symbol,
+        quantity:       qty,
+        avg_cost,
+        current_price:  cur_price,
+        market_value:   market_val,
+        unrealized_pnl: Math.round(unreal * 100) / 100,
+        unrealized_pnl_pct: Math.round(pnl_pct * 100) / 100,
+        day_pnl:        parseFloat(String(p.unrealized_intraday_pl ?? 0)),
+        pnl_pct:        Math.round(pnl_pct * 100) / 100,
+        cost_basis:     avg_cost * qty,
+        asset_type:     'EQUITY' as const,
+        entry_corrected: !!overrides[symbol],  // flag so UI can show indicator
+      }
+    })
 
     return NextResponse.json({ positions })
   } catch (e) {
