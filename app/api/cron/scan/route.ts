@@ -23,6 +23,7 @@ import { profileFor } from '@/lib/strategy-profiles'
 import { getCategoryMomentum, biasForSymbol, categoryLabel, type RotationResult } from '@/lib/category-rotation'
 import { getSleeveAllocation, sleeveForSetup, sleeveSizing } from '@/lib/sleeves'
 import { getActiveIntentions, markActed } from '@/lib/tg-intentions'
+import { batchResearch, applyResearchBoost } from '@/lib/research-score'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -176,7 +177,8 @@ async function runScan(
   } else {
     marketTier    = 'GOOD'
     dynamicMinConf = profile.min_confidence
-    dynamicMaxPos  = profile.max_positions
+    // Paper in a good market: expand to 12 positions (aggressive lab mode)
+    dynamicMaxPos  = !isSchwab ? 12 : profile.max_positions
   }
 
   if (positions.length >= dynamicMaxPos) {
@@ -203,7 +205,8 @@ async function runScan(
   // Paper mode: COLD categories get bias=0.5 (not filtered out) so we still collect data.
   // Live (Schwab): COLD categories are filtered out completely.
   // Telegram-confirmed symbols get +8 confidence bonus before ranking.
-  const ranked = recommendations
+  // Research layer applied BEFORE the confidence gate so high-RS stocks can unlock themselves.
+  const rankedPre = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
     .filter((r) => !avoidSymbols.has(r.symbol))   // channel said avoid — never enter
     .map((r) => {
@@ -214,7 +217,6 @@ async function runScan(
       // Intention confidence boosts: buy_zone in range > watch_only > tg_alert
       let intentBoost = 0
       if (intent?.type === 'buy_zone' && intent.price_zone) {
-        // Will get quote below — for now mark as high-intent; actual zone check happens on execution
         intentBoost = intent.urgency === 'high' ? 15 : 10
       } else if (intent?.type === 'watch_only') {
         intentBoost = 5
@@ -230,6 +232,16 @@ async function runScan(
       }
     })
     .filter((x) => isSchwab ? x.bias > 0 : true)
+
+  // Research & Conviction Engine: batch-fetch RS vs SPY, volume pace, 52-week proximity.
+  // Applies confidence boosts BEFORE the dynamicMinConf gate — allows strong setups to
+  // self-qualify even when AI alone was borderline (e.g. 67% → 77% for score ≥ 7.5 on paper).
+  const research = await batchResearch(rankedPre.map((x) => x.rec.symbol)).catch(() => new Map<string, import('@/lib/research-score').ResearchScore>())
+  for (const item of rankedPre) {
+    item.rec.confidence = applyResearchBoost(item.rec.confidence, research.get(item.rec.symbol), !isSchwab)
+  }
+
+  const ranked = rankedPre
     .filter((x) => x.rec.confidence >= dynamicMinConf)
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
@@ -365,6 +377,9 @@ async function runScan(
       confidence: r.rec.confidence,
       setup:      r.rec.setup,
       score:      r.rec.ema_score,
+      rs_score:   research.get(r.rec.symbol)?.score,
+      rs_label:   research.get(r.rec.symbol)?.label,
+      rs_vs_spy:  research.get(r.rec.symbol)?.rs_vs_spy,
     })),
     discoveries: (new_discoveries ?? []).slice(0, 4).map((d) => ({ symbol: d.symbol, signal: d.signal })),
   }
