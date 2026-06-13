@@ -13,7 +13,11 @@ import { createServiceClient } from '@/lib/supabase-server'
 export const runtime = 'nodejs'
 
 // Only these keys may be written via this endpoint
-const WRITE_ALLOWLIST = new Set(['strategy_boost', 'engine_schwab', 'engine_alpaca'])
+const WRITE_ALLOWLIST = new Set([
+  'strategy_boost',
+  'engine_schwab', 'engine_alpaca',
+  'schwab_max_pos',   // cautious start: cap live positions (e.g. set to "2" for first week)
+])
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)

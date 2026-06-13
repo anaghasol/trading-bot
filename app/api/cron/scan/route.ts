@@ -181,6 +181,18 @@ async function runScan(
     dynamicMaxPos  = !isSchwab ? 12 : profile.max_positions
   }
 
+  // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).
+  // Applies on top of the regime cap — never overrides downward protection, only adds a tighter ceiling.
+  if (isSchwab) {
+    try {
+      const { data: capRow } = await db.from('tb_settings').select('value').eq('key', 'schwab_max_pos').single()
+      if (capRow?.value) {
+        const cap = parseInt(capRow.value, 10)
+        if (cap > 0) dynamicMaxPos = Math.min(dynamicMaxPos, cap)
+      }
+    } catch { /* non-fatal */ }
+  }
+
   if (positions.length >= dynamicMaxPos) {
     return { trades_made: 0, message: `[${broker}] Full ${marketTier}: ${positions.length}/${dynamicMaxPos} | VIX${vix.toFixed(0)}` }
   }
@@ -315,7 +327,10 @@ async function runScan(
           }
         } catch { /* non-fatal — proceed without spread check if Yahoo down */ }
       }
-      const MAX_SPREAD_PCT = 0.5
+      // Opening 30 min (9:30–10:00 ET) naturally has wider spreads as the book forms.
+      // Allow up to 0.7% then, tighten to 0.5% once the market is settled.
+      const etH = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
+      const MAX_SPREAD_PCT = parseInt(etH, 10) < 10 ? 0.7 : 0.5
       if (spreadPct !== null && spreadPct > MAX_SPREAD_PCT) {
         const msg = `[schwab] Wide spread ${rec.symbol}: ${spreadPct.toFixed(2)}% > ${MAX_SPREAD_PCT}% max — skipping entry`
         console.warn(msg)
