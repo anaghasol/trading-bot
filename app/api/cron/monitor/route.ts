@@ -41,6 +41,24 @@ async function monitorBroker(
   broker: 'schwab' | 'alpaca_paper',
   db: ReturnType<typeof createServiceClient>
 ): Promise<{ closed: number; partial: number; statuses: string[] }> {
+  // Distributed lock — prevents overlapping 5-min cron runs from double-selling.
+  // 90s expiry: maxDuration is 60s so a 90s stale lock means the previous run crashed.
+  const lockKey = `monitor_lock_${broker}`
+  try {
+    const { data: lock } = await db.from('tb_settings').select('value').eq('key', lockKey).single()
+    if (lock?.value) {
+      const ageMs = Date.now() - new Date(lock.value).getTime()
+      if (ageMs < 90_000) {
+        return { closed: 0, partial: 0, statuses: [`skipped — monitor already running (${Math.floor(ageMs / 1000)}s ago)`] }
+      }
+      if (ageMs > 300_000) {
+        console.warn(`[monitor][${broker}] Stale lock ${Math.floor(ageMs / 60000)}m — force-clearing`)
+        void db.from('tb_alerts').insert({ type: 'WARN', message: `[${broker}] monitor stale lock cleared (${Math.floor(ageMs / 60000)}m old)` })
+      }
+    }
+    await db.from('tb_settings').upsert({ key: lockKey, value: new Date().toISOString() })
+  } catch { /* lock failure is non-fatal — proceed */ }
+
   const api      = broker === 'schwab' ? SchwabBroker : AlpacaBroker
   const todayStr = today()
 
@@ -50,7 +68,11 @@ async function monitorBroker(
     api.getOrders(7),
   ])
 
-  if (positions.length === 0) return { closed: 0, partial: 0, statuses: [] }
+  // Even with no live positions, run orphan reconciliation (positions may have closed via broker stop orders)
+  if (positions.length === 0) {
+    void db.from('tb_settings').upsert({ key: lockKey, value: '' })
+    return { closed: 0, partial: 0, statuses: [] }
+  }
 
   // Load Pavan's hold intentions — if he says "don't exit TEM", we skip our own stops for it
   const intentions = await getActiveIntentions().catch(() => [])
@@ -98,6 +120,41 @@ async function monitorBroker(
     })
   }
 
+  // ── Orphan reconciliation ──────────────────────────────────────────────────
+  // If a symbol is OPEN in tb_trades but absent from broker positions, the broker's
+  // stop-loss order fired and filled without us updating the database.
+  // Mark these as CLOSED so the dashboard doesn't show phantom positions.
+  const liveSymbols = new Set(positions.map((p) => p.symbol))
+  for (const [sym, meta] of Array.from(tradeMap.entries())) {
+    if (!liveSymbols.has(sym)) {
+      // Position no longer at broker → estimate exit via recent broker order history
+      try {
+        // Cast to unknown records to handle both Schwab and Alpaca order shapes
+        const anyOrders = recentOrders as unknown as Record<string, unknown>[]
+        const recentFilled = anyOrders.find(
+          (o) => o.symbol === sym
+            && (String(o.instruction ?? o.side ?? '').toUpperCase() === 'SELL')
+            && String(o.status ?? '').toLowerCase().includes('fill')
+        )
+        // Schwab uses `price`, Alpaca uses `filled_avg_price`
+        const exitPrice   = recentFilled ? parseFloat(String(recentFilled.filled_avg_price ?? recentFilled.price ?? 0)) : 0
+        const estimatedPnl = 0  // qty unknown at this point — log only, P&L will be 0
+        const pnlPct       = meta.entry_price > 0 && exitPrice > 0 ? ((exitPrice - meta.entry_price) / meta.entry_price) * 100 : 0
+
+        await db.from('tb_trades').update({
+          status: 'CLOSED', exit_price: exitPrice || null,
+          pnl: estimatedPnl || null, pnl_pct: pnlPct || null,
+          closed_at: String(recentFilled?.filled_at ?? recentFilled?.close_time ?? new Date().toISOString()),
+          reason: (meta.reason ?? '') + ' [auto-reconciled: broker stop filled]',
+        }).eq('id', meta.id)
+
+        const alertMsg = `[${broker}] AUTO-RECONCILE ${sym}: position gone from broker — marked CLOSED${exitPrice ? ` @ $${exitPrice.toFixed(2)} (${pnlPct.toFixed(1)}%)` : ' (exit price unknown)'}`
+        void db.from('tb_alerts').insert({ type: 'INFO', symbol: sym, message: alertMsg })
+        console.log(alertMsg)
+      } catch { /* reconcile failure is non-fatal */ }
+    }
+  }
+
   let closed = 0, partial = 0, runningPnl = dailyPnl
   const statuses: string[] = []
 
@@ -108,6 +165,30 @@ async function monitorBroker(
     const isSameDay   = meta.entry_date === todayStr
     const holdDays    = Math.round((Date.now() - new Date(meta.entry_date + 'T00:00:00Z').getTime()) / 86_400_000)
     const target_price = meta.entry_price * (1 + INITIAL_STOP_PCT * 2)
+
+    // Big-win lock: paper >15% intraday gain or live >12% → exit fully, don't wait for EOD.
+    // A pro human would bank an outlier intraday move rather than riding it back down.
+    const BIG_WIN_PCT = broker === 'alpaca_paper' ? 15 : 12
+    if (pos.pnl_pct >= BIG_WIN_PCT) {
+      const canExit = broker === 'alpaca_paper' || !isSameDay || pdt.can_day_trade
+      if (canExit && !holdSymbols.has(pos.symbol)) {
+        const order = await api.placeOrder(pos.symbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
+        if (order.status === 'PLACED') {
+          closed++
+          const pnl = pos.unrealized_pnl
+          runningPnl += pnl
+          if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl, pnl_pct: pos.pnl_pct, days_held: holdDays, closed_at: new Date().toISOString() }).eq('id', meta.id)
+          if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
+          await recordLearning({ symbol: pos.symbol, strategy: meta.strategy, pnl_pct: pos.pnl_pct, hold_days: holdDays, regime: 'NORMAL' })
+          const alertRow = { type: 'SELL', message: `[${broker}] BIG WIN LOCK ${pos.symbol} +${pos.pnl_pct.toFixed(1)}% — $${pnl.toFixed(2)} banked intraday`, symbol: pos.symbol, pnl }
+          const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
+          if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
+          await alertStopHit({ broker: broker as 'schwab' | 'alpaca_paper', symbol: pos.symbol, qty: Math.abs(pos.quantity), pnl, pnl_pct: pos.pnl_pct, exit_type: 'BIG_WIN' })
+          statuses.push(`${pos.symbol}: BIG WIN LOCK +${pos.pnl_pct.toFixed(1)}% $${pnl.toFixed(2)}`)
+          continue
+        }
+      }
+    }
 
     // Partial exit at 2:1 (+5%)
     if (shouldTakePartial(pos.current_price, meta.entry_price, target_price, false)) {
@@ -207,6 +288,8 @@ async function monitorBroker(
   const snapRow = { date: todayStr, hour: etHour, balance: equity, daily_pnl: runningPnl + unrealized }
   const { error: se } = await db.from('tb_pnl_snapshots').upsert({ ...snapRow, broker }, { onConflict: 'date,hour' })
   if (se?.code === 'PGRST204') await db.from('tb_pnl_snapshots').upsert(snapRow, { onConflict: 'date,hour' })
+
+  void db.from('tb_settings').upsert({ key: lockKey, value: '' })  // release lock
 
   return { closed, partial, statuses }
 }
