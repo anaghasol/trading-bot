@@ -285,6 +285,48 @@ async function runScan(
       } catch { /* if Yahoo check fails, proceed with broker quote */ }
     }
 
+    // Schwab live spread gate — real-money orders only.
+    // Wide spread = illiquid at this moment; market order will fill badly.
+    // Live cap: 0.5% max. If bid/ask unavailable from the API, fall back to
+    // a Yahoo Finance check to get indicative spread (also catches stale Schwab quotes).
+    if (isSchwab) {
+      // Cast to access bid/ask fields that Schwab's getQuote returns but Alpaca's doesn't.
+      const sq = quote as { bid?: number; ask?: number }
+      let spreadPct: number | null = null
+      if (sq.bid && sq.ask && sq.ask > sq.bid) {
+        const mid = (sq.bid + sq.ask) / 2
+        spreadPct = mid > 0 ? ((sq.ask - sq.bid) / mid) * 100 : null
+      }
+      if (spreadPct === null) {
+        // Schwab didn't return bid/ask — fetch from Yahoo as fallback
+        try {
+          const yhRes = await fetch(
+            `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${rec.symbol}&fields=bid,ask`,
+            { headers: { 'User-Agent': 'Mozilla/5.0' } }
+          )
+          if (yhRes.ok) {
+            const yhData = await yhRes.json()
+            const r = yhData?.quoteResponse?.result?.[0] ?? {}
+            const bid: number = r.bid ?? 0, ask: number = r.ask ?? 0
+            if (bid > 0 && ask > bid) {
+              const mid = (bid + ask) / 2
+              spreadPct = ((ask - bid) / mid) * 100
+            }
+          }
+        } catch { /* non-fatal — proceed without spread check if Yahoo down */ }
+      }
+      const MAX_SPREAD_PCT = 0.5
+      if (spreadPct !== null && spreadPct > MAX_SPREAD_PCT) {
+        const msg = `[schwab] Wide spread ${rec.symbol}: ${spreadPct.toFixed(2)}% > ${MAX_SPREAD_PCT}% max — skipping entry`
+        console.warn(msg)
+        void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, message: msg })
+        continue
+      }
+      if (spreadPct !== null) {
+        console.log(`[SPREAD][schwab] ${rec.symbol}: ${spreadPct.toFixed(2)}% — OK`)
+      }
+    }
+
     // buy_zone intent: only execute if live price is actually inside the channel's zone.
     // If price is outside zone → skip this tick, wait for the right entry point.
     if (intent?.type === 'buy_zone' && intent.price_zone) {

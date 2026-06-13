@@ -29,6 +29,8 @@ export interface Quote {
   price: number
   change_pct: number
   volume: number
+  bid?: number
+  ask?: number
 }
 
 export interface OrderResult {
@@ -432,9 +434,11 @@ export async function getQuote(symbol: string): Promise<Quote | null> {
   const q = (data[symbol] as Record<string, unknown>).quote as Record<string, number>
   return {
     symbol,
-    price: q.lastPrice || 0,
+    price:      q.lastPrice || 0,
     change_pct: q.netPercentChangeInDouble || 0,
-    volume: q.totalVolume || 0,
+    volume:     q.totalVolume || 0,
+    bid:        q.bidPrice  || undefined,
+    ask:        q.askPrice  || undefined,
   }
 }
 
