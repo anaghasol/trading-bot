@@ -199,21 +199,40 @@ export async function getOrders(daysBack = 10): Promise<SchwabOrder[]> {
 
 export async function getQuote(symbol: string): Promise<{ symbol: string; price: number; change_pct: number; volume: number } | null> {
   try {
-    // Market data from data.alpaca.markets (IEX feed = free, 15-min delay for paper)
-    const res = await fetch(
+    // PRIMARY: latest trade price — reflects actual market activity, not a stale bar close.
+    // bars/latest on IEX can be hours or days behind for thin/new stocks (caused SPCX $27 vs $163 bug).
+    const tradeRes = await fetch(
+      `${DATA_URL}/stocks/${symbol}/trades/latest?feed=iex`,
+      { headers: headers(), cache: 'no-store' }
+    )
+    if (tradeRes.ok) {
+      const td = await tradeRes.json() as { trade?: { p: number; s: number; t: string } }
+      if (td.trade?.p && td.trade.p > 0) {
+        const ageMs  = Date.now() - new Date(td.trade.t).getTime()
+        const utcH   = new Date().getUTCHours() + new Date().getUTCMinutes() / 60
+        const mktOpen = utcH >= 13.5 && utcH <= 20
+        // Accept trade price if: market closed (use whatever we have) OR trade < 2h old
+        if (!mktOpen || ageMs < 7_200_000) {
+          return { symbol, price: td.trade.p, change_pct: 0, volume: td.trade.s }
+        }
+        // Trade is >2h stale during market hours — fall through to bar fallback but log it
+        console.warn(`[alpaca] getQuote ${symbol}: latest trade is ${Math.floor(ageMs / 60000)}m old — falling back to bar`)
+      }
+    }
+
+    // FALLBACK: bar close (more stale, but better than nothing)
+    const barRes = await fetch(
       `${DATA_URL}/stocks/${symbol}/bars/latest?feed=iex`,
       { headers: headers(), cache: 'no-store' }
     )
-    if (!res.ok) return null
-    const data = await res.json() as { bar?: { c: number; o: number; v: number } }
+    if (!barRes.ok) return null
+    const data = await barRes.json() as { bar?: { c: number; o: number; v: number } }
     if (!data.bar) return null
 
-    const price = data.bar.c
-    const open  = data.bar.o
     return {
       symbol,
-      price,
-      change_pct: open > 0 ? ((price - open) / open) * 100 : 0,
+      price:      data.bar.c,
+      change_pct: data.bar.o > 0 ? ((data.bar.c - data.bar.o) / data.bar.o) * 100 : 0,
       volume:     data.bar.v,
     }
   } catch {

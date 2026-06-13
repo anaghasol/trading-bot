@@ -347,8 +347,9 @@ export default function DashboardPage() {
   const [stamp, setStamp] = useState('')
   const [alertOn, setAlertOn] = useState(true)
   const [tg, setTg] = useState<TgStatus | null>(null)
-  const [lastScan, setLastScan] = useState<{ ts: string; regime: string; vix: number; market: string; candidates: number; trades: number } | null>(null)
+  const [lastScan, setLastScan] = useState<{ ts: string; regime: string; vix: number; market: string; spy_above_sma?: boolean; candidates: number; trades: number } | null>(null)
   const [scanning, setScanning] = useState(false)
+  const [showRegimeInfo, setShowRegimeInfo] = useState(false)
   const market = useMarketClock()
   const profile = PROFILES[broker]
 
@@ -405,6 +406,10 @@ export default function DashboardPage() {
 
   async function forceScan() {
     if (scanning) return
+    if (pos.length >= 3) {
+      const ok = window.confirm(`Run AI scan with ${pos.length} positions already open?\nEngine will respect position limits — no over-buying.`)
+      if (!ok) return
+    }
     setScanning(true)
     try {
       await fetch('/api/scan-now', { method: 'POST' })
@@ -663,9 +668,28 @@ export default function DashboardPage() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 12px', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, fontSize: '0.7rem', color: 'var(--fg-3)', flexWrap: 'wrap' }}>
                 <span style={{ color: stale ? 'var(--amber)' : 'var(--fg-2)' }}>⏱ Last scan: <b style={{ color: stale ? 'var(--amber)' : 'var(--fg-1)', fontFamily: 'var(--font-mono)' }}>{scanEt} ET</b>{stale ? ` (${scanAgeMin}m ago)` : ''}</span>
                 <span style={{ color: 'var(--divider)' }}>·</span>
-                <span>Regime: <b style={{ color: mktColor }}>{lastScan.market}</b></span>
+                <span style={{ position: 'relative' }}>
+                  Regime:{' '}
+                  <b
+                    style={{ color: mktColor, cursor: 'pointer', borderBottom: `1px dashed ${mktColor}` }}
+                    onClick={() => setShowRegimeInfo((v) => !v)}
+                    title="Click for explanation"
+                  >{lastScan.market} ▾</b>
+                  {showRegimeInfo && (
+                    <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 50, background: 'var(--bg-2)', border: `1px solid ${mktColor}`, borderRadius: 7, padding: '10px 13px', width: 260, fontSize: '0.72rem', color: 'var(--fg-2)', lineHeight: 1.6, boxShadow: '0 4px 16px rgba(0,0,0,0.4)' }}>
+                      <div style={{ fontWeight: 700, color: mktColor, marginBottom: 5 }}>{lastScan.market} regime</div>
+                      {lastScan.market === 'GOOD' && <>VIX {lastScan.vix} <span style={{ color: 'var(--green)' }}>(below 22)</span> · SPY above 200-day SMA · Full positions allowed, base confidence gate.</>}
+                      {lastScan.market === 'TOUGH' && <>VIX {lastScan.vix} <span style={{ color: 'var(--amber)' }}>(22–28)</span> · Elevated volatility · Confidence gate raised +5pts, same position limit.</>}
+                      {lastScan.market === 'BAD' && (lastScan.spy_above_sma === false
+                        ? <>SPY <span style={{ color: 'var(--red)' }}>below 200-day SMA</span> · Downtrend risk · Confidence gate +12pts (floor 65%), max positions capped at 6.</>
+                        : <>VIX {lastScan.vix} <span style={{ color: 'var(--red)' }}>(above 28)</span> · High fear · Confidence gate +12pts (floor 65%), max positions capped at 6.</>
+                      )}
+                      <div style={{ marginTop: 8, color: 'var(--fg-3)', cursor: 'pointer', fontSize: '0.65rem' }} onClick={() => setShowRegimeInfo(false)}>✕ close</div>
+                    </div>
+                  )}
+                </span>
                 <span style={{ color: 'var(--divider)' }}>·</span>
-                <span>VIX <b style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.vix}</b></span>
+                <span title="CBOE Volatility Index — below 22 = calm, 22–28 = elevated, above 28 = fear">VIX <b style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.vix}</b></span>
                 <span style={{ color: 'var(--divider)' }}>·</span>
                 <span><b style={{ fontFamily: 'var(--font-mono)', color: lastScan.candidates > 0 ? 'var(--green)' : 'var(--fg-2)' }}>{lastScan.candidates}</b> candidates · <b style={{ fontFamily: 'var(--font-mono)' }}>{lastScan.trades}</b> trades this tick</span>
                 <span style={{ color: 'var(--divider)' }}>·</span>

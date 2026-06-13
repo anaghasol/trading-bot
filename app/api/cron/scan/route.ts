@@ -243,6 +243,30 @@ async function runScan(
       : await AlpacaBroker.getQuote(rec.symbol)
     if (!quote || quote.price <= 0) continue
 
+    // Alpaca IEX price sanity check: IEX bars can be stale for thin/new stocks.
+    // Cross-check against Yahoo Finance — if >30% apart, the IEX price is lying, skip the trade.
+    // (This caught SPCX being priced at $27 via stale IEX bar when market was at $163.)
+    if (!isSchwab) {
+      try {
+        const yhRes = await fetch(
+          `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${rec.symbol}&fields=regularMarketPrice`,
+          { headers: { 'User-Agent': 'Mozilla/5.0' } }
+        )
+        if (yhRes.ok) {
+          const yhData = await yhRes.json()
+          const yhPrice: number = yhData?.quoteResponse?.result?.[0]?.regularMarketPrice ?? 0
+          if (yhPrice > 0 && Math.abs(quote.price - yhPrice) / yhPrice > 0.30) {
+            const msg = `[alpaca] Stale IEX price ${rec.symbol}: IEX=$${quote.price.toFixed(2)} vs Yahoo=$${yhPrice.toFixed(2)} (${(Math.abs(quote.price - yhPrice)/yhPrice*100).toFixed(0)}% diff) — skipping trade`
+            console.warn(msg)
+            void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, message: msg })
+            continue
+          }
+          // If Yahoo agrees within 30%, use Yahoo price for entry — it's fresher
+          if (yhPrice > 0) quote.price = yhPrice
+        }
+      } catch { /* if Yahoo check fails, proceed with broker quote */ }
+    }
+
     // buy_zone intent: only execute if live price is actually inside the channel's zone.
     // If price is outside zone → skip this tick, wait for the right entry point.
     if (intent?.type === 'buy_zone' && intent.price_zone) {
@@ -326,11 +350,12 @@ async function runScan(
 
   // Save scan snapshot to tb_settings so the Live Monitor page can display it
   const scanSnapshot = {
-    ts:         new Date().toISOString(),
+    ts:           new Date().toISOString(),
     broker,
-    regime:     regime.label,
-    vix:        Math.round(vix * 10) / 10,
-    market:     marketTier,
+    regime:       regime.label,
+    vix:          Math.round(vix * 10) / 10,
+    market:       marketTier,
+    spy_above_sma: aboveSma,   // used by health bar popover to explain regime reason
     scanned,
     candidates,
     ranked:     ranked.length,
