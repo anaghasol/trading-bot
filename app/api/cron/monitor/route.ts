@@ -89,10 +89,10 @@ async function monitorBroker(
     return { closed: 0, partial: 0, statuses: ['daily_loss_limit_hit'] }
   }
 
-  // Load journal entries — filter by broker if column exists
+  // Load journal entries — include partial_exit_done flag for staged exit logic
   const { data: openTrades } = await db
     .from('tb_trades')
-    .select('id, symbol, entry_price, peak_pnl, created_at, strategy, reason')
+    .select('id, symbol, entry_price, peak_pnl, created_at, strategy, reason, partial_exit_done')
     .eq('status', 'OPEN')
 
   // Check for Telegram SELL signals in the last 2 hours (external signal reversal)
@@ -104,7 +104,16 @@ async function monitorBroker(
     .gte('created_at', tgCutoff)
   const tgSellSymbols = new Set((tgSells ?? []).map((r) => r.symbol as string))
 
-  const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string }>()
+  // Batch-load second-partial-done flags (one read for all trades, not per position)
+  // Stored in tb_settings as p2done_{id} so we don't need a schema change on tb_trades.
+  const p1DoneIds = (openTrades ?? []).filter((t) => t.partial_exit_done).map((t) => String(t.id))
+  const p2Keys = p1DoneIds.map((id) => `p2done_${id}`)
+  const { data: p2Rows } = p2Keys.length
+    ? await db.from('tb_settings').select('key, value').in('key', p2Keys)
+    : { data: [] }
+  const p2DoneSet = new Set((p2Rows ?? []).filter((r) => r.value).map((r) => r.key))
+
+  const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string; partial_done: boolean; p2_done: boolean }>()
   for (const t of openTrades ?? []) {
     const ep         = t.entry_price ?? 0
     const peakPnlPct = (t.peak_pnl as number) ?? 0
@@ -117,6 +126,8 @@ async function monitorBroker(
       entry_date:   (t.created_at as string)?.split('T')[0] ?? todayStr,
       strategy:     t.strategy ?? 'SWING',
       reason:       t.reason ?? '',
+      partial_done: !!(t.partial_exit_done),
+      p2_done:      p2DoneSet.has(`p2done_${t.id}`),
     })
   }
 
@@ -164,57 +175,88 @@ async function monitorBroker(
 
     const isSameDay   = meta.entry_date === todayStr
     const holdDays    = Math.round((Date.now() - new Date(meta.entry_date + 'T00:00:00Z').getTime()) / 86_400_000)
-    const target_price = meta.entry_price * (1 + INITIAL_STOP_PCT * 2)
+    const gainPct     = pos.pnl_pct  // shorthand
 
-    // Big-win lock: paper >15% intraday gain or live >12% → exit fully, don't wait for EOD.
-    // A pro human would bank an outlier intraday move rather than riding it back down.
-    const BIG_WIN_PCT = broker === 'alpaca_paper' ? 15 : 12
-    if (pos.pnl_pct >= BIG_WIN_PCT) {
-      const canExit = broker === 'alpaca_paper' || !isSameDay || pdt.can_day_trade
-      if (canExit && !holdSymbols.has(pos.symbol)) {
-        const order = await api.placeOrder(pos.symbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
-        if (order.status === 'PLACED') {
-          closed++
-          const pnl = pos.unrealized_pnl
-          runningPnl += pnl
-          if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl, pnl_pct: pos.pnl_pct, days_held: holdDays, closed_at: new Date().toISOString() }).eq('id', meta.id)
-          if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
-          await recordLearning({ symbol: pos.symbol, strategy: meta.strategy, pnl_pct: pos.pnl_pct, hold_days: holdDays, regime: 'NORMAL' })
-          const alertRow = { type: 'SELL', message: `[${broker}] BIG WIN LOCK ${pos.symbol} +${pos.pnl_pct.toFixed(1)}% — $${pnl.toFixed(2)} banked intraday`, symbol: pos.symbol, pnl }
-          const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
-          if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
-          await alertStopHit({ broker: broker as 'schwab' | 'alpaca_paper', symbol: pos.symbol, qty: Math.abs(pos.quantity), pnl, pnl_pct: pos.pnl_pct, exit_type: 'BIG_WIN' })
-          statuses.push(`${pos.symbol}: BIG WIN LOCK +${pos.pnl_pct.toFixed(1)}% $${pnl.toFixed(2)}`)
-          continue
-        }
+    // ── Staged Exit Intelligence ───────────────────────────────────────────────
+    // Three-tier profit taking based on current gain. Each tier fires once per trade.
+    //
+    //   Tier 1 (paper +8%, live +7%)  → sell 50%  — lock in the core gain
+    //   Tier 2 (paper +15%, live +12%)→ sell 50% of remaining — capture the extended move
+    //   Big-win lock (paper +20%, live+15%) → exit 100% remaining — don't ride a rocket back down
+    //
+    // After each tier the trailing stop (via checkExitCondition) handles the remaining shares.
+    // Tier state: partial_done (tb_trades column) for tier 1; p2done_{id} (tb_settings) for tier 2.
+
+    const P1_PCT    = broker === 'schwab' ? 7  : 8   // first partial trigger %
+    const P2_PCT    = broker === 'schwab' ? 12 : 15  // second partial trigger %
+    const BIG_WIN   = broker === 'schwab' ? 15 : 20  // full exit trigger %
+
+    const canExit   = broker === 'alpaca_paper' || !isSameDay || pdt.can_day_trade
+    const noHold    = !holdSymbols.has(pos.symbol)
+
+    // Tier 1 — first partial (+7% live / +8% paper): sell 50%
+    if (!meta.partial_done && gainPct >= P1_PCT && canExit) {
+      const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
+      const stopId = extractStopOrderId(meta.reason)
+      if (stopId) await api.cancelOrder(stopId)
+
+      const sellOrder = await api.placeOrder(pos.symbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
+      if (sellOrder.status === 'PLACED') {
+        partial++
+        const pnl = (pos.current_price - meta.entry_price) * partialQty
+        runningPnl += pnl
+
+        if (meta.id) await db.from('tb_trades').update({ peak_pnl: Math.max((meta.peak_price > 0 ? ((meta.peak_price - meta.entry_price) / meta.entry_price) * 100 : 0), gainPct), partial_exit_done: true }).eq('id', meta.id)
+        if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
+
+        const alertRow = { type: 'SELL', message: `[${broker}] PARTIAL-1 (50%) ${partialQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}% | $${pnl.toFixed(2)} locked`, symbol: pos.symbol, pnl }
+        const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
+        if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
+
+        statuses.push(`${pos.symbol}: PARTIAL-1 +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
+        continue
       }
     }
 
-    // Partial exit at 2:1 (+5%)
-    if (shouldTakePartial(pos.current_price, meta.entry_price, target_price, false)) {
-      const canExit = broker === 'alpaca_paper' || !isSameDay || pdt.can_day_trade
-      if (canExit) {
-        const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
-        const stopId = extractStopOrderId(meta.reason)
-        if (stopId) await api.cancelOrder(stopId)
+    // Tier 2 — second partial (+12% live / +15% paper): sell 50% of remaining position
+    if (meta.partial_done && !meta.p2_done && gainPct >= P2_PCT && canExit && noHold) {
+      const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
+      const sellOrder = await api.placeOrder(pos.symbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
+      if (sellOrder.status === 'PLACED') {
+        partial++
+        const pnl = (pos.current_price - meta.entry_price) * partialQty
+        runningPnl += pnl
 
-        const sellOrder = await api.placeOrder(pos.symbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
-        if (sellOrder.status === 'PLACED') {
-          partial++
-          const pnl = (pos.current_price - meta.entry_price) * partialQty
-          runningPnl += pnl
-          const gainPct = ((pos.current_price - meta.entry_price) / meta.entry_price) * 100
+        void db.from('tb_settings').upsert({ key: `p2done_${meta.id}`, value: new Date().toISOString() })
+        if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
 
-          if (meta.id) await db.from('tb_trades').update({ peak_pnl: Math.max((meta.peak_price > 0 ? ((meta.peak_price - meta.entry_price) / meta.entry_price) * 100 : 0), pos.pnl_pct), partial_exit_done: true }).eq('id', meta.id)
-          if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
+        const alertRow = { type: 'SELL', message: `[${broker}] PARTIAL-2 (50% remaining) ${partialQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}% | $${pnl.toFixed(2)} locked`, symbol: pos.symbol, pnl }
+        const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
+        if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
 
-          const alertRow = { type: 'SELL', message: `[${broker}] PARTIAL ${partialQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}% | $${pnl.toFixed(2)} locked`, symbol: pos.symbol, pnl }
-          const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
-          if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
+        statuses.push(`${pos.symbol}: PARTIAL-2 +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
+        continue
+      }
+    }
 
-          statuses.push(`${pos.symbol}: PARTIAL +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
-          continue
-        }
+    // Big-win lock — exit remaining fully (+15% live / +20% paper)
+    // At this point tiers 1+2 have already taken ~75% of the original position;
+    // this banks the final slice and avoids giving back a large intraday rocket move.
+    if (gainPct >= BIG_WIN && canExit && noHold) {
+      const order = await api.placeOrder(pos.symbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
+      if (order.status === 'PLACED') {
+        closed++
+        const pnl = pos.unrealized_pnl
+        runningPnl += pnl
+        if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl, pnl_pct: gainPct, days_held: holdDays, closed_at: new Date().toISOString() }).eq('id', meta.id)
+        if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
+        await recordLearning({ symbol: pos.symbol, strategy: meta.strategy, pnl_pct: gainPct, hold_days: holdDays, regime: 'NORMAL' })
+        const alertRow = { type: 'SELL', message: `[${broker}] BIG WIN LOCK ${pos.symbol} +${gainPct.toFixed(1)}% — $${pnl.toFixed(2)} banked`, symbol: pos.symbol, pnl }
+        const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
+        if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
+        await alertStopHit({ broker: broker as 'schwab' | 'alpaca_paper', symbol: pos.symbol, qty: Math.abs(pos.quantity), pnl, pnl_pct: gainPct, exit_type: 'BIG_WIN' })
+        statuses.push(`${pos.symbol}: BIG WIN LOCK +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
+        continue
       }
     }
 
