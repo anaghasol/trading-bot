@@ -533,6 +533,37 @@ export function getSector(symbol: string): string {
   return 'OTHER'
 }
 
+// ── Opening Range Breakout helper ────────────────────────────────────────────
+// Returns the opening range high (max of first 30 min 5-min bar highs) or null
+// if too early (range not formed yet) or outside meaningful ORB window.
+// Only called for paper mode candidates — adds 2pts to score on breakout.
+async function getOpeningRangeHigh(symbol: string): Promise<number | null> {
+  // Don't evaluate until 30 min after market open (14:00 UTC in EDT, June)
+  // and stop caring after 3 PM ET (19:00 UTC) — intraday ORB loses edge late day
+  const utcH = new Date().getUTCHours() + new Date().getUTCMinutes() / 60
+  if (utcH < 14.0 || utcH > 19.0) return null
+
+  try {
+    const res = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=5m&range=1d`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' } }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const bars = data.chart?.result?.[0]
+    if (!bars) return null
+
+    // First 6 bars = first 30 minutes of the trading session (5-min intervals)
+    const highs: number[] = bars.indicators?.quote?.[0]?.high ?? []
+    const orbHighs = highs.slice(0, 6).filter((h: number) => h > 0)
+    if (orbHighs.length === 0) return null
+
+    return Math.max(...orbHighs)
+  } catch {
+    return null
+  }
+}
+
 // ── Momentum Spike Scanner ────────────────────────────────────────────────────
 // Catches explosive movers and new IPOs that the EMA scanner misses:
 //   - Works with as little as 20 days of data (EMA scanner needs ≥60)
@@ -658,6 +689,18 @@ export async function scanMomentumSpike(
         const e50  = ema50arr.at(-1)!
         const s200 = sma(priceSeries, Math.min(200, priceSeries.length))
 
+        // ORB: in paper (loose) mode, check if price just broke above the opening range high.
+        // Only runs after 10:00 ET — adds 2 pts and flags setup as 'ORB' for the AI prompt.
+        let setup_type: EMASetup['setup_type'] = 'MOMENTUM'
+        if (opts.loose) {
+          const orbHigh = await getOpeningRangeHigh(symbol)
+          if (orbHigh && price > orbHigh) {
+            score += 2
+            reasons.push(`ORB breakout above $${orbHigh.toFixed(2)}`)
+            setup_type = 'BREAKOUT'  // BREAKOUT type gets the AI excited
+          }
+        }
+
         setups.push({
           symbol, price, ema20: e20, ema50: e50, sma200: s200,
           rsi: rsiVal, volume_ratio: vol_ratio,
@@ -665,7 +708,7 @@ export async function scanMomentumSpike(
           change_5d: Math.round(change_5d * 100) / 100,
           dist_from_ema20_pct: e20 > 0 ? Math.round(((price - e20) / e20) * 10000) / 100 : 0,
           pullback_score: Math.min(10, score),
-          setup_type: 'MOMENTUM',
+          setup_type,
           reason: reasons.join(', '),
           candle_pattern,
           rs_vs_spy,
