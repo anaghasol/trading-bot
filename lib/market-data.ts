@@ -78,11 +78,11 @@ export const WATCHLIST = {
 // Alpaca paper — wide aggressive universe (high-beta, EMA-responsive)
 export const ALPACA_WATCHLIST = {
   MEGA:         ['NVDA', 'AMD', 'MSFT', 'AAPL', 'TSLA', 'META', 'GOOGL', 'AMZN', 'AVGO'],
-  GROWTH:       ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP', 'CRWD', 'INTC'],
-  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT', 'TSLL', 'NVDL', 'APP', 'UPST', 'SOXL'],
-  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY', 'LUNR', 'OKLO', 'ASTS', 'RDDT', 'SPIR', 'TEM', 'POET'],
+  GROWTH:       ['PLTR', 'COIN', 'SOFI', 'RKLB', 'IONQ', 'ACHR', 'HOOD', 'SHOP', 'CRWD', 'INTC', 'AFRM', 'DKNG', 'TTD', 'CELH', 'DUOL'],
+  MOMENTUM:     ['MSTR', 'SMCI', 'ARM', 'UBER', 'ABNB', 'NFLX', 'SPOT', 'TSLL', 'NVDL', 'APP', 'UPST', 'SOXL', 'RIVN', 'SNAP', 'ZM'],
+  VOLATILE:     ['BBAI', 'SOUN', 'MARA', 'RIOT', 'HIMS', 'RXRX', 'JOBY', 'LUNR', 'OKLO', 'ASTS', 'RDDT', 'SPIR', 'TEM', 'POET', 'GME', 'MRNA', 'PTON'],
   SPACE_DEFENSE:['SPCX', 'RKLB', 'ASTS', 'LUNR', 'JOBY', 'ACHR', 'IONQ', 'OKLO'],
-  ETF:          ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ', 'IWM'],
+  ETF:          ['SPY', 'QQQ', 'ARKK', 'SOXL', 'TQQQ', 'IWM', 'SPXL', 'LABU', 'FAS'],
   CRYPTO_PROXY: ['MSTR', 'COIN', 'MARA', 'RIOT', 'CLSK', 'IBIT'],
 }
 
@@ -541,7 +541,8 @@ export function getSector(symbol: string): string {
 
 export async function scanMomentumSpike(
   symbols: string[],
-  spyChange1d = 0
+  spyChange1d = 0,
+  opts: { loose?: boolean } = {}
 ): Promise<EMASetup[]> {
   const setups: EMASetup[] = []
 
@@ -577,13 +578,18 @@ export async function scanMomentumSpike(
     } catch { /* skip batch */ }
   }
 
-  // Quick pre-filter: only fetch OHLCV for symbols actually moving with elevated volume pace
+  // Quick pre-filter: only fetch OHLCV for symbols actually moving with elevated volume pace.
+  // Paper (loose) mode casts a wider net: +0.8% and 1.4× pace to generate more candidates;
+  // live stays strict at +1.5% and 2.0× so we only surface truly explosive moves.
+  const MIN_CHANGE   = opts.loose ? 0.8 : 1.5
+  const MIN_VOL_PACE = opts.loose ? 1.4 : 2.0
+
   const candidates = symbols.filter(sym => {
     const q = quoteMap[sym]
     if (!q || q.price <= 0) return false
-    if (q.changePct < 1.5) return false
+    if (q.changePct < MIN_CHANGE) return false
     const volPace = q.avgVolume > 0 ? q.volume / (q.avgVolume * sf) : 0
-    return volPace >= 2.0   // 2x the expected volume pace for this time of day
+    return volPace >= MIN_VOL_PACE
   })
 
   console.log(`[momentum] ${symbols.length} scanned → ${candidates.length} candidates (sf=${sf.toFixed(2)}): ${candidates.slice(0, 8).join(', ')}`)

@@ -155,14 +155,23 @@ function mergeResults(
   broker: string
 ): Recommendation[] {
 
-  const openaiMap = new Map(openaiPicks.map((p) => [p.symbol, p.confidence]))
+  const openaiMap  = new Map(openaiPicks.map((p) => [p.symbol, p.confidence]))
+  const isPaper    = broker === 'alpaca_paper'
+  const oaiOnline  = openaiPicks.length > 0  // did OpenAI actually respond this tick?
 
   return claudePicks
     .filter((p) => !held.includes(p.symbol))
     .map((p) => {
-      const oConf        = openaiMap.get(p.symbol) ?? 0
-      const merged_conf  = oConf > 0 ? Math.round((p.confidence + oConf) / 2) : Math.round(p.confidence * 0.9)
-      const ema_setup    = setups.find((s) => s.symbol === p.symbol)
+      const oConf = openaiMap.get(p.symbol) ?? 0
+
+      // When OpenAI is offline/unset, use Claude confidence directly — no penalty.
+      // Penalizing Claude-only picks 10% was blocking all paper trades because the
+      // penalized score fell below the gate even when Claude was clearly bullish.
+      const merged_conf = oConf > 0
+        ? Math.round((p.confidence + oConf) / 2)
+        : p.confidence  // Claude-only: no discount
+
+      const ema_setup = setups.find((s) => s.symbol === p.symbol)
 
       return {
         symbol:      p.symbol,
@@ -179,12 +188,21 @@ function mergeResults(
         ema_score:   ema_setup?.pullback_score ?? 0,
       }
     })
-    // Require BOTH AIs to agree at >= threshold (or just Claude if OpenAI unavailable)
     .filter((p) => {
+      // Paper mode: Claude alone is enough — we're here to collect data aggressively.
+      // If OpenAI IS online, require it to agree within 10pts (not 5) so a 55% Claude
+      // pick isn't killed by a 44% OpenAI rating on an admittedly noisy paper setup.
+      if (isPaper) {
+        if (oaiOnline && p.openai_conf > 0) {
+          return p.claude_conf >= minConf && p.openai_conf >= minConf - 10
+        }
+        return p.claude_conf >= minConf  // Claude alone runs the paper lab
+      }
+      // Live (Schwab): both must agree — real money needs consensus.
       if (p.openai_conf > 0) {
         return p.claude_conf >= minConf && p.openai_conf >= minConf - 5
       }
-      return p.claude_conf >= minConf  // OpenAI unavailable → Claude-only gate
+      return p.claude_conf >= minConf
     })
     .sort((a, b) => b.confidence - a.confidence)
 }
@@ -245,7 +263,7 @@ export async function getRecommendations(
   const isPaper = isPaperBroker(broker)
   const [emaSetups, momentumSetups] = await Promise.all([
     scanForEMAPullback(symbols, { loose: isPaper }),
-    isPaper ? scanMomentumSpike(symbols, regime.spy_change) : Promise.resolve([]),
+    isPaper ? scanMomentumSpike(symbols, regime.spy_change, { loose: true }) : Promise.resolve([]),
   ])
 
   // Merge: momentum setups take priority (they're rarer and more urgent)
@@ -275,14 +293,19 @@ export async function getRecommendations(
   let learning = 'No history yet'
   try { const ctx = await buildLearningContext(); learning = ctx.summary } catch { /* ignore */ }
 
-  // 4. Dynamic gate: lower by 5pts in GOOD market conditions (low VIX, SPY above 200SMA)
-  // Paper gets more aggressive — we're here to catch opportunities, not be cautious
+  // 4. Dynamic gate: widen in good markets, tighten in caution.
+  // Paper (baseConf=55): GOOD drops to 50, CAUTION raises to 60, normal stays 55.
+  // Live  (baseConf=78): GOOD drops to 75, CAUTION stays 78, normal stays 78.
   const baseConf = profile.min_confidence
-  const minConf = isPaper && regime.vix < 20 && regime.spy_above_200sma
-    ? Math.max(baseConf - 5, 60)   // GOOD market: paper gate drops to 70% (from 75%)
-    : isPaper && regime.regime === 'CAUTION'
-      ? baseConf                    // CAUTION: hold at base
-      : baseConf                    // live always at base
+  const minConf = isPaper
+    ? (regime.vix < 20 && regime.spy_above_200sma
+        ? Math.max(baseConf - 5, 45)  // paper GOOD: 55→50 — cast wide, collect data
+        : regime.regime === 'CAUTION'
+          ? baseConf + 5              // paper CAUTION: 55→60 — tighten on risky days
+          : baseConf)                 // paper normal: 55
+    : (regime.vix < 20 && regime.spy_above_200sma
+        ? Math.max(baseConf - 3, 73)  // live GOOD: 78→75
+        : baseConf)                   // live strict: 78
 
   // 5. Claude + OpenAI IN PARALLEL — one call each
   const [claudePicks, openaiPicks] = await Promise.all([
