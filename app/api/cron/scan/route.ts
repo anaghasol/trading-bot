@@ -123,7 +123,9 @@ async function runScan(
   // Uses Yahoo price for each position (not Alpaca IEX) to avoid inflated cap readings
   // from stale IEX data — then tracks per-trade running exposure so multiple picks
   // in one scan run don't collectively bypass the cap.
-  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.75
+  // Paper: 90% of equity = ~$90K max on a $100K account. No margin needed.
+  // Live (Schwab): 70% max — real money stays conservative with extra buffer.
+  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.90
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
   if (totalMarketValue / equity > MAX_EXPOSURE) {
     return { trades_made: 0, message: `[${broker}] Exposure cap: $${totalMarketValue.toFixed(0)}/$${equity.toFixed(0)} (${(totalMarketValue/equity*100).toFixed(0)}% > ${MAX_EXPOSURE*100}%)` }
