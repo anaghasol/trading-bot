@@ -204,16 +204,22 @@ export async function GET(req: Request) {
         await db.from('tb_alerts').insert({ type: 'INFO', symbol: signal.symbols[0] ?? null, message: learnMsg })
 
         const isMacroSignal = signal.symbols.length === 0
+        // Only update macro stance when the signal actually discusses market/index direction.
+        // Personal account updates, options P/L summaries, and "X trades closed" messages
+        // have no directional info and should never flip the scanner's macro gate.
+        const hasMacroKeyword = /\b(SPX|SPY|QQQ|IWM|RUT|NDX|DJI|market|indices|index|gap.?down|gap.?up|broad.?market|macro|regime|risk.?off|risk.?on|sell.?off|rally|correction)\b/i.test(signal.summary)
         if (isMacroSignal) {
           await db.from('tb_learning').insert({
             symbol: null, source: ch.source, sentiment: signal.sentiment,
             sector: signal.sector ?? null, insight: signal.summary, created_at: new Date().toISOString(),
           })
-          if (signal.sentiment === 'bearish') {
-            await db.from('tb_settings').upsert({ key: 'tg_macro_stance', value: JSON.stringify({ stance: 'bearish', set_at: new Date().toISOString(), insight: signal.summary }) })
-            await tgSend(`🛑 *Macro bearish stance saved* (${ch.name}) — AI scanner will pause new entries for 18h\n${signal.summary}`)
-          } else if (signal.sentiment === 'bullish') {
-            await db.from('tb_settings').upsert({ key: 'tg_macro_stance', value: JSON.stringify({ stance: 'bullish', set_at: new Date().toISOString(), insight: signal.summary }) })
+          if (hasMacroKeyword) {
+            if (signal.sentiment === 'bearish') {
+              await db.from('tb_settings').upsert({ key: 'tg_macro_stance', value: JSON.stringify({ stance: 'bearish', set_at: new Date().toISOString(), insight: signal.summary }) })
+              await tgSend(`🛑 *Macro bearish stance saved* (${ch.name}) — AI scanner will pause new entries for 18h\n${signal.summary}`)
+            } else if (signal.sentiment === 'bullish') {
+              await db.from('tb_settings').upsert({ key: 'tg_macro_stance', value: JSON.stringify({ stance: 'bullish', set_at: new Date().toISOString(), insight: signal.summary }) })
+            }
           }
         } else {
           for (const sym of signal.symbols) {

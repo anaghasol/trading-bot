@@ -220,7 +220,7 @@ async function monitorBroker(
 
         if (meta.id) {
           await db.from('tb_trades').update({ peak_pnl: Math.max((meta.peak_price > 0 ? ((meta.peak_price - meta.entry_price) / meta.entry_price) * 100 : 0), gainPct) }).eq('id', meta.id)
-          void db.from('tb_settings').upsert({ key: `p1done_${meta.id}`, value: new Date().toISOString() })
+          await db.from('tb_settings').upsert({ key: `p1done_${meta.id}`, value: new Date().toISOString() })
         }
         if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
 
@@ -242,7 +242,7 @@ async function monitorBroker(
         const pnl = (pos.current_price - meta.entry_price) * partialQty
         runningPnl += pnl
 
-        void db.from('tb_settings').upsert({ key: `p2done_${meta.id}`, value: new Date().toISOString() })
+        await db.from('tb_settings').upsert({ key: `p2done_${meta.id}`, value: new Date().toISOString() })
         if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
 
         const alertRow = { type: 'SELL', message: `[${broker}] PARTIAL-2 (50% remaining) ${partialQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}% | $${pnl.toFixed(2)} locked`, symbol: pos.symbol, pnl }
