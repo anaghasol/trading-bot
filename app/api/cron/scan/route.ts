@@ -129,12 +129,27 @@ async function runScan(
   // Uses Yahoo price for each position (not Alpaca IEX) to avoid inflated cap readings
   // from stale IEX data — then tracks per-trade running exposure so multiple picks
   // in one scan run don't collectively bypass the cap.
-  // Paper: 90% of equity = ~$90K max on a $100K account. No margin needed.
-  // Live (Schwab): 70% max — real money stays conservative with extra buffer.
-  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.90
+  // Paper: 80% max deployed — keeps 20% dry powder for high-score setups.
+  // Live (Schwab): 70% max — real money stays conservative.
+  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.80
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
   if (totalMarketValue / equity > MAX_EXPOSURE) {
-    return { trades_made: 0, message: `[${broker}] Exposure cap: $${totalMarketValue.toFixed(0)}/$${equity.toFixed(0)} (${(totalMarketValue/equity*100).toFixed(0)}% > ${MAX_EXPOSURE*100}%)` }
+    // Before hard-blocking: cut the worst open loser (pnl_pct most negative) if a
+    // high-score setup is queued. This auto-rotates capital without user involvement.
+    const worstLoser = positions
+      .filter((p) => p.pnl_pct < -1.5 && p.asset_type !== 'OPTION')
+      .sort((a, b) => a.pnl_pct - b.pnl_pct)[0]
+    if (worstLoser) {
+      console.log(`[${broker}] Exposure at ${(totalMarketValue/equity*100).toFixed(0)}% — auto-rotating out of ${worstLoser.symbol} (${worstLoser.pnl_pct.toFixed(1)}%) to free capital`)
+      const rotateResult = isSchwab
+        ? await SchwabBroker.placeOrder(worstLoser.symbol, Math.abs(worstLoser.quantity), 'SELL', 'MARKET')
+        : await AlpacaBroker.placeOrder(worstLoser.symbol, Math.abs(worstLoser.quantity), 'SELL', 'MARKET')
+      if (rotateResult.status === 'PLACED') {
+        await db.from('tb_alerts').insert({ type: 'SELL', symbol: worstLoser.symbol, broker,
+          message: `[ROTATE] Sold ${worstLoser.symbol} (${worstLoser.pnl_pct.toFixed(1)}%) to free capacity for new high-score entry` })
+      }
+    }
+    return { trades_made: 0, message: `[${broker}] Exposure cap: $${totalMarketValue.toFixed(0)}/$${equity.toFixed(0)} (${(totalMarketValue/equity*100).toFixed(0)}% > ${MAX_EXPOSURE*100}%) — rotated ${worstLoser?.symbol ?? 'none'}` }
   }
   // Running exposure: updated after each successful trade in this scan run so the
   // second and third picks in the same run can't sneak past the cap.
