@@ -75,27 +75,43 @@ export async function getAccountBalance(): Promise<number | null> {
 
 // ── Positions ─────────────────────────────────────────────────────────────────
 
+/** Parse OCC option symbol into a human-readable label.
+ *  e.g. NVDA240119P00500000 → "NVDA 500P 1/19" */
+function parseOCCSymbol(occ: string): string {
+  try {
+    const m = occ.match(/^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/)
+    if (!m) return occ
+    const [, und, yy, mm, dd, type, strikeRaw] = m
+    const strike = parseInt(strikeRaw, 10) / 1000
+    return `${und} $${strike % 1 === 0 ? strike.toFixed(0) : strike.toFixed(1)}${type} ${parseInt(mm)}/${parseInt(dd)}`
+  } catch { return occ }
+}
+
 export async function getPositions(): Promise<Position[]> {
   const data = await get<Record<string, unknown>[]>('/positions')
   if (!data) return []
 
   return data.map((p) => {
-    const qty      = parseFloat(String(p.qty ?? 0))
-    const avg_cost = parseFloat(String(p.avg_entry_price ?? 0))
+    const qty       = parseFloat(String(p.qty ?? 0))
+    const avg_cost  = parseFloat(String(p.avg_entry_price ?? 0))
     const cur_price = parseFloat(String(p.current_price ?? avg_cost))
-    const unreal   = parseFloat(String(p.unrealized_pl ?? 0))
-    const pnl_pct  = avg_cost > 0 ? ((cur_price - avg_cost) / avg_cost) * 100 : 0
+    const unreal    = parseFloat(String(p.unrealized_pl ?? 0))
+    const isOption  = String(p.asset_class ?? '') === 'us_option'
+    // Options P&L is per-share of the option premium (×100 per contract is already in unrealized_pl)
+    const pnl_pct   = avg_cost > 0 ? ((cur_price - avg_cost) / avg_cost) * 100 : 0
+    // For options show parsed OCC label; for equity show raw symbol
+    const displaySymbol = isOption ? parseOCCSymbol(String(p.symbol)) : String(p.symbol)
 
     return {
-      symbol:        String(p.symbol),
-      quantity:      qty,
+      symbol:         displaySymbol,
+      quantity:       qty,
       avg_cost,
-      current_price: cur_price,
-      market_value:  parseFloat(String(p.market_value ?? 0)),
+      current_price:  cur_price,
+      market_value:   parseFloat(String(p.market_value ?? 0)),
       unrealized_pnl: unreal,
-      pnl_pct:       Math.round(pnl_pct * 100) / 100,
-      peak_pnl:      0,
-      asset_type:    'EQUITY' as const,
+      pnl_pct:        Math.round(pnl_pct * 100) / 100,
+      peak_pnl:       0,
+      asset_type:     isOption ? 'OPTION' as const : 'EQUITY' as const,
     }
   })
 }

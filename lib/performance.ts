@@ -36,13 +36,16 @@ export interface PerformanceStats {
   by_strategy:       Record<string, StrategyStats>  // breakdown per setup type
 }
 
-export async function getPerformanceStats(days = 30): Promise<PerformanceStats> {
+export async function getPerformanceStats(days = 30, broker?: string): Promise<PerformanceStats> {
   const db   = createServiceClient()
   const from = new Date(Date.now() - days * 86_400_000).toISOString()
 
+  let tradesQuery = db.from('tb_trades').select('pnl, pnl_pct, strategy, created_at, closed_at, symbol, broker')
+    .eq('status', 'CLOSED').gte('closed_at', from).order('closed_at')
+  if (broker) tradesQuery = tradesQuery.eq('broker', broker)
+
   const [tradesResult, accountResult, dailySummaryResult] = await Promise.all([
-    db.from('tb_trades').select('pnl, pnl_pct, strategy, created_at, closed_at, symbol')
-      .eq('status', 'CLOSED').gte('closed_at', from).order('closed_at'),
+    tradesQuery,
     db.from('tb_account').select('balance, total_pnl').order('id', { ascending: false }).limit(1).single(),
     db.from('tb_daily_summary').select('daily_pnl, date').order('date', { ascending: false }).limit(30),
   ])

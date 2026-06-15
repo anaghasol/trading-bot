@@ -860,7 +860,16 @@ export default function DashboardPage() {
                               <span style={{ color: pnlColor(p.pnl_pct), fontWeight: 600 }}>{p2(p.pnl_pct)}</span>
                             </td>
                             <td style={{ textAlign: 'right' }}>
-                              {(() => {
+                              {p.asset_type === 'OPTION' ? (
+                                // Options: show profit target (50%) and current gain
+                                <div style={{ lineHeight: 1.25, cursor: 'default' }}
+                                     title={`Target: 50% profit (close at $${(p.avg_cost * 0.5).toFixed(2)} premium) or ≤7 DTE`}>
+                                  <span style={{ color: p.pnl_pct >= 50 ? '#13c98e' : p.pnl_pct < 0 ? '#f87171' : '#fbbf24', fontWeight: 600, fontSize: '0.72rem' }}>
+                                    {p.pnl_pct >= 50 ? '✅ target' : p.pnl_pct < 0 ? '▼ debit' : '⏳ hold'}
+                                  </span>
+                                  <span style={{ color: 'var(--fg-3)', fontSize: '0.65rem', display: 'block' }}>50% exit</span>
+                                </div>
+                              ) : (() => {
                                 const { floor, trail, color } = ladderStatus(p.pnl_pct)
                                 const tip = trail === '—'
                                   ? 'Below +3% — initial stop protecting downside'
