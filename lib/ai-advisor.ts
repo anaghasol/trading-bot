@@ -321,8 +321,18 @@ export async function getRecommendations(
     sentiment = sentResult
   } catch { /* non-fatal — proceed without news */ }
 
-  const setups = rawSetups.filter((s) => (sentiment.symbolScores[s.symbol] ?? 0) >= -3)
-  const aiLimit = isPaper ? 12 : 6
+  // Live (Schwab real $): drop at score ≤-2 — one confirmed bearish article is enough to skip.
+  // Paper (Alpaca): drop at score ≤-3 — need multiple bearish signals before cutting a candidate.
+  const bearishCutoff = isPaper ? -3 : -2
+  const setups = rawSetups.filter((s) => {
+    const score = sentiment.symbolScores[s.symbol] ?? 0
+    if (score <= bearishCutoff) {
+      console.log(`[ai-advisor] DROPPED ${s.symbol} (news score ${score} ≤ ${bearishCutoff} ${isPaper ? 'paper' : 'live'} cutoff)`)
+      return false
+    }
+    return true
+  })
+  const aiLimit  = isPaper ? 12 : 6
   const aiSetups = setups.slice(0, aiLimit)
 
   // 6. Claude + OpenAI IN PARALLEL — one call each, enriched with news context
