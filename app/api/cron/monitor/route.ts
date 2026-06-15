@@ -81,12 +81,20 @@ async function monitorBroker(
   const equity = balance ?? (broker === 'schwab' ? 2000 : 100000)
   const pdt    = analyzePdtStatus(recentOrders, equity)
 
-  const { data: acctRow } = await db.from('tb_account').select('daily_pnl, id').order('id', { ascending: false }).limit(1).single()
-  const dailyPnl = acctRow?.daily_pnl ?? 0
+  // Compute today's realized P/L fresh from tb_trades — never trust stale tb_account.daily_pnl.
+  const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
+  const { data: todayClosedRows } = await db
+    .from('tb_trades')
+    .select('pnl')
+    .eq('status', 'CLOSED')
+    .gte('closed_at', todayStart)
+    .or(`broker.eq.${broker},broker.is.null`)
+  const dailyPnl = (todayClosedRows ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
+  const { data: acctRow } = await db.from('tb_account').select('id').order('id', { ascending: false }).limit(1).single()
 
   // Alpaca paper: no hard daily loss limit (it's fake money — let it ride to learn)
   if (broker === 'schwab' && isDailyLossExceeded(dailyPnl, equity)) {
-    return { closed: 0, partial: 0, statuses: ['daily_loss_limit_hit'] }
+    return { closed: 0, partial: 0, statuses: [`daily_loss_limit_hit (realized today: $${dailyPnl.toFixed(2)})`] }
   }
 
   // Load THIS BROKER'S open trades only.
@@ -95,7 +103,7 @@ async function monitorBroker(
   // then the Alpaca monitor can't find them. Include null-broker rows for legacy trades.
   const { data: openTrades } = await db
     .from('tb_trades')
-    .select('id, symbol, entry_price, peak_pnl, created_at, strategy, reason, partial_exit_done')
+    .select('id, symbol, entry_price, peak_pnl, created_at, strategy, reason')
     .eq('status', 'OPEN')
     .or(`broker.eq.${broker},broker.is.null`)
 
@@ -108,14 +116,14 @@ async function monitorBroker(
     .gte('created_at', tgCutoff)
   const tgSellSymbols = new Set((tgSells ?? []).map((r) => r.symbol as string))
 
-  // Batch-load second-partial-done flags (one read for all trades, not per position)
-  // Stored in tb_settings as p2done_{id} so we don't need a schema change on tb_trades.
-  const p1DoneIds = (openTrades ?? []).filter((t) => t.partial_exit_done).map((t) => String(t.id))
-  const p2Keys = p1DoneIds.map((id) => `p2done_${id}`)
-  const { data: p2Rows } = p2Keys.length
-    ? await db.from('tb_settings').select('key, value').in('key', p2Keys)
+  // Both partial-exit flags stored in tb_settings (no schema column needed).
+  // p1done_{id} = first partial taken; p2done_{id} = second partial taken.
+  const tradeIds = (openTrades ?? []).map((t) => String(t.id))
+  const partialKeys = tradeIds.flatMap((id) => [`p1done_${id}`, `p2done_${id}`])
+  const { data: partialRows } = partialKeys.length
+    ? await db.from('tb_settings').select('key, value').in('key', partialKeys)
     : { data: [] }
-  const p2DoneSet = new Set((p2Rows ?? []).filter((r) => r.value).map((r) => r.key))
+  const partialSet = new Set((partialRows ?? []).filter((r) => r.value).map((r) => r.key))
 
   const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string; partial_done: boolean; p2_done: boolean }>()
   for (const t of openTrades ?? []) {
@@ -130,8 +138,8 @@ async function monitorBroker(
       entry_date:   (t.created_at as string)?.split('T')[0] ?? todayStr,
       strategy:     t.strategy ?? 'SWING',
       reason:       t.reason ?? '',
-      partial_done: !!(t.partial_exit_done),
-      p2_done:      p2DoneSet.has(`p2done_${t.id}`),
+      partial_done: partialSet.has(`p1done_${t.id}`),
+      p2_done:      partialSet.has(`p2done_${t.id}`),
     })
   }
 
@@ -210,7 +218,10 @@ async function monitorBroker(
         const pnl = (pos.current_price - meta.entry_price) * partialQty
         runningPnl += pnl
 
-        if (meta.id) await db.from('tb_trades').update({ peak_pnl: Math.max((meta.peak_price > 0 ? ((meta.peak_price - meta.entry_price) / meta.entry_price) * 100 : 0), gainPct), partial_exit_done: true }).eq('id', meta.id)
+        if (meta.id) {
+          await db.from('tb_trades').update({ peak_pnl: Math.max((meta.peak_price > 0 ? ((meta.peak_price - meta.entry_price) / meta.entry_price) * 100 : 0), gainPct) }).eq('id', meta.id)
+          void db.from('tb_settings').upsert({ key: `p1done_${meta.id}`, value: new Date().toISOString() })
+        }
         if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
 
         const alertRow = { type: 'SELL', message: `[${broker}] PARTIAL-1 (50%) ${partialQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}% | $${pnl.toFixed(2)} locked`, symbol: pos.symbol, pnl }

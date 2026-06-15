@@ -96,13 +96,19 @@ async function runScan(
   const equity = balance ?? (isSchwab ? 2000 : 100000)
   const pdt    = analyzePdtStatus(orders, equity)
 
-  const { data: acctRow } = await db
-    .from('tb_account').select('daily_pnl').order('id', { ascending: false }).limit(1).single()
-  const dailyPnl = acctRow?.daily_pnl ?? 0
+  // Compute today's realized P/L fresh from tb_trades — never trust stale tb_account.daily_pnl.
+  const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
+  const { data: todayClosedRows } = await db
+    .from('tb_trades')
+    .select('pnl')
+    .eq('status', 'CLOSED')
+    .gte('closed_at', todayStart)
+    .or(isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper')
+  const dailyPnl = (todayClosedRows ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
 
   // Daily-loss breaker: enforced on real money (Schwab); paper lab runs looser.
   if (isSchwab && isDailyLossExceeded(dailyPnl, equity)) {
-    return { trades_made: 0, message: `[${broker}] Daily loss limit hit (−5%)` }
+    return { trades_made: 0, message: `[${broker}] Daily loss limit hit (realized today: $${dailyPnl.toFixed(2)})` }
   }
 
   // Macro bearish gate: if channel advisor said "hold off on new purchases" within last 18h, pause entries
