@@ -8,7 +8,8 @@ import { PROFILES } from '@/lib/strategy-profiles'
 const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/learning', 'Learning'], ['/settings', 'Settings']]
 
 type Broker = 'schwab' | 'alpaca_paper'
-interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string }
+interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string }
+interface StrategyStats { trades: number; wins: number; win_rate: number; total_pnl: number; avg_pnl: number; profit_factor: number }
 interface AuthStatus { ok: boolean; refresh_expires_at: string | null; hours_left: number | null }
 interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number; fetched_at?: string; auth_status?: AuthStatus; error?: string; reauth_url?: string }
 interface Quote { symbol: string; price: number; change_pct: number }
@@ -361,6 +362,7 @@ export default function DashboardPage() {
   const [lastScan, setLastScan] = useState<{ ts: string; regime: string; vix: number; market: string; spy_above_sma?: boolean; candidates: number; trades: number } | null>(null)
   const [scanning, setScanning] = useState(false)
   const [showRegimeInfo, setShowRegimeInfo] = useState(false)
+  const [perfData, setPerfData] = useState<Record<string, StrategyStats> | null>(null)
   const market = useMarketClock()
   const profile = PROFILES[broker]
 
@@ -396,6 +398,10 @@ export default function DashboardPage() {
     // Last scan snapshot for the health bar (cheap Supabase read)
     fetch(`/api/settings?key=last_scan_${b}`).then(r => r.json()).then(({ value }) => {
       try { if (value) setLastScan(JSON.parse(value)) } catch { /* ignore */ }
+    }).catch(() => {})
+    // Strategy ranking — lazy, non-blocking
+    fetch(`/api/performance?broker=${b}&days=30`).then(r => r.json()).then(d => {
+      if (d?.by_strategy) setPerfData(d.by_strategy as Record<string, StrategyStats>)
     }).catch(() => {})
   }, [])
 
@@ -860,16 +866,25 @@ export default function DashboardPage() {
                               <span style={{ color: pnlColor(p.pnl_pct), fontWeight: 600 }}>{p2(p.pnl_pct)}</span>
                             </td>
                             <td style={{ textAlign: 'right' }}>
-                              {p.asset_type === 'OPTION' ? (
-                                // Options: show profit target (50%) and current gain
+                              {p.asset_type === 'OPTION' ? (() => {
+                                const dte = p.option_expiry
+                                  ? Math.round((new Date(p.option_expiry + 'T16:00:00').getTime() - Date.now()) / 86_400_000)
+                                  : null
+                                const dteColor = dte == null ? 'var(--fg-3)' : dte > 14 ? '#13c98e' : dte > 7 ? '#fbbf24' : '#f87171'
+                                return (
+                                // Options: show profit target (50%) + DTE with color-coding
                                 <div style={{ lineHeight: 1.25, cursor: 'default' }}
-                                     title={`Target: 50% profit (close at $${(p.avg_cost * 0.5).toFixed(2)} premium) or ≤7 DTE`}>
+                                     title={`Target: 50% profit (close at $${(p.avg_cost * 0.5).toFixed(2)} premium) or ≤7 DTE${dte != null ? ` · ${dte}d to expiry` : ''}`}>
                                   <span style={{ color: p.pnl_pct >= 50 ? '#13c98e' : p.pnl_pct < 0 ? '#f87171' : '#fbbf24', fontWeight: 600, fontSize: '0.72rem' }}>
                                     {p.pnl_pct >= 50 ? '✅ target' : p.pnl_pct < 0 ? '▼ debit' : '⏳ hold'}
                                   </span>
-                                  <span style={{ color: 'var(--fg-3)', fontSize: '0.65rem', display: 'block' }}>50% exit</span>
+                                  <span style={{ color: dteColor, fontSize: '0.65rem', display: 'block' }}>
+                                    {dte != null ? `${dte}d DTE` : '50% exit'}
+                                  </span>
                                 </div>
-                              ) : (() => {
+                                )
+                              })()
+                               : (() => {
                                 const { floor, trail, color } = ladderStatus(p.pnl_pct)
                                 const tip = trail === '—'
                                   ? 'Below +3% — initial stop protecting downside'
@@ -909,8 +924,79 @@ export default function DashboardPage() {
                   </tfoot>
                 )}
               </table>
+              {/* Exposure split — only visible when options positions exist */}
+              {pos.some(p => p.asset_type === 'OPTION') && (() => {
+                const eqVal  = pos.filter(p => p.asset_type !== 'OPTION').reduce((s, p) => s + p.market_value, 0)
+                const optVal = pos.filter(p => p.asset_type === 'OPTION').reduce((s, p) => s + Math.abs(p.market_value), 0)
+                const total  = eqVal + optVal
+                const eqPct  = total > 0 ? (eqVal / total) * 100 : 100
+                const optPct = total > 0 ? (optVal / total) * 100 : 0
+                return (
+                  <div style={{ display: 'flex', gap: 16, paddingTop: 10, paddingBottom: 2, fontSize: '0.72rem', color: 'var(--fg-3)', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.65rem' }}>Exposure</span>
+                    <span>Equity <strong style={{ color: '#13c98e' }}>{eqPct.toFixed(0)}%</strong></span>
+                    <span>Options <strong style={{ color: '#fbbf24' }}>{optPct.toFixed(0)}%</strong></span>
+                    <div style={{ flex: 1, height: 4, background: 'var(--bg-2)', borderRadius: 2, overflow: 'hidden', maxWidth: 120 }}>
+                      <div style={{ width: `${eqPct}%`, height: '100%', background: '#13c98e', display: 'inline-block' }} />
+                      <div style={{ width: `${optPct}%`, height: '100%', background: '#fbbf24', display: 'inline-block' }} />
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
           </div>
+
+          {/* Strategy performance ranking — lazy-loaded, shown when data is available */}
+          {perfData && Object.keys(perfData).length > 0 && (() => {
+            const sorted = Object.entries(perfData)
+              .filter(([, v]) => v.trades >= 2)
+              .sort((a, b) => b[1].profit_factor - a[1].profit_factor)
+              .slice(0, 6)
+            if (sorted.length === 0) return null
+            return (
+              <div className="card" style={{ marginBottom: 16 }}>
+                <div className="card-head plain">
+                  <span className="eyebrow">Strategy Ranking</span>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--fg-3)' }}>Last 30 days · sorted by profit factor</span>
+                </div>
+                <div className="card-body" style={{ paddingTop: 8 }}>
+                  <table className="ptbl" style={{ width: '100%', fontSize: '0.72rem' }}>
+                    <thead>
+                      <tr>
+                        <th className="l" style={{ width: 140 }}>Strategy</th>
+                        <th style={{ textAlign: 'right' }}>Trades</th>
+                        <th style={{ textAlign: 'right' }}>Win %</th>
+                        <th style={{ textAlign: 'right' }}>Avg P/L</th>
+                        <th style={{ textAlign: 'right' }}>Total P/L</th>
+                        <th style={{ textAlign: 'right' }}>PF</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.map(([key, v], i) => (
+                        <tr key={key}>
+                          <td className="l">
+                            <span style={{ display: 'inline-block', width: 16, textAlign: 'center', marginRight: 6, color: i === 0 ? '#fbbf24' : i === 1 ? '#94a3b8' : 'var(--fg-3)', fontWeight: 700 }}>
+                              {i === 0 ? '★' : i === 1 ? '▲' : `${i + 1}`}
+                            </span>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.69rem', color: 'var(--fg-2)' }}>{key}</span>
+                          </td>
+                          <td style={{ textAlign: 'right', color: 'var(--fg-3)' }}>{v.trades}</td>
+                          <td style={{ textAlign: 'right', color: v.win_rate >= 60 ? '#13c98e' : v.win_rate >= 45 ? '#fbbf24' : '#f87171' }}>{v.win_rate.toFixed(0)}%</td>
+                          <td style={{ textAlign: 'right', color: pnlColor(v.avg_pnl) }}>{v.avg_pnl >= 0 ? '+' : ''}${v.avg_pnl.toFixed(2)}</td>
+                          <td style={{ textAlign: 'right', color: pnlColor(v.total_pnl), fontWeight: 600 }}>{v.total_pnl >= 0 ? '+' : ''}${v.total_pnl.toFixed(2)}</td>
+                          <td style={{ textAlign: 'right' }}>
+                            <span style={{ color: v.profit_factor >= 1.5 ? '#13c98e' : v.profit_factor >= 1 ? '#fbbf24' : '#f87171', fontWeight: 600 }}>
+                              {v.profit_factor >= 999 ? '∞' : v.profit_factor.toFixed(2)}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          })()}
 
           <div className="section-row">
             {/* Activity */}
