@@ -196,3 +196,15 @@ export async function alertMorningBrief(opts: {
 
   await sendSMS(lines.join('\n'))
 }
+
+/** Health check alert — fires when the self-healing cron finds issues it can't fix automatically. */
+export async function sendHealthAlert(issues: string[], healed: string[]): Promise<void> {
+  const lines = [
+    `⚠️ MyTrade Health Alert`,
+    healed.length ? `✅ Auto-fixed: ${healed.slice(0, 3).join(', ')}` : null,
+    `🔴 ${issues.length} issue${issues.length > 1 ? 's' : ''}:`,
+    ...issues.slice(0, 4).map((i) => `• ${i.slice(0, 80)}`),
+    issues.length > 4 ? `…+${issues.length - 4} more` : null,
+  ].filter(Boolean)
+  await sendSMS(lines.join('\n'))
+}
