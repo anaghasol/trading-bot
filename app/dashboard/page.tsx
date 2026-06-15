@@ -936,7 +936,7 @@ export default function DashboardPage() {
                             ? <>Cron running — TG connect failing · check logs</>
                             : <>Cron silent — {cronPingAge != null ? `${cronPingAge}m since last ping` : 'never reached'}</>}
                       <br /><span className="faint" style={{ fontSize: '0.65rem' }}>
-                        {tg.cron_alive ? `Cron alive · TG unreachable` : `Vercel cron may be down · check Vercel dashboard`}
+                        {tg.cron_alive ? `Cron alive · TG unreachable` : `Vercel cron may be down — core trading engine unaffected`}
                       </span>
                     </div>
                   )

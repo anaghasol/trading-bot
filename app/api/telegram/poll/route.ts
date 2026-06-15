@@ -77,14 +77,17 @@ async function tgSend(text: string) {
 }
 
 export async function GET(req: Request) {
+  const db = createServiceClient()
+
+  // Heartbeat first — confirms Vercel is calling this endpoint regardless of auth outcome.
+  // This lets the dashboard distinguish "cron down" from "cron running but TG session issue".
+  await db.from('tb_settings').upsert({ key: 'tg_cron_ping', value: new Date().toISOString() }).then(() => {}, () => {})
+
   const { searchParams } = new URL(req.url)
   const secret = searchParams.get('secret') ?? req.headers.get('authorization')?.replace('Bearer ', '')
   if (secret !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-
-  const db = createServiceClient()
-  await db.from('tb_settings').upsert({ key: 'tg_cron_ping', value: new Date().toISOString() })
 
   const sessionStr = await getStoredSession()
   if (!sessionStr) {
