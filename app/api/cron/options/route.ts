@@ -36,10 +36,15 @@ function authorized(req: Request) {
 }
 
 export async function GET(req: Request) {
-  if (!authorized(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (!isMarketOpen())   return NextResponse.json({ status: 'skipped', reason: 'market_closed' })
-
-  const db      = createServiceClient()
+  const db = createServiceClient()
+  if (!authorized(req)) {
+    await db.from('tb_cron_log').insert({ job: 'options', status: 'skipped', message: 'unauthorized' })
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  if (!isMarketOpen()) {
+    await db.from('tb_cron_log').insert({ job: 'options', status: 'skipped', message: 'market_closed' })
+    return NextResponse.json({ status: 'skipped', reason: 'market_closed' })
+  }
   const actions: string[] = []
   let newSpreads = 0
   let closedSpreads = 0
