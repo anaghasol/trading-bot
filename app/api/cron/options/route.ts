@@ -89,11 +89,16 @@ export async function GET(req: Request) {
       }
     }
 
-    // ── 2. Check how many option positions are open ──────────────────────────
+    // ── 2. Check how many option positions are open + total exposure cap ────
     const openOptionCount = optPositions.filter((p) => p.qty < 0).length  // short legs = open spreads
     const MAX_SPREADS = 3
-    if (openOptionCount >= MAX_SPREADS) {
-      actions.push(`MAX_SPREADS (${openOptionCount}/${MAX_SPREADS}) — no new entries`)
+    // Total options exposure cap: sum of max risk across all open spreads ≤ 15% of equity
+    // Approximated from market_value of option positions (negative = short premium collected)
+    const totalOptionsExposure = optPositions.reduce((s, p) => s + Math.abs(p.unrealized_pl + (p.avg_entry_price * Math.abs(p.qty) * 100)), 0)
+    const equity2 = await getAccountBalance() ?? 100_000
+    const exposurePct = totalOptionsExposure / equity2
+    if (openOptionCount >= MAX_SPREADS || exposurePct >= 0.15) {
+      actions.push(`CAP REACHED: ${openOptionCount}/${MAX_SPREADS} spreads, ${(exposurePct * 100).toFixed(0)}% options exposure — no new entries`)
       await db.from('tb_cron_log').insert({ job: 'options', status: 'success', trades_made: closedSpreads, message: actions.join(' | ') })
       return NextResponse.json({ status: 'ok', actions, new_spreads: 0, closed_spreads: closedSpreads })
     }

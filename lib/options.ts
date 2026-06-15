@@ -132,14 +132,23 @@ export function buildBullPutSpread(
     if (!shortCandidates.length) continue
     const shortPut = shortCandidates[0]
 
-    // Long put: $2-5 below short put
+    // IV proxy filter: require annualized IV > 25% on short put (screens out low-vol setups
+    // where selling premium doesn't generate enough credit). True IVR needs historical data;
+    // this per-contract IV is a practical substitute available directly from the chain.
+    const shortIV = shortPut.implied_volatility ?? 0
+    if (shortIV > 0 && shortIV < 0.25) continue  // skip if IV data present but < 25%
+
+    // Long put: $2-5 below short put, hard cap at $5 width to keep risk small
     const longCandidates = slice
-      .filter((c) => c.strike_price >= shortPut.strike_price - 6 && c.strike_price < shortPut.strike_price - 1.5)
+      .filter((c) => c.strike_price >= shortPut.strike_price - 5 && c.strike_price < shortPut.strike_price - 1.5)
       .filter((c) => (c.open_interest ?? 0) > 20)
       .sort((a, b) => b.strike_price - a.strike_price)   // closest to short put first
 
     if (!longCandidates.length) continue
     const longPut = longCandidates[0]
+
+    // Hard cap: spread width must be ≤ $5
+    if (shortPut.strike_price - longPut.strike_price > 5) continue
 
     // Use mid-price; fall back to close_price (prior session)
     const shortMid = shortPut.bid_price != null ? (shortPut.bid_price + (shortPut.ask_price ?? shortPut.bid_price)) / 2 : (shortPut.close_price ?? 0)
@@ -150,7 +159,7 @@ export function buildBullPutSpread(
     if (netCredit <= 0 || spreadWidth <= 0) continue
 
     const creditPct = netCredit / spreadWidth
-    if (creditPct < 0.20) continue   // need ≥20% of width as credit
+    if (creditPct < 0.25) continue   // raised from 20% → 25% — better edge on each spread
 
     const maxLossPerContract   = (spreadWidth - netCredit) * 100
     const maxProfitPerContract = netCredit * 100
