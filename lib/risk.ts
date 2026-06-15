@@ -117,12 +117,13 @@ export function checkExitCondition(
 
   // ── Trailing stop (once in profit) ───────────────────────────────────────
   // Accelerating trail: tightens as profit grows so big winners are well-protected.
-  // +3%  peak → trail 5%,  floor at breakeven   — never let early gain flip to loss
+  // +3%  peak → trail 5%,  floor near breakeven — never let early gain flip to loss
+  // +5%  peak → explicit breakeven floor        — can never lose money from this point
   // +6%  peak → trail 4%,  floor at +2%         — tighten once well in profit
   // +10% peak → trail 4%,  floor at +5%         — lock in half the big move
-  // +20% peak → trail 3%,  floor at +12%        — squeeze the last % from big runners
+  // +22% peak → trail 3%,  floor at +12%        — squeeze big runners without cutting early
   let effective_trail = trail_pct  // default (6% paper, 5% live)
-  if (new_peak >= entry_price * 1.20) {
+  if (new_peak >= entry_price * 1.22) {
     effective_trail = 0.03  // very tight on big wins — protect most of the move
   } else if (new_peak >= entry_price * 1.06) {
     effective_trail = 0.04
@@ -131,14 +132,16 @@ export function checkExitCondition(
   }
 
   let trailing_stop = new_peak * (1 - effective_trail)
-  if (new_peak >= entry_price * 1.20) {
+  if (new_peak >= entry_price * 1.22) {
     trailing_stop = Math.max(trailing_stop, entry_price * 1.12)   // lock in +12%
   } else if (new_peak >= entry_price * 1.10) {
     trailing_stop = Math.max(trailing_stop, entry_price * 1.05)   // lock in +5%
   } else if (new_peak >= entry_price * 1.06) {
     trailing_stop = Math.max(trailing_stop, entry_price * 1.02)   // lock in +2%
+  } else if (new_peak >= entry_price * 1.05) {
+    trailing_stop = Math.max(trailing_stop, entry_price)          // breakeven guaranteed at +5% peak
   } else if (new_peak >= entry_price * 1.03) {
-    trailing_stop = Math.max(trailing_stop, entry_price * 1.001)  // at least breakeven
+    trailing_stop = Math.max(trailing_stop, entry_price * 1.001)  // near-breakeven at +3%
   }
 
   if (in_profit && current_price <= trailing_stop) {
