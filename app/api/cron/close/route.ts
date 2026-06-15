@@ -96,16 +96,13 @@ async function runClose(
     }
 
     if (isPreClose) {
-      // Cut losers held 3+ days
+      // Cut losers held 3+ days — these aren't recovering
       if (!isSameDay && holdDays >= 3 && pos.pnl_pct < -2) {
         shouldExit = true
         exitReason = `PRE-CLOSE CUT: ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d`
       }
-      // Lock in big wins
-      if (!shouldExit && !isSameDay && pos.pnl_pct >= 20) {
-        shouldExit = true
-        exitReason = `BIG WIN LOCK: +${pos.pnl_pct.toFixed(1)}% — banking it`
-      }
+      // Winners of any size: let trailing stop manage the exit.
+      // No arbitrary cap — a +22% position with a tight trail could go to +40%.
     }
 
     if (!shouldExit) {
