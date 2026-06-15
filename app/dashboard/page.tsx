@@ -932,13 +932,14 @@ export default function DashboardPage() {
                 const eqPct  = total > 0 ? (eqVal / total) * 100 : 100
                 const optPct = total > 0 ? (optVal / total) * 100 : 0
                 return (
-                  <div style={{ display: 'flex', gap: 16, paddingTop: 10, paddingBottom: 2, fontSize: '0.72rem', color: 'var(--fg-3)', alignItems: 'center' }}>
+                  <div title={`Total risk exposure — Equity: ${eqPct.toFixed(0)}% | Options: ${optPct.toFixed(0)}% (max 15% recommended for options)`}
+                       style={{ display: 'flex', gap: 16, paddingTop: 10, paddingBottom: 2, fontSize: '0.72rem', color: 'var(--fg-3)', alignItems: 'center', cursor: 'default' }}>
                     <span style={{ fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '0.65rem' }}>Exposure</span>
                     <span>Equity <strong style={{ color: '#13c98e' }}>{eqPct.toFixed(0)}%</strong></span>
-                    <span>Options <strong style={{ color: '#fbbf24' }}>{optPct.toFixed(0)}%</strong></span>
+                    <span>Options <strong style={{ color: optPct > 15 ? '#f87171' : '#fbbf24' }}>{optPct.toFixed(0)}%</strong>{optPct > 15 && <span style={{ color: '#f87171', fontSize: '0.65rem', marginLeft: 3 }}>⚠ cap</span>}</span>
                     <div style={{ flex: 1, height: 4, background: 'var(--bg-2)', borderRadius: 2, overflow: 'hidden', maxWidth: 120 }}>
                       <div style={{ width: `${eqPct}%`, height: '100%', background: '#13c98e', display: 'inline-block' }} />
-                      <div style={{ width: `${optPct}%`, height: '100%', background: '#fbbf24', display: 'inline-block' }} />
+                      <div style={{ width: `${optPct}%`, height: '100%', background: optPct > 15 ? '#f87171' : '#fbbf24', display: 'inline-block' }} />
                     </div>
                   </div>
                 )
