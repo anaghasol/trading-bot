@@ -862,8 +862,11 @@ export default function DashboardPage() {
                             <td style={{ textAlign: 'right' }}>
                               {(() => {
                                 const { floor, trail, color } = ladderStatus(p.pnl_pct)
+                                const tip = trail === '—'
+                                  ? 'Below +3% — initial stop protecting downside'
+                                  : `${trail} trailing stop active — floor locked at ${floor} of entry`
                                 return (
-                                  <div style={{ lineHeight: 1.25 }}>
+                                  <div style={{ lineHeight: 1.25, cursor: 'default' }} title={tip}>
                                     <span style={{ color, fontWeight: 600, fontSize: '0.72rem' }}>🔒{floor}</span>
                                     {trail !== '—' && <span style={{ color: 'var(--fg-3)', fontSize: '0.65rem', display: 'block' }}>{trail} trail</span>}
                                   </div>
