@@ -156,3 +156,37 @@ export async function alertPreMarket(opts: {
 
   await sendSMS(msg)
 }
+
+/** Daily morning brief — sent at 9:35 AM ET. Zero dashboard needed. */
+export async function alertMorningBrief(opts: {
+  account_value: number
+  open_pnl: number
+  positions: Array<{ symbol: string; pnl_pct: number; hold_days: number }>
+  recycled: string[]
+  regime?: string
+}) {
+  const { account_value, open_pnl, positions, recycled, regime } = opts
+  const winners = positions.filter((p) => p.pnl_pct >= 5)
+  const losers  = positions.filter((p) => p.pnl_pct <= -3)
+
+  const posLine = positions
+    .sort((a, b) => b.pnl_pct - a.pnl_pct)
+    .slice(0, 7)
+    .map((p) => `${p.symbol} ${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct.toFixed(1)}%`)
+    .join(' | ')
+
+  const recycledLine = recycled.length
+    ? `Recycled: ${recycled.join(', ')} (flat → fresh capital)`
+    : ''
+
+  const lines = [
+    `🌅 MyTrade Morning`,
+    `$${account_value.toLocaleString('en-US', { maximumFractionDigits: 0 })} · Open P/L: ${open_pnl >= 0 ? '+' : ''}$${open_pnl.toFixed(0)}`,
+    `${positions.length} open · ${winners.length} winners · ${losers.length} losers${regime ? ` · ${regime}` : ''}`,
+    posLine,
+    recycledLine,
+    `Bot running autonomous.`,
+  ].filter(Boolean)
+
+  await sendSMS(lines.join('\n'))
+}

@@ -89,11 +89,15 @@ async function monitorBroker(
     return { closed: 0, partial: 0, statuses: ['daily_loss_limit_hit'] }
   }
 
-  // Load journal entries — include partial_exit_done flag for staged exit logic
+  // Load THIS BROKER'S open trades only.
+  // Without the broker filter, both monitors run in parallel and the Schwab monitor
+  // would orphan-reconcile Alpaca trades (not in Schwab positions → marks them CLOSED),
+  // then the Alpaca monitor can't find them. Include null-broker rows for legacy trades.
   const { data: openTrades } = await db
     .from('tb_trades')
     .select('id, symbol, entry_price, peak_pnl, created_at, strategy, reason, partial_exit_done')
     .eq('status', 'OPEN')
+    .or(`broker.eq.${broker},broker.is.null`)
 
   // Check for Telegram SELL signals in the last 2 hours (external signal reversal)
   const tgCutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()

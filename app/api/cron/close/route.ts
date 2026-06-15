@@ -12,7 +12,7 @@ import { NextResponse } from 'next/server'
 import { getPositions, getAccountBalance, placeOrder, getOrders } from '@/lib/broker'
 import { analyzePdtStatus, SWING_CONFIG } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
-import { alertEODSummary, alertEODComparison } from '@/lib/notify'
+import { alertEODSummary, alertEODComparison, alertMorningBrief } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 
 export const runtime = 'nodejs'
@@ -86,10 +86,16 @@ export async function GET(req: Request) {
       let exitReason  = ''
 
       if (isMorning) {
-        // Morning: exit only if held max days AND losing — winners keep riding
+        // Time stop: held max days AND still a loser → cut it
         if (!isSameDay && holdDays >= SWING_CONFIG.max_hold_days && pos.pnl_pct < 0) {
           shouldExit = true
           exitReason = `TIME STOP (losing ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d)`
+        }
+        // Flat recycler: stuck between -2% and +2.5% for 2+ days → redeploy capital.
+        // A flat position is dead capital. Better to exit and let the scanner find a fresh setup.
+        if (!isSameDay && holdDays >= 2 && pos.pnl_pct > -2 && pos.pnl_pct < 2.5) {
+          shouldExit = true
+          exitReason = `FLAT RECYCLE (${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% after ${holdDays}d — redeploying capital)`
         }
       }
 
@@ -147,6 +153,28 @@ export async function GET(req: Request) {
 
         actions.push(`${pos.symbol}: CLOSED ${exitReason} | $${pnl.toFixed(2)}`)
       }
+    }
+
+    // Morning brief SMS — sent after reviewing + recycling flat positions
+    if (isMorning) {
+      const recycled = actions
+        .filter((a) => a.includes('FLAT RECYCLE'))
+        .map((a) => a.split(':')[0].trim())
+
+      const stillOpen = positions.filter((p) => !recycled.includes(p.symbol))
+      const entryDateMap = new Map(Array.from(tradeMap.entries()).map(([sym, m]) => [sym, m.entry_date]))
+
+      await alertMorningBrief({
+        account_value: activeBalance,
+        open_pnl: stillOpen.reduce((s, p) => s + p.unrealized_pnl, 0),
+        positions: stillOpen.map((p) => ({
+          symbol:    p.symbol,
+          pnl_pct:  p.pnl_pct,
+          hold_days: Math.round((Date.now() - new Date((entryDateMap.get(p.symbol) ?? today) + 'T00:00:00Z').getTime()) / 86_400_000),
+        })),
+        recycled,
+        regime: 'NORMAL',
+      }).catch(() => {})
     }
 
     // Write daily summary if pre-close
