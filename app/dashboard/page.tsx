@@ -529,6 +529,48 @@ export default function DashboardPage() {
         >{scanning ? '⏳ Scanning…' : '⚡ Scan'}</button>
       </header>
 
+      {/* ── Connection alert strip — full-width red bar for any broken service ── */}
+      {(() => {
+        const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
+        const dayName = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'long' })
+        const isWeekendDay = dayName === 'Saturday' || dayName === 'Sunday'
+        const isOffHours = isWeekendDay || etH >= 18 || etH < 9
+        const alerts: { msg: React.ReactNode; key: string }[] = []
+
+        // Schwab token expired
+        if (!isPaper && summary?.error === 'schwab_auth_expired') {
+          alerts.push({ key: 'sch-exp', msg: <>🔴 <b>Schwab disconnected</b> — token expired. <a href="/api/schwab/auth" style={{ color: '#fff', textDecoration: 'underline', fontWeight: 600 }}>Re-authorize now →</a></> })
+        }
+        // Schwab token expiring soon (< 24 h)
+        if (!isPaper && summary?.auth_status?.ok && (summary.auth_status.hours_left ?? 999) < 24) {
+          alerts.push({ key: 'sch-soon', msg: <>🟠 <b>Schwab token expires in {summary.auth_status.hours_left}h</b> — <a href="/api/schwab/auth" style={{ color: '#fff', textDecoration: 'underline' }}>refresh before trading stops →</a></> })
+        }
+        // TG no session at all
+        if (tg != null && !tg.has_session) {
+          alerts.push({ key: 'tg-nosess', msg: <>🔴 <b>Telegram disconnected</b> — session missing. Go to Settings → Telegram → Re-authenticate.</> })
+        }
+        // TG session exists but cron/connection broken during market hours
+        if (tg?.has_session && !tg.connected && !isOffHours) {
+          const detail = tg.tg_status === 'no_session' ? 'session expired' : tg.tg_status?.startsWith('error:') ? tg.tg_status.replace('error:', '').trim() : `silent ${tg.minutes_since_cron_ping ?? '?'}m`
+          alerts.push({ key: 'tg-down', msg: <>🔴 <b>Telegram disconnected</b> — {detail}. Core trading continues but SF Trades signals paused.</> })
+        }
+
+        if (alerts.length === 0) return null
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {alerts.map(a => (
+              <div key={a.key} style={{
+                background: a.key.includes('soon') ? 'rgba(220,120,0,0.92)' : 'rgba(200,30,30,0.92)',
+                color: '#fff', fontSize: '0.78rem', fontWeight: 500,
+                padding: '9px 18px', lineHeight: 1.4, letterSpacing: 0.1,
+              }}>
+                {a.msg}
+              </div>
+            ))}
+          </div>
+        )
+      })()}
+
       <div className="desk-wrap">
         {/* ════ LEFT RAIL ════ */}
         <div className="desk-col">
