@@ -20,6 +20,7 @@ import {
 import { getDiscoverySymbols, type DiscoverySymbol } from './trending'
 import { buildLearningContext } from './learning'
 import { profileFor } from './strategy-profiles'
+import { getMarketSentiment } from './market-sentiment'
 
 const claude  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const OAI_KEY = process.env.OPENAI_API_KEY
@@ -62,9 +63,9 @@ function buildPrompt(
   learning: string,
   minConf: number,
   broker: string,
-  model: 'claude' | 'openai'
+  model: 'claude' | 'openai',
+  newsContext: string
 ): string {
-  const profile = profileFor(broker)
   const isPaper = broker === 'alpaca_paper'
   return `You are a ${isPaper ? 'PAPER TRADING bot collecting data aggressively' : 'conservative swing trader'}. Rate these pre-screened setups.
 
@@ -78,6 +79,10 @@ ${learning}
 IMPORTANT: Stocks mentioned as bullish or in advisor's watch zone should get +5-10 confidence bonus if the setup is valid.
 Stocks marked bearish/stopped-out should be skipped even if chart looks good.
 
+${newsContext ? `REAL-TIME MARKET DATA (▲bullish news ▼bearish news — factor this into confidence):
+${newsContext}
+IMPORTANT: ▼bearish news = strong negative catalyst, reduce confidence -10 to -20. ▲bullish news = positive catalyst, boost confidence +5 to +10.
+` : ''}
 ${isPaper ? `PAPER MODE: Rate EVERY setup >= ${minConf}% with any positive momentum. Be generous — we need data.` : `LIVE MODE: Only high-conviction setups >= ${minConf}%.`}
 
 SETUPS to rate (rs_rank=relative momentum percentile 0-100; from_52wh=% below 52w high):
@@ -97,12 +102,13 @@ Return ONLY a JSON array. Include ALL setups you'd take at ${minConf}%+ confiden
 
 async function askClaude(
   setups: EMASetup[], regime: MarketRegime,
-  equity: number, held: string[], learning: string, minConf: number, broker: string
+  equity: number, held: string[], learning: string, minConf: number, broker: string,
+  newsContext: string
 ): Promise<Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number }>> {
   try {
     const msg = await claude.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 1500,
-      messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude') }],
+      messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude', newsContext) }],
     })
     let text = (msg.content[0] as { type: string; text: string }).text.trim()
     if (text.includes('```')) text = text.split('```')[1].replace(/^json/, '').trim()
@@ -118,7 +124,8 @@ async function askClaude(
 
 async function askOpenAI(
   setups: EMASetup[], regime: MarketRegime,
-  equity: number, held: string[], learning: string, minConf: number, broker: string
+  equity: number, held: string[], learning: string, minConf: number, broker: string,
+  newsContext: string
 ): Promise<Array<{ symbol: string; confidence: number }>> {
   if (!OAI_KEY) return []
   try {
@@ -126,10 +133,10 @@ async function askOpenAI(
       method: 'POST',
       headers: { 'Authorization': `Bearer ${OAI_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',   // cheap + fast; gpt-4o for higher quality if budget allows
+        model: 'gpt-4o-mini',
         temperature: 0.15,
         max_tokens: 512,
-        messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai') }],
+        messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext) }],
       }),
     })
     if (!res.ok) return []
@@ -274,12 +281,12 @@ export async function getRecommendations(
     if (!seenSyms.has(s.symbol)) { seenSyms.add(s.symbol); mergedSetups.push(s) }
   }
 
-  const limit  = isPaper ? 20 : 6
-  const setups = mergedSetups
+  const rawLimit = isPaper ? 20 : 6
+  const rawSetups = mergedSetups
     .filter((s) => !heldSymbols.includes(s.symbol))
-    .slice(0, limit)
+    .slice(0, rawLimit)
 
-  if (setups.length === 0) {
+  if (rawSetups.length === 0) {
     return {
       recommendations: [], regime,
       position_size_pct: profile.risk_pct,
@@ -294,29 +301,40 @@ export async function getRecommendations(
   try { const ctx = await buildLearningContext(); learning = ctx.summary } catch { /* ignore */ }
 
   // 4. Dynamic gate: widen in good markets, tighten in caution.
-  // Paper (baseConf=55): GOOD drops to 50, CAUTION raises to 60, normal stays 55.
-  // Live  (baseConf=78): GOOD drops to 75, CAUTION stays 78, normal stays 78.
   const baseConf = profile.min_confidence
   const minConf = isPaper
     ? (regime.vix < 20 && regime.spy_above_200sma
-        ? Math.max(baseConf - 5, 45)  // paper GOOD: 55→50 — cast wide, collect data
+        ? Math.max(baseConf - 5, 45)
         : regime.regime === 'CAUTION'
-          ? baseConf + 5              // paper CAUTION: 55→60 — tighten on risky days
-          : baseConf)                 // paper normal: 55
+          ? baseConf + 5
+          : baseConf)
     : (regime.vix < 20 && regime.spy_above_200sma
-        ? Math.max(baseConf - 3, 73)  // live GOOD: 78→75
-        : baseConf)                   // live strict: 78
+        ? Math.max(baseConf - 3, 73)
+        : baseConf)
 
-  // 5. Claude + OpenAI IN PARALLEL — one call each
+  // 5. FREE market sentiment — Alpaca news + Polymarket (fetched before AI to save tokens)
+  //    Pre-filter: symbols with 2+ bearish headlines get dropped before AI call.
+  //    Remaining setups are cut to 12 max for paper (was 20) → ~40% fewer AI tokens.
+  let sentiment = { newsContext: '', symbolScores: {} as Record<string, number> }
+  try {
+    const sentResult = await getMarketSentiment(rawSetups.map((s) => s.symbol))
+    sentiment = sentResult
+  } catch { /* non-fatal — proceed without news */ }
+
+  const setups = rawSetups.filter((s) => (sentiment.symbolScores[s.symbol] ?? 0) >= -3)
+  const aiLimit = isPaper ? 12 : 6
+  const aiSetups = setups.slice(0, aiLimit)
+
+  // 6. Claude + OpenAI IN PARALLEL — one call each, enriched with news context
   const [claudePicks, openaiPicks] = await Promise.all([
-    askClaude(setups, regime, equity, heldSymbols, learning, minConf, broker),
-    askOpenAI(setups, regime, equity, heldSymbols, learning, minConf, broker),
+    askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext),
+    askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext),
   ])
 
-  console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Setups:${setups.length} | Claude:${claudePicks.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)
+  console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Raw:${rawSetups.length} NewsFiltered:${aiSetups.length} | Claude:${claudePicks.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)
 
-  // 6. Merge: require both agree, average confidence
-  const recommendations = mergeResults(claudePicks, openaiPicks, setups, heldSymbols, minConf, broker)
+  // 7. Merge: require both agree, average confidence
+  const recommendations = mergeResults(claudePicks, openaiPicks, aiSetups, heldSymbols, minConf, broker)
 
   return {
     recommendations,
