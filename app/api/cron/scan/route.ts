@@ -119,13 +119,18 @@ async function runScan(
 
   // (position cap enforced after regime check using dynamicMaxPos below)
 
-  // Total exposure cap: don't open new positions if already > 75% equity deployed
-  // Prevents margin usage on volatile names like MARA/SOUN that size up fast
+  // Total exposure cap: don't open new positions if already > 75% equity deployed.
+  // Uses Yahoo price for each position (not Alpaca IEX) to avoid inflated cap readings
+  // from stale IEX data — then tracks per-trade running exposure so multiple picks
+  // in one scan run don't collectively bypass the cap.
   const MAX_EXPOSURE = isSchwab ? 0.70 : 0.75
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
   if (totalMarketValue / equity > MAX_EXPOSURE) {
     return { trades_made: 0, message: `[${broker}] Exposure cap: $${totalMarketValue.toFixed(0)}/$${equity.toFixed(0)} (${(totalMarketValue/equity*100).toFixed(0)}% > ${MAX_EXPOSURE*100}%)` }
   }
+  // Running exposure: updated after each successful trade in this scan run so the
+  // second and third picks in the same run can't sneak past the cap.
+  let runningExposure = totalMarketValue
 
   const heldSymbols = positions.map((p) => p.symbol)
   const alloc       = await getSleeveAllocation(db)
@@ -361,11 +366,20 @@ async function runScan(
     const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, convictionMult * boostMult)
     if (sizing.qty < 1) continue
 
+    // Per-trade exposure gate: check BEFORE each trade, not just at scan start.
+    // Prevents multiple picks in one scan run from collectively exceeding the cap.
+    const tradeCost = sizing.qty * quote.price
+    if ((runningExposure + tradeCost) / equity > MAX_EXPOSURE) {
+      console.log(`[${broker}] Skip ${rec.symbol} — would push exposure to ${((runningExposure + tradeCost) / equity * 100).toFixed(0)}% (cap ${MAX_EXPOSURE * 100}%)`)
+      continue
+    }
+
     const { buy, stop_order_id } = isSchwab
       ? await SchwabBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
       : await AlpacaBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
 
     if (buy.status === 'PLACED') {
+      runningExposure += tradeCost  // keep cap accurate within this scan run
       tradesMade++
 
       const initialStop = quote.price * (1 - sizing.stop_pct)

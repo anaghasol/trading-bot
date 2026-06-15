@@ -738,7 +738,7 @@ export default function DashboardPage() {
                     }}
                   >⚙ Fix Entry</button>
                 )}
-                <span className="eyebrow">Net liq</span>
+                <span className="eyebrow" title="Sum of all open position market values (gross, before margin)">Long value</span>
                 <span className="tabular" style={{ fontWeight: 700 }}>{money(netLiq)}</span>
               </div>
             </div>
@@ -752,7 +752,7 @@ export default function DashboardPage() {
                   <col style={{ minWidth: 90 }} /> {/* P/L Day */}
                   <col style={{ minWidth: 90 }} /> {/* P/L Open */}
                   <col style={{ minWidth: 70 }} /> {/* P/L % */}
-                  <col style={{ minWidth: 90 }} /> {/* Net Liq */}
+                  <col style={{ minWidth: 90 }} /> {/* Mkt Value */}
                   <col style={{ minWidth: 80 }} /> {/* Action */}
                 </colgroup>
                 <thead>
@@ -764,7 +764,7 @@ export default function DashboardPage() {
                     <th style={{ textAlign: 'right' }}>P/L Day</th>
                     <th style={{ textAlign: 'right' }}>P/L Open</th>
                     <th style={{ textAlign: 'right' }}>P/L %</th>
-                    <th style={{ textAlign: 'right' }}>Net Liq</th>
+                    <th style={{ textAlign: 'right' }}>Mkt Value</th>
                     <th></th>
                   </tr>
                 </thead>
