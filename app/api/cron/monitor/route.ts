@@ -201,7 +201,6 @@ async function monitorBroker(
 
     const P1_PCT    = broker === 'schwab' ? 7  : 8   // first partial trigger %
     const P2_PCT    = broker === 'schwab' ? 12 : 15  // second partial trigger %
-    const BIG_WIN   = broker === 'schwab' ? 15 : 20  // full exit trigger %
 
     const canExit   = broker === 'alpaca_paper' || !isSameDay || pdt.can_day_trade
     const noHold    = !holdSymbols.has(pos.symbol)
@@ -250,27 +249,6 @@ async function monitorBroker(
         if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
 
         statuses.push(`${pos.symbol}: PARTIAL-2 +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
-        continue
-      }
-    }
-
-    // Big-win lock — exit remaining fully (+15% live / +20% paper)
-    // At this point tiers 1+2 have already taken ~75% of the original position;
-    // this banks the final slice and avoids giving back a large intraday rocket move.
-    if (gainPct >= BIG_WIN && canExit && noHold) {
-      const order = await api.placeOrder(pos.symbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
-      if (order.status === 'PLACED') {
-        closed++
-        const pnl = pos.unrealized_pnl
-        runningPnl += pnl
-        if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl, pnl_pct: gainPct, days_held: holdDays, closed_at: new Date().toISOString() }).eq('id', meta.id)
-        if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
-        await recordLearning({ symbol: pos.symbol, strategy: meta.strategy, pnl_pct: gainPct, hold_days: holdDays, regime: 'NORMAL' })
-        const alertRow = { type: 'SELL', message: `[${broker}] BIG WIN LOCK ${pos.symbol} +${gainPct.toFixed(1)}% — $${pnl.toFixed(2)} banked`, symbol: pos.symbol, pnl }
-        const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
-        if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
-        await alertStopHit({ broker: broker as 'schwab' | 'alpaca_paper', symbol: pos.symbol, qty: Math.abs(pos.quantity), pnl, pnl_pct: gainPct, exit_type: 'BIG_WIN' })
-        statuses.push(`${pos.symbol}: BIG WIN LOCK +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
         continue
       }
     }
