@@ -315,7 +315,7 @@ export async function getRecommendations(
   // 5. FREE market sentiment — Alpaca news + Polymarket (fetched before AI to save tokens)
   //    Pre-filter: symbols with 2+ bearish headlines get dropped before AI call.
   //    Remaining setups are cut to 12 max for paper (was 20) → ~40% fewer AI tokens.
-  let sentiment = { newsContext: '', symbolScores: {} as Record<string, number> }
+  let sentiment = { newsContext: '', symbolScores: {} as Record<string, number>, news: [] as import('./market-sentiment').NewsItem[] }
   try {
     const sentResult = await getMarketSentiment(rawSetups.map((s) => s.symbol))
     sentiment = sentResult
@@ -327,7 +327,11 @@ export async function getRecommendations(
   const setups = rawSetups.filter((s) => {
     const score = sentiment.symbolScores[s.symbol] ?? 0
     if (score <= bearishCutoff) {
-      console.log(`[ai-advisor] DROPPED ${s.symbol} (news score ${score} ≤ ${bearishCutoff} ${isPaper ? 'paper' : 'live'} cutoff)`)
+      const worstHeadline = sentiment.news
+        .filter((n) => n.symbol === s.symbol && n.sentiment === 'bearish')
+        .sort((a, b) => a.score - b.score)[0]
+      const hint = worstHeadline ? ` — "${worstHeadline.headline.slice(0, 60)}"` : ''
+      console.log(`[ai-advisor] DROPPED ${s.symbol} (news score ${score} ≤ ${bearishCutoff} ${isPaper ? 'paper' : 'live'} cutoff)${hint}`)
       return false
     }
     return true

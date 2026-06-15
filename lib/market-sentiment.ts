@@ -152,12 +152,17 @@ export async function getMarketSentiment(symbols: string[]): Promise<MarketSenti
     if (item.sentiment === 'bearish') bearCounts[item.symbol]  = (bearCounts[item.symbol]  ?? 0) + 1
   }
 
-  // Emit per-symbol log line
+  // Emit per-symbol log line; include headline snippet for high-severity bearish articles
   for (const [sym, score] of Object.entries(symbolScores)) {
     const b = bullCounts[sym] ?? 0
     const d = bearCounts[sym] ?? 0
     const label = score >= 2 ? '→ BOOSTED' : score <= -3 ? '→ FILTERED' : ''
     console.log(`[SENTIMENT] ${sym}: score=${score} (${b}▲ ${d}▼) ${label}`.trim())
+    // Surface the exact headline that triggered a high-severity score (-4)
+    const highSev = news.filter((n) => n.symbol === sym && n.score <= -4)
+    for (const h of highSev) {
+      console.log(`[SENTIMENT] ${sym} HIGH-SEVERITY: "${h.headline.slice(0, 80)}"`)
+    }
   }
   if (polymarket.length) {
     console.log(`[SENTIMENT] Polymarket: ${polymarket.map((p) => `${p.question.slice(0, 40)}… ${p.yes_pct}%`).join(' | ')}`)
