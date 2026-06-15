@@ -17,7 +17,7 @@ interface Trade { id: number; symbol: string; action: string; quantity: number; 
 interface Alert { id: number; type: string; message: string; created_at: string }
 interface TgSignal { id: number; type: string; message: string; symbol?: string; created_at: string }
 interface TgStatus { connected: boolean; cron_alive: boolean; has_session: boolean; last_poll: string | null; last_cron_ping: string | null; minutes_silent: number | null; minutes_since_cron_ping: number | null; tg_status: string | null; last_msg_id: number; signals: TgSignal[] }
-interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string }
+interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string; asset_type?: string }
 interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; market_open: boolean }
 interface Pdt { day_trades_remaining: number; is_pdt_protected: boolean; balance: number }
 interface Cat { key: string; label: string; leader: string; change_5d: number; change_1d: number; rsi: number; score: number; rank: number; temp: 'HOT' | 'WARM' | 'COOL' | 'COLD'; bias: number }
@@ -474,11 +474,18 @@ export default function DashboardPage() {
   const tgSigMap = new Map((tg?.signals ?? []).filter((s) => s.symbol).map((s) => [s.symbol!, s]))
   const tgSymSet = new Set(tgSigMap.keys())
 
-  // activity rows (schwab → real order book; paper → recorded trades)
-  type Row = { time: string; side: string; symbol: string; qty: number; price: number; status: string }
-  const rows: Row[] = broker === 'schwab'
-    ? orders.map((o) => ({ time: o.entered_time, side: o.instruction, symbol: o.symbol, qty: o.filled_quantity || o.quantity, price: o.price, status: o.status }))
-    : (data?.trades ?? []).map((t) => ({ time: t.created_at, side: t.action, symbol: t.symbol, qty: t.quantity, price: t.status === 'CLOSED' ? (t.exit_price ?? t.entry_price) : t.entry_price, status: t.status === 'OPEN' ? 'FILLED' : t.status }))
+  // activity rows — both brokers now use the live orders state (from Alpaca or Schwab API)
+  // Paper mode previously used tb_trades which missed options fills entirely
+  type Row = { time: string; side: string; symbol: string; qty: number; price: number; status: string; isOption?: boolean }
+  const rows: Row[] = orders.map((o) => ({
+    time:     o.entered_time,
+    side:     o.instruction,
+    symbol:   o.symbol,
+    qty:      o.filled_quantity || o.quantity,
+    price:    o.price,
+    status:   o.status,
+    isOption: o.asset_type === 'OPTION',
+  }))
   const filled = rows.filter((r) => /FILLED|OPEN|CLOSED/i.test(r.status))
   const working = rows.filter((r) => /WORK|PENDING|QUEUED|ACCEPTED|NEW/i.test(r.status))
   const canceled = rows.filter((r) => /CANCEL|REJECT|EXPIRED/i.test(r.status))
@@ -1037,8 +1044,11 @@ export default function DashboardPage() {
                       {tabRows.slice(0, 12).map((o, i) => (
                         <tr key={i}>
                           <td className="l" style={{ color: 'var(--fg-3)', fontSize: 11.5 }}>{hhmmss(o.time)}</td>
-                          <td className="l"><span className={`chip ${/SELL|STC/i.test(o.side) ? 'down' : 'up'}`} style={{ fontSize: '0.62rem' }}>{o.side}</span></td>
-                          <td className="l"><span className="psym">{o.symbol}</span></td>
+                          <td className="l"><span className={`chip ${/SELL|STC|SPREAD/i.test(o.side) ? 'down' : 'up'}`} style={{ fontSize: '0.62rem' }}>{o.side}</span></td>
+                          <td className="l">
+                            <span className="psym" style={{ fontSize: o.isOption ? '0.67rem' : undefined }}>{o.symbol}</span>
+                            {o.isOption && <span className="pbadge opt" style={{ marginLeft: 4 }}>OPT</span>}
+                          </td>
                           <td style={{ textAlign: 'right' }}>{o.qty}</td>
                           <td style={{ textAlign: 'right' }}>${num(o.price)}</td>
                           <td style={{ textAlign: 'right' }}><span className="chip mut" style={{ fontSize: '0.62rem' }}>{o.status}</span></td>
