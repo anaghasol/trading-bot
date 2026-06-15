@@ -28,6 +28,17 @@ const DEFAULT_BAL: Record<Broker, number> = { schwab: 2000, alpaca_paper: 100000
 
 const p2 = (n: number) => (n >= 0 ? '+' : '−') + Math.abs(n ?? 0).toFixed(2) + '%'
 const num = (n: number) => Math.abs(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// Exit ladder status — derived purely from current pnl_pct (lower bound; actual may be tighter if peak > current)
+function ladderStatus(pnl: number): { floor: string; trail: string; color: string } {
+  if (pnl >= 20) return { floor: '+12%', trail: '3%', color: '#13c98e' }
+  if (pnl >= 10) return { floor: '+5%',  trail: '4%', color: '#10b981' }
+  if (pnl >= 6)  return { floor: '+2%',  trail: '4%', color: '#34d399' }
+  if (pnl >= 5)  return { floor: 'BE',   trail: '5%', color: '#6ee7b7' }
+  if (pnl >= 3)  return { floor: '~0%',  trail: '5%', color: '#94a3b8' }
+  if (pnl >= 0)  return { floor: '—',    trail: '—',  color: '#64748b' }
+  return             { floor: 'STOP',  trail: '—',  color: '#f87171' }
+}
 const hhmmss = (iso: string) => { try { return new Date(iso).toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/New_York' }) } catch { return '—' } }
 
 // ── flashing number cell ────────────────────────────────────────────────────
@@ -794,6 +805,7 @@ export default function DashboardPage() {
                   <col style={{ minWidth: 90 }} /> {/* P/L Day */}
                   <col style={{ minWidth: 90 }} /> {/* P/L Open */}
                   <col style={{ minWidth: 70 }} /> {/* P/L % */}
+                  <col style={{ minWidth: 80 }} /> {/* Trail */}
                   <col style={{ minWidth: 90 }} /> {/* Mkt Value */}
                   <col style={{ minWidth: 80 }} /> {/* Action */}
                 </colgroup>
@@ -806,13 +818,14 @@ export default function DashboardPage() {
                     <th style={{ textAlign: 'right' }}>P/L Day</th>
                     <th style={{ textAlign: 'right' }}>P/L Open</th>
                     <th style={{ textAlign: 'right' }}>P/L %</th>
+                    <th style={{ textAlign: 'right' }}>Trail</th>
                     <th style={{ textAlign: 'right' }}>Mkt Value</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {pos.length === 0
-                    ? <tr><td colSpan={9}><div className="desk-empty">No open positions — engine waiting for a {profile.min_confidence}%+ signal.</div></td></tr>
+                    ? <tr><td colSpan={10}><div className="desk-empty">No open positions — engine waiting for a {profile.min_confidence}%+ signal.</div></td></tr>
                     : pos.map((p, i) => {
                         const opt = p.asset_type === 'OPTION'
                         const day = dayChangeOf(p)
@@ -846,6 +859,17 @@ export default function DashboardPage() {
                             <td style={{ textAlign: 'right' }}>
                               <span style={{ color: pnlColor(p.pnl_pct), fontWeight: 600 }}>{p2(p.pnl_pct)}</span>
                             </td>
+                            <td style={{ textAlign: 'right' }}>
+                              {(() => {
+                                const { floor, trail, color } = ladderStatus(p.pnl_pct)
+                                return (
+                                  <div style={{ lineHeight: 1.25 }}>
+                                    <span style={{ color, fontWeight: 600, fontSize: '0.72rem' }}>🔒{floor}</span>
+                                    {trail !== '—' && <span style={{ color: 'var(--fg-3)', fontSize: '0.65rem', display: 'block' }}>{trail} trail</span>}
+                                  </div>
+                                )
+                              })()}
+                            </td>
                             <td style={{ textAlign: 'right' }}>{money(p.market_value)}</td>
                             <td style={{ textAlign: 'right' }}>
                               <button className="closex" onClick={() => {
@@ -865,6 +889,7 @@ export default function DashboardPage() {
                       <td>—</td>
                       <td style={{ textAlign: 'right', color: pnlColor(totDay) }}>{signed(totDay)}</td>
                       <td style={{ textAlign: 'right', color: pnlColor(unreal) }}>{signed(unreal)}</td>
+                      <td>—</td>
                       <td>—</td>
                       <td style={{ textAlign: 'right' }}>{money(netLiq)}</td>
                       <td></td>

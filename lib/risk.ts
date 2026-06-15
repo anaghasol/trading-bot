@@ -121,9 +121,9 @@ export function checkExitCondition(
   // +5%  peak → explicit breakeven floor        — can never lose money from this point
   // +6%  peak → trail 4%,  floor at +2%         — tighten once well in profit
   // +10% peak → trail 4%,  floor at +5%         — lock in half the big move
-  // +22% peak → trail 3%,  floor at +12%        — squeeze big runners without cutting early
+  // +20% peak → trail 3%,  floor at +12%        — most breakouts start reversing 18-25% out
   let effective_trail = trail_pct  // default (6% paper, 5% live)
-  if (new_peak >= entry_price * 1.22) {
+  if (new_peak >= entry_price * 1.20) {
     effective_trail = 0.03  // very tight on big wins — protect most of the move
   } else if (new_peak >= entry_price * 1.06) {
     effective_trail = 0.04
@@ -132,7 +132,7 @@ export function checkExitCondition(
   }
 
   let trailing_stop = new_peak * (1 - effective_trail)
-  if (new_peak >= entry_price * 1.22) {
+  if (new_peak >= entry_price * 1.20) {
     trailing_stop = Math.max(trailing_stop, entry_price * 1.12)   // lock in +12%
   } else if (new_peak >= entry_price * 1.10) {
     trailing_stop = Math.max(trailing_stop, entry_price * 1.05)   // lock in +5%
