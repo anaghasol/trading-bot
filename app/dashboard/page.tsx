@@ -363,6 +363,8 @@ export default function DashboardPage() {
   const [scanning, setScanning] = useState(false)
   const [showRegimeInfo, setShowRegimeInfo] = useState(false)
   const [perfData, setPerfData] = useState<Record<string, StrategyStats> | null>(null)
+  const [streamActive, setStreamActive] = useState(false)
+  const esRef = useRef<EventSource | null>(null)
   const market = useMarketClock()
   const profile = PROFILES[broker]
 
@@ -420,6 +422,44 @@ export default function DashboardPage() {
     const iv = setInterval(() => load(broker), ms)
     return () => clearInterval(iv)
   }, [broker, market.open, load])
+
+  // Live price stream via SSE — 2s cadence, replaces watchlist polling during market hours
+  // Alpaca: bulk trades/latest WebSocket-equivalent | Schwab: parallel quote polling server-side
+  useEffect(() => {
+    if (esRef.current) { esRef.current.close(); esRef.current = null }
+    setStreamActive(false)
+
+    const seen = new Set<string>()
+    const symList: string[] = []
+    for (const s of [...pos.map((p) => p.asset_type !== 'OPTION' ? p.symbol : '').filter(Boolean), ...UNIVERSE]) {
+      if (!seen.has(s)) { seen.add(s); symList.push(s) }
+    }
+    const symbols = symList.join(',')
+
+    if (!symbols) return
+
+    const es = new EventSource(`/api/quotes/stream?symbols=${symbols}&broker=${broker}`)
+    esRef.current = es
+
+    es.onopen  = () => setStreamActive(true)
+    es.onerror = () => setStreamActive(false)
+
+    es.onmessage = (e) => {
+      try {
+        const prices = JSON.parse(e.data) as Record<string, { price: number; change_pct: number }>
+        if (Object.keys(prices).length === 0) return  // ping frame
+        setQmap((prev) => {
+          const next = { ...prev }
+          for (const [sym, q] of Object.entries(prices)) {
+            next[sym] = { symbol: sym, price: q.price, change_pct: q.change_pct ?? prev[sym]?.change_pct ?? 0 }
+          }
+          return next
+        })
+      } catch { /* ignore malformed frames */ }
+    }
+
+    return () => { es.close(); esRef.current = null; setStreamActive(false) }
+  }, [broker, pos])
 
   async function forceScan() {
     if (scanning) return
@@ -543,7 +583,10 @@ export default function DashboardPage() {
             ))
           })()}
         </div>
-        <button className="iconbtn" onClick={() => load(broker)}>↻ {stamp || '—'}</button>
+        <button className="iconbtn" onClick={() => load(broker)}>
+          ↻ {stamp || '—'}
+          {streamActive && <span title="Live price stream active" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#13c98e', marginLeft: 5, verticalAlign: 'middle', boxShadow: '0 0 4px #13c98e' }} />}
+        </button>
         <button
           className="iconbtn"
           onClick={forceScan}
