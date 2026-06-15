@@ -182,7 +182,7 @@ export async function GET(req: Request) {
           status:      'OPEN',
           strategy:    'BULL_PUT_SPREAD',
           entry_price: spread.short_put.strike_price,
-          qty:         spread.contracts,
+          quantity:    spread.contracts,
           confidence:  82,
           reason:      `${desc} | order=${result.order_id}`,
           created_at:  new Date().toISOString(),

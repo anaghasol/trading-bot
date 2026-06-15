@@ -72,7 +72,7 @@ export async function GET(req: Request) {
           broker,
           status:      'OPEN',
           entry_price: entryPrice,
-          qty:         Math.abs(pos.quantity),
+          quantity:    Math.abs(pos.quantity),
           strategy:    'RECOVERED',
           confidence:  70,
           reason:      `stop=$${stopPrice.toFixed(2)} | auto-journaled by health check (position existed at broker without tb_trades entry)`,
