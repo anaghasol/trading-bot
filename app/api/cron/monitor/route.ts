@@ -10,7 +10,7 @@ import { profileFor } from '@/lib/strategy-profiles'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
 import { getActiveIntentions } from '@/lib/tg-intentions'
-import { alertStopHit, alertTelegramDown, alertTelegramReconnected, alertPreMarket } from '@/lib/notify'
+import { alertStopHit, alertTelegramDown, alertTelegramReconnected, alertPreMarket, alertSchwabTokenExpiry } from '@/lib/notify'
 import { getSchwabAuthStatus } from '@/lib/schwab'
 import { createServiceClient } from '@/lib/supabase-server'
 
@@ -408,9 +408,8 @@ export async function GET(req: Request) {
     if (authStatus.ok && authStatus.hours_left !== null && authStatus.hours_left <= 24) {
       const { data: alreadyAlerted } = await db.from('tb_settings').select('value').eq('key', 'schwab_expiry_alerted').single()
       if (!alreadyAlerted?.value) {
-        await alertPreMarket({ setups_found: 0, top_symbol: 'AUTH', top_score: 0, regime: 'SCHWAB_TOKEN', vix: 0 })
-        // Use alerts table since we don't have a generic SMS function exposed
-        await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `🔐 Schwab token expires in ${authStatus.hours_left}h — visit /api/schwab/auth to re-authenticate before trading stops` })
+        await alertSchwabTokenExpiry(authStatus.hours_left)  // proper SMS — alertPreMarket skips if setups=0
+        await db.from('tb_alerts').insert({ type: 'WARN', symbol: null, message: `🔐 Schwab token expires in ${authStatus.hours_left}h — re-authorize at /settings before trading stops` })
         await db.from('tb_settings').upsert({ key: 'schwab_expiry_alerted', value: new Date().toISOString() })
       }
     } else if (authStatus.hours_left !== null && authStatus.hours_left > 24) {

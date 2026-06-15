@@ -157,6 +157,12 @@ export async function alertPreMarket(opts: {
   await sendSMS(msg)
 }
 
+/** Schwab OAuth token near-expiry alert — fires once when <24h left. */
+export async function alertSchwabTokenExpiry(hours: number): Promise<void> {
+  const urgency = hours <= 4 ? '🚨 URGENT' : '⚠️'
+  await sendSMS(`${urgency} MyTrade: Schwab token expires in ${hours}h\nGo to Settings → Re-authorize Schwab before trading stops.\nhttps://trading-bot-hazel-one.vercel.app/settings`)
+}
+
 /** Daily morning brief — sent at 9:35 AM ET. Zero dashboard needed. */
 export async function alertMorningBrief(opts: {
   account_value: number
