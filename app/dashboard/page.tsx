@@ -1125,25 +1125,6 @@ export default function DashboardPage() {
                   </div>
                 )}
                 {tg != null && tg.has_session && !tg.connected && (() => {
-                  const now = new Date()
-                  const etDay = parseInt(now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' }).slice(0,2) === 'Sa' ? '6' : now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' }).slice(0,2) === 'Su' ? '0' : '1')
-                  const dayName = now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'long' })
-                  const isWeekend = dayName === 'Saturday' || dayName === 'Sunday'
-                  const etHour = parseInt(now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
-                  const isAfterHours = etHour >= 18 || etHour < 9
-
-                  if (isWeekend) return (
-                    <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)', background: 'var(--bg-3)', borderRadius: 6, padding: '6px 10px' }}>
-                      📅 Weekend — poller resumes Monday 9 AM ET
-                      <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Last active: {tg.last_poll ? new Date(tg.last_poll).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' }) + ' ET Fri' : '—'}</span>
-                    </div>
-                  )
-                  if (isAfterHours) return (
-                    <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)', background: 'var(--bg-3)', borderRadius: 6, padding: '6px 10px' }}>
-                      🌙 Market closed — poller resumes 9 AM ET
-                      <br /><span className="faint" style={{ fontSize: '0.65rem' }}>Last active: {tg.last_poll ? new Date(tg.last_poll).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit' }) + ' ET' : '—'}</span>
-                    </div>
-                  )
                   const cronPingAge = tg.last_cron_ping ? Math.round((Date.now() - new Date(tg.last_cron_ping).getTime()) / 60000) : null
                   return (
                     <div style={{ fontSize: '0.75rem', color: '#f5a623', background: 'rgba(245,166,35,0.08)', borderRadius: 6, padding: '6px 10px' }}>

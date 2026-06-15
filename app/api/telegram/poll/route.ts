@@ -1,7 +1,7 @@
 /**
  * Polls multiple Telegram channels for new messages and fires them
  * through the signal parser → Alpaca Paper + Schwab Live execution.
- * Called by Vercel cron every minute during market hours.
+ * Called by Vercel cron every minute, 24/7 — signals logged for learning any time.
  *
  * Channels:
  *  - SF Essential Trades (-1002381909837): LEARN ONLY — muted, no trade execution

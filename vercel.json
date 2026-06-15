@@ -22,7 +22,7 @@
     },
     {
       "path": "/api/telegram/poll",
-      "schedule": "* 13-21 * * 1-5"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/cron/health",
