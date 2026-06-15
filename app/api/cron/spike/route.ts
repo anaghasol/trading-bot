@@ -93,17 +93,26 @@ export async function GET(req: Request) {
 
   const quotes  = await batchQuotes(allSyms)
 
-  // Thresholds: significant move + high volume pace
-  const SPIKE_CHANGE = 4.0   // ≥4% move
-  const SPIKE_PACE   = 2.0   // ≥2× expected volume pace for this time of day
-  const BIG_CHANGE   = 8.0   // ≥8% = "explosive" — gets priority alert
+  // Thresholds: significant move + elevated volume pace + RS vs SPY
+  const SPIKE_CHANGE  = 4.0   // ≥4% move
+  const SPIKE_PACE    = 2.5   // ≥2.5× expected volume pace (was 2.0 — tighter to reduce noise)
+  const MIN_RS_VS_SPY = 1.5   // must outperform SPY by ≥1.5% — filters "rising tide" rallies
+  const BIG_CHANGE    = 8.0   // ≥8% = "explosive" — gets priority alert
+
+  // SPY's current day change — used to compute relative strength
+  const spyQuote  = quotes.find((q) => q.symbol === 'SPY')
+  const spyChange = spyQuote?.changePct ?? 0
 
   const spikes = quotes
     .filter((q) => {
       if (q.changePct < SPIKE_CHANGE) return false
       if (q.price <= 0) return false
       const pace = q.avgVolume > 0 ? q.volume / (q.avgVolume * sf) : 0
-      return pace >= SPIKE_PACE
+      if (pace < SPIKE_PACE) return false
+      // Require the stock to be outperforming SPY by at least MIN_RS_VS_SPY.
+      // Avoids noisy "everything is up" alerts when SPY itself is spiking.
+      const rsVsSpy = q.changePct - spyChange
+      return rsVsSpy >= MIN_RS_VS_SPY
     })
     .sort((a, b) => b.changePct - a.changePct)
 
@@ -118,9 +127,10 @@ export async function GET(req: Request) {
     const { data: existing } = await db.from('tb_settings').select('value').eq('key', key).single()
     if (existing) continue  // already alerted today
 
-    const pace  = s.avgVolume > 0 ? s.volume / (s.avgVolume * sf) : 0
-    const emoji = s.changePct >= BIG_CHANGE ? '🚨' : '⚡'
-    const msg   = `${emoji} *Spike: ${s.symbol}*\n+${s.changePct.toFixed(1)}% @ $${s.price.toFixed(2)}\nVolume pace: ${pace.toFixed(1)}× expected\n_Next AI scan will evaluate for trade_`
+    const pace     = s.avgVolume > 0 ? s.volume / (s.avgVolume * sf) : 0
+    const rsVsSpy  = s.changePct - spyChange
+    const emoji    = s.changePct >= BIG_CHANGE ? '🚨' : '⚡'
+    const msg      = `${emoji} *Spike: ${s.symbol}*\n+${s.changePct.toFixed(1)}% @ $${s.price.toFixed(2)} | RS vs SPY: +${rsVsSpy.toFixed(1)}%\nVolume pace: ${pace.toFixed(1)}× expected\n_Next AI scan will evaluate for trade_`
 
     await Promise.all([
       sendTelegram(msg),

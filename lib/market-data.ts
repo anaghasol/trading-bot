@@ -695,7 +695,7 @@ export async function scanMomentumSpike(
         if (opts.loose) {
           const orbHigh = await getOpeningRangeHigh(symbol)
           if (orbHigh && price > orbHigh) {
-            score += 2
+            score += 3
             reasons.push(`ORB breakout above $${orbHigh.toFixed(2)}`)
             setup_type = 'BREAKOUT'  // BREAKOUT type gets the AI excited
           }
