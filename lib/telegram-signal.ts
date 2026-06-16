@@ -16,10 +16,17 @@ const HAS_TICKER    = /\b[A-Z]{2,5}\b/
 const HAS_PRICE     = /\$[\d,]+(\.\d+)?|\d+\.?\d*\s*%/
 
 // Options-specific patterns — these are NEVER stock trade signals
-const OPTIONS_PATTERN = /\b(call spread|put spread|bull put|bear call|iron condor|straddle|strangle|butterfly|debit spread|credit spread|vertical spread|covered call|cash.secured put|\d{4}\/\d{4}|\d+[Cc]\/?[\d.]+|options? (expir|premium|contract|chain)|IV rank|implied vol|theta|delta|gamma|vega|0DTE|weekly options)\b/i
+const OPTIONS_PATTERN = /\b(call spread|put spread|bull put|bear call|iron condor|straddle|strangle|butterfly|debit spread|credit spread|vertical spread|covered call|cash.secured put|\d{4}\/\d{4}|\d+[Cc]\/?[\d.]+|options? (expir|premium|contract|chain)|IV rank|implied vol|theta|delta|gamma|vega|0DTE|weekly options|buying? ?(calls?|puts?)|sell(ing)? ?(calls?|puts?)|calls?|puts?|\$\d+[CP]|\d+[CP] \d+\/\d+)\b/i
+
+// OCC options symbol: TICKER + YYMMDD + C/P + 8-digit strike (e.g. AMD260724P00485000)
+const OCC_SYMBOL = /^[A-Z]{1,6}\d{6}[CP]\d{8}$/
 
 export function isOptionsSignal(text: string): boolean {
   return OPTIONS_PATTERN.test(text)
+}
+
+export function isOCCSymbol(symbol: string): boolean {
+  return OCC_SYMBOL.test(symbol)
 }
 
 export function isWorthClassifying(text: string): boolean {

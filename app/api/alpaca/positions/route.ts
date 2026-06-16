@@ -45,19 +45,15 @@ export async function GET() {
 
     const positions = raw.map((p) => {
       const symbol      = String(p.symbol)
+      const isOption    = String(p.asset_class ?? '') === 'us_option' || /^[A-Z]{1,6}\d{6}[CP]\d{8}$/.test(symbol)
       const qty         = parseFloat(String(p.qty ?? 0))
       const alpacaEntry = parseFloat(String(p.avg_entry_price ?? 0))
       const cur_price   = parseFloat(String(p.current_price ?? 0)) || alpacaEntry
       const market_val  = parseFloat(String(p.market_value ?? 0))
-      const hasOverride = !!overrides[symbol]
+      const hasOverride = !isOption && !!overrides[symbol]
 
-      // Apply corrected entry price if /fix-entry override exists
       const avg_cost = overrides[symbol] ?? alpacaEntry
 
-      // P/L: recompute only when entry is overridden (we changed the cost basis).
-      // Otherwise trust Alpaca's own unrealized_pl — it's computed server-side
-      // against their actual price feed and is correct even when current_price
-      // comes back null/0 from the API (positions not yet repriced for the session).
       const unreal  = hasOverride
         ? (cur_price - avg_cost) * qty
         : parseFloat(String(p.unrealized_pl ?? 0))
@@ -65,8 +61,22 @@ export async function GET() {
         ? (avg_cost > 0 ? ((cur_price - avg_cost) / avg_cost) * 100 : 0)
         : parseFloat(String(p.unrealized_plpc ?? 0)) * 100
 
+      // Parse OCC symbol into a human-readable display name for options
+      let displaySymbol = symbol
+      let option_expiry: string | undefined
+      if (isOption) {
+        const m = symbol.match(/^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/)
+        if (m) {
+          const [, und, yy, mm, dd, type, strikeRaw] = m
+          const strike = parseInt(strikeRaw, 10) / 1000
+          displaySymbol = `${und} $${strike % 1 === 0 ? strike.toFixed(0) : strike.toFixed(1)}${type} ${parseInt(mm)}/${parseInt(dd)}`
+          option_expiry = `20${yy}-${mm}-${dd}`
+        }
+      }
+
       return {
-        symbol,
+        symbol:             displaySymbol,
+        raw_symbol:         symbol,
         quantity:           qty,
         avg_cost,
         current_price:      cur_price,
@@ -76,7 +86,8 @@ export async function GET() {
         day_pnl:            parseFloat(String(p.unrealized_intraday_pl ?? 0)),
         pnl_pct:            Math.round(pnl_pct * 100) / 100,
         cost_basis:         avg_cost * qty,
-        asset_type:         'EQUITY' as const,
+        asset_type:         isOption ? 'OPTION' as const : 'EQUITY' as const,
+        option_expiry,
         entry_corrected:    hasOverride,
       }
     })

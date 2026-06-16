@@ -15,7 +15,7 @@ import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
-import { parseSignal, isWorthClassifying, isOptionsSignal } from '@/lib/telegram-signal'
+import { parseSignal, isWorthClassifying, isOptionsSignal, isOCCSymbol } from '@/lib/telegram-signal'
 import { addIntention, parseZonePrices } from '@/lib/tg-intentions'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
@@ -307,6 +307,14 @@ export async function GET(req: Request) {
       const etHour = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
       const afterHours = parseInt(etHour) >= 16 || parseInt(etHour) < 9
       const afterHoursTag = afterHours ? ' [FILLS AT OPEN]' : ''
+
+      // Block OCC option symbols — AI occasionally extracts an options contract code
+      // instead of a stock ticker. Alpaca would fill it as an options trade.
+      if (isOCCSymbol(signal.symbol)) {
+        await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `[BLOCKED] OCC options symbol ${signal.symbol} from ${ch.name} — not a stock trade` })
+        await tgSend(`⛔ *Blocked options trade* (${ch.name})\nSymbol \`${signal.symbol}\` is an options contract — skipped. Check if signal meant the underlying stock.`)
+        return { id: msg.id, type: 'blocked_occ', symbol: signal.symbol }
+      }
 
       const liveQuote = await Alpaca.getQuote(signal.symbol)
       const livePrice = liveQuote?.price ?? signal.entry_price
