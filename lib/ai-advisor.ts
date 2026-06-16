@@ -245,10 +245,16 @@ export async function getRecommendations(
     ? ALL_ALPACA_SYMBOLS
     : ALL_SYMBOLS.filter((s) => !['SPY', 'QQQ'].includes(s))
 
-  // 1. Market regime + live discovery IN PARALLEL (both free)
+  const isPaper = isPaperBroker(broker)
+
+  // 1. Market regime + market-wide discovery IN PARALLEL (both free, no API key)
+  // Discovery runs for BOTH live and paper — live uses tighter liquidity filters
+  // (vol≥2M enforced inside getDiscoverySymbols) so no penny stocks on real money.
+  // This replaces the hardcoded 17-symbol live watchlist with a dynamic 60-100
+  // symbol universe from Yahoo trending + top gainers + most active.
   const [regime, discoveries] = await Promise.all([
     getMarketRegime(),
-    isPaperBroker(broker) ? getDiscoverySymbols() : Promise.resolve([]),
+    getDiscoverySymbols(isPaper ? 'paper' : 'live'),
   ])
 
   const discoverySyms = discoveries.map((d) => d.symbol)
@@ -267,7 +273,6 @@ export async function getRecommendations(
   // 2. EMA pullback + Momentum spike scans RUN IN PARALLEL (free, no AI cost)
   // EMA: needs ≥60 days — catches established names on pullbacks
   // Momentum: needs ≥10 days — catches new IPOs, volume spikes, explosive moves (SPCX-type)
-  const isPaper = isPaperBroker(broker)
   const [emaSetups, momentumSetups] = await Promise.all([
     scanForEMAPullback(symbols, { loose: isPaper }),
     isPaper ? scanMomentumSpike(symbols, regime.spy_change, { loose: true }) : Promise.resolve([]),

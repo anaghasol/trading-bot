@@ -162,7 +162,8 @@ async function runScan(
     await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining, broker)
 
   // Alert on genuinely new discoveries (not in static watchlist) — once per symbol per day
-  if (new_discoveries.length > 0 && broker === 'alpaca_paper') {
+  // Now fires for BOTH live and paper since discovery is enabled for both
+  if (new_discoveries.length > 0) {
     const today = new Date().toISOString().slice(0, 10)
     for (const d of new_discoveries.slice(0, 3)) {  // cap at 3 alerts per tick
       const alertKey = `discovery_alert_${d.symbol}_${today}`

@@ -4,9 +4,11 @@
  * Sources (all free, no API key):
  *   1. Yahoo Finance Trending US   — stocks people are searching right now
  *   2. Yahoo Finance Top Gainers   — stocks up ≥3% with real volume today
+ *   3. Yahoo Finance Most Active   — highest dollar-volume leaders today
  *
  * A human trader checks these every morning and catches things like SPCX on
  * IPO day. This module automates that loop — runs every scan tick.
+ * Used for BOTH paper AND live (live mode applies tighter liquidity filters).
  */
 
 const YF_BASE = 'https://query1.finance.yahoo.com'
@@ -94,24 +96,62 @@ export async function getTopGainers(
   }
 }
 
-// ── Combined discovery ────────────────────────────────────────────────────────
+// ── Source 3: Yahoo Finance Most Active (by dollar volume) ───────────────────
 
-export async function getDiscoverySymbols(): Promise<DiscoverySymbol[]> {
-  const [trending, gainers] = await Promise.all([
+export async function getMostActive(minVol = 1_000_000): Promise<DiscoverySymbol[]> {
+  try {
+    const res = await fetch(
+      `${YF_BASE}/v1/finance/screener/predefined/saved?scrIds=most_actives&count=30&start=0`,
+      { headers: HEADERS, next: { revalidate: 180 } }
+    )
+    if (!res.ok) return []
+    const data = await res.json() as {
+      finance: { result: [{ quotes: Record<string, unknown>[] }] }
+    }
+    const quotes = data.finance?.result?.[0]?.quotes ?? []
+    return quotes
+      .filter((q) => {
+        const sym = String(q.symbol ?? '')
+        const vol = Number(q.regularMarketVolume ?? 0)
+        const price = Number(q.regularMarketPrice ?? 0)
+        return sym && !EXCLUDE.has(sym) && /^[A-Z]{1,5}$/.test(sym) && vol >= minVol && price >= 3
+      })
+      .map((q) => {
+        const vol = Number(q.regularMarketVolume)
+        const chg = Math.round(Number(q.regularMarketChangePercent) * 10) / 10
+        return {
+          symbol:     String(q.symbol),
+          source:     'gainer' as const,
+          change_pct: chg,
+          volume:     vol,
+          signal:     `Most Active: ${(vol / 1_000_000).toFixed(1)}M vol, ${chg > 0 ? '+' : ''}${chg}%`,
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
+// ── Combined discovery ────────────────────────────────────────────────────────
+// mode='live': tighter filters (price≥$10, vol≥2M) — real money needs liquidity
+// mode='paper': wider net (price≥$3, vol≥500K) — fake money collects data fast
+
+export async function getDiscoverySymbols(mode: 'live' | 'paper' = 'paper'): Promise<DiscoverySymbol[]> {
+  const [trending, gainers, actives] = await Promise.all([
     getTrendingSymbols(),
-    getTopGainers(),
+    getTopGainers(mode === 'live' ? 2_000_000 : 500_000, mode === 'live' ? 2.0 : 3.0),
+    getMostActive(mode === 'live' ? 2_000_000 : 1_000_000),
   ])
 
-  // Merge: if a symbol appears in both, it's a strong signal — keep highest-signal entry
+  // Merge all three sources — symbols appearing in multiple lists are strongest signals
   const seen = new Map<string, DiscoverySymbol>()
 
-  for (const d of trending) {
+  for (const d of [...trending, ...actives]) {
     seen.set(d.symbol, d)
   }
   for (const d of gainers) {
     const existing = seen.get(d.symbol)
     if (existing) {
-      // Appears in both trending AND gainers — double signal, upgrade the entry
       seen.set(d.symbol, {
         ...existing,
         signal: `${existing.signal} · ${d.signal} 🔥`,
@@ -121,8 +161,18 @@ export async function getDiscoverySymbols(): Promise<DiscoverySymbol[]> {
     }
   }
 
-  // Sort: double-signal first, then trending rank, then gainers by change_pct
-  return Array.from(seen.values()).sort((a, b) => {
+  let results = Array.from(seen.values())
+
+  // Live mode: apply minimum liquidity filter — no illiquid names on real money
+  if (mode === 'live') {
+    results = results.filter((d) => {
+      const vol = d.volume ?? 0
+      return vol >= 2_000_000  // 2M+ daily volume for Schwab live fills
+    })
+  }
+
+  // Sort: multi-source (🔥) first, then by trending rank, then by volume/change
+  return results.sort((a, b) => {
     const aDouble = a.signal.includes('🔥') ? 1 : 0
     const bDouble = b.signal.includes('🔥') ? 1 : 0
     if (aDouble !== bDouble) return bDouble - aDouble
