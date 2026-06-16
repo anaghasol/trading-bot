@@ -347,9 +347,9 @@ async function monitorBroker(
       : isDay ? 0.03 : profile.trail_pct
     const effectiveMaxHold = isTrend ? 999  : profile.max_hold_days  // trend: never force-close on calendar
 
-    // Trend breakeven floor: once up 8%, floor the initial stop at entry price.
-    // A winner can never become a loser — we just stop risking our cost basis.
-    const effectiveInitialStop = isTrend && gainPct >= 8
+    // Trend breakeven floor: once up 6%, floor the initial stop at entry price.
+    // Many strong trends pull back 6-10% before continuing — protect early.
+    const effectiveInitialStop = isTrend && gainPct >= 6
       ? Math.max(meta.initial_stop, meta.entry_price)
       : meta.initial_stop
 
@@ -364,7 +364,7 @@ async function monitorBroker(
 
     if (!exit.should_exit) {
       const trailLabel = isTrend
-        ? (gainPct >= 30 ? '[TREND 4%trail 🔒]' : gainPct >= 8 ? '[TREND 8%trail BE🛡]' : '[TREND 8%trail]')
+        ? (gainPct >= 30 ? '[TREND 4%trail 🔒]' : gainPct >= 6 ? '[TREND 8%trail BE🛡]' : '[TREND 8%trail]')
         : isDay ? '[DAY 3%trail]' : ''
       statuses.push(`${pos.symbol}: ${exit.reason} ${trailLabel}`.trim())
       continue

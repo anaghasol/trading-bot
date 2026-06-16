@@ -463,7 +463,11 @@ async function runScan(
       : (rec.ema_score >= 6 && rec.confidence >= 78) ? 1.1 : 1.0
     const setupPrefix = rec.setup?.split('_')[0]?.toUpperCase() ?? ''
     const boostMult = stratBoost && setupPrefix === stratBoost.name ? stratBoost.mult : 1.0
-    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, convictionMult * boostMult)
+    // Trend positions get 1.5× base sizing — they're designed to hold and compound.
+    // Cap combined mult at 2.0× to avoid oversizing a single entry on small account.
+    const trendMult = rec.hold_mode === 'trend' ? 1.5 : 1.0
+    const combinedMult = Math.min(convictionMult * boostMult * trendMult, 2.0)
+    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, combinedMult)
     if (sizing.qty < 1) continue
 
     // Per-trade exposure gate: check BEFORE each trade, not just at scan start.
