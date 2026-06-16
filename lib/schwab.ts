@@ -263,13 +263,24 @@ export async function getPositions(): Promise<Position[]> {
         ? ((current_price - avg_cost) / avg_cost) * 100 * (quantity < 0 ? -1 : 1)
         : 0
 
+    // Schwab returns longOpenProfitLoss / shortOpenProfitLoss — NOT unrealizedProfitLoss.
+    // Fall back to computing from market_value vs cost basis if both are absent.
+    let unrealized_pnl: number
+    if (typeof pos.longOpenProfitLoss === 'number') {
+      unrealized_pnl = pos.longOpenProfitLoss
+    } else if (typeof pos.shortOpenProfitLoss === 'number') {
+      unrealized_pnl = pos.shortOpenProfitLoss
+    } else {
+      unrealized_pnl = market_value - avg_cost * Math.abs(quantity)
+    }
+
     return {
       symbol,
       quantity,
       avg_cost,
       current_price,
       market_value,
-      unrealized_pnl: (pos.unrealizedProfitLoss as number) || 0,
+      unrealized_pnl: Math.round(unrealized_pnl * 100) / 100,
       pnl_pct: Math.round(pnl_pct * 100) / 100,
       peak_pnl: 0,
       asset_type: assetType,
