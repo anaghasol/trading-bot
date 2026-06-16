@@ -20,6 +20,15 @@
 const ALPACA_DATA    = 'https://data.alpaca.markets'
 const ALPACA_TRADING = 'https://paper-api.alpaca.markets'
 
+// Negative filter — skip articles that match these even if a positive keyword also matches.
+// Prevents tickers appearing in distress news (bankruptcy, SEC, lawsuits) from entering the pool.
+const NEGATIVE_KEYWORDS = [
+  'bankruptcy', 'bankrupt', 'chapter 11', 'chapter 7', 'delisting', 'delisted',
+  'sec investigation', 'sec charges', 'fraud charges', 'class action',
+  'lawsuit filed', 'securities fraud', 'accounting irregularities',
+  'going concern', 'default notice', 'debt restructuring',
+]
+
 // Discovery keywords — Alpaca news headlines/summaries are scanned for these.
 // Catches spin-offs, IPOs, and structural narrative catalysts (FDA, contracts, pivots)
 // that create the "new identity + megatrend" pattern behind SNDK-style moves.
@@ -244,7 +253,8 @@ async function discoverNewListings(): Promise<string[]> {
       }
       for (const article of d.news ?? []) {
         const text = `${article.headline ?? ''} ${article.summary ?? ''}`.toLowerCase()
-        if (SPINOFF_KEYWORDS.some(kw => text.includes(kw))) {
+        const isNegative = NEGATIVE_KEYWORDS.some(kw => text.includes(kw))
+        if (!isNegative && SPINOFF_KEYWORDS.some(kw => text.includes(kw))) {
           for (const sym of article.symbols ?? []) {
             if (/^[A-Z]{1,5}$/.test(sym)) found.add(sym)  // only clean tickers
           }
