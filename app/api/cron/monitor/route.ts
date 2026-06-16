@@ -125,11 +125,12 @@ async function monitorBroker(
     : { data: [] }
   const partialSet = new Set((partialRows ?? []).filter((r) => r.value).map((r) => r.key))
 
-  const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string; partial_done: boolean; p2_done: boolean }>()
+  const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string; hold_mode: 'day' | 'swing' | 'trend'; partial_done: boolean; p2_done: boolean }>()
   for (const t of openTrades ?? []) {
     const ep         = t.entry_price ?? 0
     const peakPnlPct = (t.peak_pnl as number) ?? 0
     const stopMatch  = (t.reason as string)?.match(/stop=\$([0-9.]+)/)
+    const holdModeMatch = (t.reason as string)?.match(/hold_mode=(\w+)/)
     tradeMap.set(t.symbol, {
       id:           t.id,
       entry_price:  ep,
@@ -138,6 +139,7 @@ async function monitorBroker(
       entry_date:   (t.created_at as string)?.split('T')[0] ?? todayStr,
       strategy:     t.strategy ?? 'SWING',
       reason:       t.reason ?? '',
+      hold_mode:    (holdModeMatch?.[1] ?? 'swing') as 'day' | 'swing' | 'trend',
       partial_done: partialSet.has(`p1done_${t.id}`),
       p2_done:      partialSet.has(`p2done_${t.id}`),
     })
@@ -329,18 +331,30 @@ async function monitorBroker(
       }
     }
 
-    // Full exit check — use broker profile's trail/stop settings + hard loss cap
+    // Full exit check — hold_mode determines trail width and calendar limit
+    //   trend: 8% trail (wider room to breathe), no calendar close (hold until stop fires)
+    //   day:   tight 3% trail, must exit by EOD (handled by close cron)
+    //   swing: profile default (5% trail, max_hold_days cap)
     const profile = profileFor(broker)
+    const isTrend = meta.hold_mode === 'trend'
+    const isDay   = meta.hold_mode === 'day'
+    const effectiveTrail   = isTrend ? 0.08 : isDay ? 0.03 : profile.trail_pct
+    const effectiveMaxHold = isTrend ? 999  : profile.max_hold_days  // trend: never force-close on calendar
+
     const exit = checkExitCondition(
       pos.current_price, meta.entry_price, meta.peak_price, meta.initial_stop,
-      holdDays, false, profile.trail_pct, profile.max_hold_days,
+      holdDays, false, effectiveTrail, effectiveMaxHold,
       broker === 'alpaca_paper'
     )
     if (exit.new_peak_price > meta.peak_price && meta.id) {
       await db.from('tb_trades').update({ peak_pnl: ((exit.new_peak_price - meta.entry_price) / meta.entry_price) * 100 }).eq('id', meta.id)
     }
 
-    if (!exit.should_exit) { statuses.push(`${pos.symbol}: ${exit.reason}`); continue }
+    if (!exit.should_exit) {
+      const modeTag = isTrend ? ' [TREND 8%trail]' : isDay ? ' [DAY 3%trail]' : ''
+      statuses.push(`${pos.symbol}: ${exit.reason}${modeTag}`)
+      continue
+    }
 
     // Pavan said hold — override our trailing stop (but NOT emergency initial-stop loss)
     const isEmergencyStop = exit.exit_type === 'INITIAL_STOP' && exit.pnl_pct < -6
@@ -377,7 +391,17 @@ async function monitorBroker(
         pnl, pnl_pct: exit.pnl_pct, exit_type: exit.exit_type,
       })
 
-      statuses.push(`${pos.symbol}: CLOSED ${exit.exit_type} $${pnl.toFixed(2)}`)
+      // Re-entry window: if this was a stop-loss (not profit-take), mark it as a re-entry
+      // candidate. The next scan tick will boost this symbol's confidence by +5 if AI still
+      // likes it — enabling the "re-enter within 1 hour if thesis still valid" behavior.
+      if (pnl < 0 && exit.exit_type !== 'TARGET') {
+        void db.from('tb_settings').upsert({
+          key: `reentry_candidate_${broker}_${pos.symbol}`,
+          value: JSON.stringify({ closed_at: new Date().toISOString(), close_price: pos.current_price, pnl_pct: exit.pnl_pct, hold_mode: meta.hold_mode }),
+        })
+      }
+
+      statuses.push(`${pos.symbol}: CLOSED ${exit.exit_type} $${pnl.toFixed(2)}${pnl < 0 ? ' [reentry eligible]' : ''}`)
     }
   }
 

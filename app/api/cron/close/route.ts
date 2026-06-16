@@ -55,17 +55,19 @@ async function runClose(
   const brokerFilter = isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper'
   const { data: openTrades } = await db
     .from('tb_trades')
-    .select('id, symbol, created_at, strategy, entry_price')
+    .select('id, symbol, created_at, strategy, entry_price, reason')
     .eq('status', 'OPEN')
     .or(brokerFilter)
 
-  const tradeMap = new Map<string, { id: number; entry_date: string; strategy: string; entry_price: number }>()
+  const tradeMap = new Map<string, { id: number; entry_date: string; strategy: string; entry_price: number; hold_mode: 'day' | 'swing' | 'trend' }>()
   for (const t of openTrades ?? []) {
+    const holdModeMatch = (t.reason as string | null)?.match(/hold_mode=(\w+)/)
     tradeMap.set(t.symbol, {
       id: t.id,
       entry_date: (t.created_at as string)?.split('T')[0] ?? today,
       strategy: t.strategy ?? '',
       entry_price: t.entry_price ?? 0,
+      hold_mode: (holdModeMatch?.[1] ?? 'swing') as 'day' | 'swing' | 'trend',
     })
   }
 
@@ -78,35 +80,47 @@ async function runClose(
 
     const holdDays  = Math.round((Date.now() - new Date(meta.entry_date + 'T00:00:00Z').getTime()) / 86_400_000)
     const isSameDay = meta.entry_date === today
+    const isTrend   = meta.hold_mode === 'trend'
+    const isDay     = meta.hold_mode === 'day'
 
     let shouldExit = false
     let exitReason = ''
 
     if (isMorning) {
       // Time stop: held max days AND still a loser
-      if (!isSameDay && holdDays >= profile.max_hold_days && pos.pnl_pct < 0) {
+      // SKIP for trend positions — they're designed to hold past the calendar limit
+      if (!isTrend && !isSameDay && holdDays >= profile.max_hold_days && pos.pnl_pct < 0) {
         shouldExit = true
         exitReason = `TIME STOP (losing ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d)`
       }
+      // Day positions: must exit next morning if not already closed EOD
+      if (isDay && !isSameDay) {
+        shouldExit = true
+        exitReason = `DAY EXIT (overnight hold not intended)`
+      }
       // Flat recycler: stuck between -2% and +2.5% for 2+ days — dead capital
-      if (!shouldExit && !isSameDay && holdDays >= 2 && pos.pnl_pct > -2 && pos.pnl_pct < 2.5) {
+      // SKIP for trend positions — they may be basing before next leg up
+      if (!shouldExit && !isTrend && !isSameDay && holdDays >= 2 && pos.pnl_pct > -2 && pos.pnl_pct < 2.5) {
         shouldExit = true
         exitReason = `FLAT RECYCLE (${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% after ${holdDays}d — redeploying capital)`
       }
     }
 
     if (isPreClose) {
-      // Cut losers held 3+ days — these aren't recovering
-      if (!isSameDay && holdDays >= 3 && pos.pnl_pct < -2) {
+      // Cut losers held 3+ days — these aren't recovering.
+      // Trend positions get a wider loss bar (-5%) before we cut them — they need more room.
+      const lossBar = isTrend ? -5 : -2
+      if (!isSameDay && holdDays >= 3 && pos.pnl_pct < lossBar) {
         shouldExit = true
-        exitReason = `PRE-CLOSE CUT: ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d`
+        exitReason = `PRE-CLOSE CUT: ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d${isTrend ? ' [trend -5% bar]' : ''}`
       }
       // Winners of any size: let trailing stop manage the exit.
       // No arbitrary cap — a +22% position with a tight trail could go to +40%.
     }
 
     if (!shouldExit) {
-      actions.push(`${pos.symbol}: ${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% hold (${holdDays}d/${profile.max_hold_days}d max)`)
+      const modeLabel = isTrend ? ' [TREND — no time limit]' : isDay ? ' [DAY]' : ''
+      actions.push(`${pos.symbol}: ${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% hold (${holdDays}d${isTrend ? '' : `/${profile.max_hold_days}d max`})${modeLabel}`)
       continue
     }
 

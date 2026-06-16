@@ -40,6 +40,7 @@ export interface Recommendation {
   stop_pct: number
   sector: string
   ema_score: number         // mechanical score 0-10
+  hold_mode: 'day' | 'swing' | 'trend'  // day=EOD, swing=1-5d, trend=hold weeks until stop
 }
 
 export interface AdvisorResult {
@@ -94,8 +95,10 @@ ${JSON.stringify(setups.map((s) => ({
   score: `${s.pullback_score}/10`, why: s.reason,
 })))}
 
+hold_mode: "day"=exit by EOD (momentum spikes), "swing"=1-5 days default, "trend"=hold weeks/months — ONLY for stocks near 52w high with RS>70 in sustained uptrend (like SNDK 2025 — cheap base then never looked back). These get wider trailing stop and no forced calendar exit.
+
 Return ONLY a JSON array. Include ALL setups you'd take at ${minConf}%+ confidence:
-[{"symbol":"X","action":"BUY","confidence":72,"setup":"EMA20_BOUNCE","reason":"brief reason","target_pct":8,"hold_days":3,"stop_pct":-5}]`
+[{"symbol":"X","action":"BUY","confidence":72,"setup":"EMA20_BOUNCE","reason":"brief reason","target_pct":8,"hold_days":3,"stop_pct":-5,"hold_mode":"swing"}]`
 }
 
 // ── Claude call ───────────────────────────────────────────────────────────────
@@ -154,7 +157,7 @@ async function askOpenAI(
 // ── Merge dual-AI results ─────────────────────────────────────────────────────
 
 function mergeResults(
-  claudePicks: Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number }>,
+  claudePicks: Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }>,
   openaiPicks: Array<{ symbol: string; confidence: number }>,
   setups: EMASetup[],
   held: string[],
@@ -180,6 +183,23 @@ function mergeResults(
 
       const ema_setup = setups.find((s) => s.symbol === p.symbol)
 
+      // Classify hold duration from mechanical signals — no extra API calls.
+      // trend: near 52w high + top RS + healthy RSI + positive momentum = Stage 2 uptrend
+      // day:   momentum spike setups burn out fast — target EOD
+      // swing: default 1-5 day hold
+      let hold_mode: 'day' | 'swing' | 'trend' = 'swing'
+      if (ema_setup) {
+        const nearHigh  = ema_setup.pct_from_52w_high > -20   // within 20% of yearly high
+        const strongRS  = ema_setup.rs_rank > 70              // top 30% vs market
+        const goodRsi   = ema_setup.rsi >= 50 && ema_setup.rsi <= 78  // bullish, not overbought
+        const momentum  = ema_setup.change_5d > 0              // last week positive
+        if (nearHigh && strongRS && goodRsi && momentum) hold_mode = 'trend'
+        else if (ema_setup.setup_type === 'MOMENTUM')           hold_mode = 'day'
+      }
+      // AI hint overrides mechanical: only accept valid values
+      const aiHint = p.hold_mode
+      if (aiHint === 'trend' || aiHint === 'day' || aiHint === 'swing') hold_mode = aiHint
+
       return {
         symbol:      p.symbol,
         action:      'BUY' as const,
@@ -193,6 +213,7 @@ function mergeResults(
         stop_pct:    p.stop_pct   ?? -2.5,
         sector:      getSector(p.symbol),
         ema_score:   ema_setup?.pullback_score ?? 0,
+        hold_mode,
       }
     })
     .filter((p) => {

@@ -96,6 +96,29 @@ async function runScan(
   const equity = balance ?? (isSchwab ? 2000 : 100000)
   const pdt    = analyzePdtStatus(orders, equity)
 
+  // Re-entry boost: if a symbol was stopped out in the last 90 minutes on this broker,
+  // and it's no longer held, give it +5 confidence boost so the AI re-enters it
+  // if the setup is still valid. This implements the "smart re-entry" behavior.
+  const recentStopSymbols = new Set<string>()
+  try {
+    const stopCutoff = new Date(Date.now() - 90 * 60 * 1000).toISOString()
+    const { data: stopRows } = await db
+      .from('tb_alerts')
+      .select('symbol')
+      .eq('type', 'STOP_LOSS')
+      .gte('created_at', stopCutoff)
+      .not('symbol', 'is', null)
+      .or(isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper')
+    const heldSet = new Set(positions.map((p) => p.symbol))
+    for (const r of stopRows ?? []) {
+      const sym = r.symbol as string
+      if (sym && !heldSet.has(sym)) recentStopSymbols.add(sym)  // not held = eligible for re-entry
+    }
+    if (recentStopSymbols.size > 0) {
+      console.log(`[${broker}] Re-entry candidates (stopped <90m ago, not held): ${Array.from(recentStopSymbols).join(', ')}`)
+    }
+  } catch { /* non-fatal */ }
+
   // Compute today's realized P/L fresh from tb_trades — never trust stale tb_account.daily_pnl.
   const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
   const { data: todayClosedRows } = await db
@@ -291,9 +314,11 @@ async function runScan(
       const supercycleBoost = supercycleSymbols.has(r.symbol) ? 10 : 0
       // Hot list: intraday momentum mover confirmed by volume surge
       const hotlistBoost = hotlistSymbols.has(r.symbol) ? 6 : 0
+      // Re-entry boost: was stopped out recently but thesis may still hold — skip the repeat fear
+      const reentryBoost = recentStopSymbols.has(r.symbol) ? 5 : 0
 
       return {
-        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost + supercycleBoost + hotlistBoost) },
+        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost + supercycleBoost + hotlistBoost + reentryBoost) },
         bias,
         tg_confirmed:  tgSymbols.has(r.symbol) || !!intent,
         supercycle:    supercycleSymbols.has(r.symbol),
@@ -465,7 +490,8 @@ async function runScan(
 
       const intentNote = intent?.type === 'buy_zone' ? ' 🎯TG-zone' : intent?.type === 'watch_only' ? ' 👁TG-watch' : ''
       const tgNote   = tg_confirmed ? ` 📡TG${intentNote}` : ''
-      const riskNote = ` | sleeve=${sleeve} cat=${cat} ema=${rec.ema_score}/10 claude=${rec.claude_conf}% oai=${rec.openai_conf}% stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'}${tgNote}`
+      const holdModeNote = rec.hold_mode === 'trend' ? ' 📈TREND' : rec.hold_mode === 'day' ? ' ⚡DAY' : ''
+      const riskNote = ` | sleeve=${sleeve} cat=${cat} ema=${rec.ema_score}/10 claude=${rec.claude_conf}% oai=${rec.openai_conf}% stop=$${initialStop.toFixed(2)} target=$${target.toFixed(2)} stop_id=${stop_order_id ?? 'n/a'} hold_mode=${rec.hold_mode}${tgNote}${holdModeNote}`
 
       const tradeRow: Record<string, unknown> = {
         symbol: rec.symbol, action: 'BUY', quantity: sizing.qty,
