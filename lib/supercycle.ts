@@ -20,11 +20,24 @@
 const ALPACA_DATA    = 'https://data.alpaca.markets'
 const ALPACA_TRADING = 'https://paper-api.alpaca.markets'
 
-// Spin-off / new-listing discovery keywords — Alpaca news headlines are scanned for these
+// Discovery keywords — Alpaca news headlines/summaries are scanned for these.
+// Catches spin-offs, IPOs, and structural narrative catalysts (FDA, contracts, pivots)
+// that create the "new identity + megatrend" pattern behind SNDK-style moves.
 const SPINOFF_KEYWORDS = [
+  // Corporate structure changes
   'spin-off', 'spinoff', 'spun off', 'begins trading', 'begins trading independently',
   'new listing', 'newly listed', 'separated from', 'independent company',
-  'rebranded', 'renamed to', 'restructuring complete', 'ipo',
+  'rebranded', 'renamed to', 'restructuring complete',
+  'direct listing', 'reverse merger', 'de-spac',
+  // IPO / capital events
+  'ipo', 'initial public offering', 'priced its ipo', 'began trading on',
+  'uplisted to', 'uplisting to nasdaq', 'uplisting to nyse',
+  // Catalysts that create narrative identity changes
+  'fda approval', 'fda approved', 'breakthrough designation',
+  'major contract', 'awarded contract', 'billion-dollar contract',
+  'strategic partnership', 'exclusive partnership', 'named preferred supplier',
+  'pivots to', 'pivot to ai', 'enters ai', 'ai infrastructure',
+  'acquisition complete', 'merger complete', 'completed the acquisition',
 ]
 
 // ── Universe: S&P 500 + Nasdaq-100 + spin-off / narrative names ─────────────
@@ -320,7 +333,14 @@ export async function scanSupercycles(
     const mVols   = monthly.map(b => b.v)
     const dCloses = daily.map(b => b.c)
 
-    // ── Liquidity gate: 20-day avg dollar volume (uses bars we already have) ──
+    // ── Liquidity gate: 20-day avg dollar volume + minimum price ─────────────
+    // Price check first (fast, no division) — sub-$5 stocks have wide spreads
+    // and often can't be shorted; their RSI 80+ moves are rarely tradeable.
+    const lastPrice = dCloses[dCloses.length - 1]
+    if (lastPrice < 5) {
+      console.log(`[supercycle] skip ${ticker} — price $${lastPrice.toFixed(2)} < $5`)
+      continue
+    }
     const last20 = daily.slice(-20)
     const avgDolVol = last20.reduce((s, b) => s + b.c * b.v, 0) / last20.length
     if (avgDolVol < cfg.min_avg_dollar_vol) {
