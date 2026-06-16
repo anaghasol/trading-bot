@@ -33,7 +33,7 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     vibe: 'protected',
     risk_pct: 0.015,            // 1.5% per trade  (reviewer's floor)
     max_positions: 3,
-    min_confidence: 76,         // 76%: strategy ban + 4% stops make this safer than old 78% was
+    min_confidence: 74,         // 74%: boosts (TG+8, SC+10, HotList+6) already applied before this gate
     allow_day_trades: false,    // PDT-safe swing (1–5 day holds)
     initial_stop_pct: 0.04,     // widened 2.5%→4%: 2.5% was too tight, noise-stopped winners
     trail_pct: 0.05,
