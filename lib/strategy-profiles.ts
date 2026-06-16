@@ -33,9 +33,9 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     vibe: 'protected',
     risk_pct: 0.015,            // 1.5% per trade  (reviewer's floor)
     max_positions: 3,
-    min_confidence: 78,         // only high-conviction
+    min_confidence: 83,         // raised 78→83: EMA20_BOUNCE had 19% win rate at 78%
     allow_day_trades: false,    // PDT-safe swing (1–5 day holds)
-    initial_stop_pct: 0.025,
+    initial_stop_pct: 0.04,     // widened 2.5%→4%: 2.5% was too tight, noise-stopped winners
     trail_pct: 0.05,
     daily_loss_stop_pct: 0.05,  // −5% halts the day
     max_hold_days: 5,

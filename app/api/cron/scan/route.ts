@@ -405,6 +405,29 @@ async function runScan(
       if (quote.price < low || quote.price > high) continue  // not at the right price yet
     }
 
+    // LIVE SCHWAB QUALITY GATE — real money only enters on high-conviction setups.
+    // EMA20_BOUNCE and BREAKOUT have shown 0-19% live win rates; block them unless
+    // a Telegram channel independently confirms the same symbol (human + AI consensus).
+    // Non-TG picks also need strong mechanical confirmation (EMA score ≥ 7/10).
+    if (isSchwab) {
+      const weakStrategies = ['EMA20_BOUNCE', 'BREAKOUT']
+      if (weakStrategies.includes(rec.setup ?? '')) {
+        if (!tg_confirmed) {
+          console.log(`[schwab] BLOCKED ${rec.symbol} — ${rec.setup} has poor live win rate and no TG confirmation`)
+          void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker,
+            message: `[scan] Blocked ${rec.symbol} (${rec.setup} ${rec.confidence}%) — strategy banned on live without TG signal` })
+          continue
+        }
+      }
+      // Even allowed strategies need either TG confirmation OR strong mechanical score
+      if (!tg_confirmed && (rec.ema_score ?? 0) < 7) {
+        console.log(`[schwab] SKIPPED ${rec.symbol} — no TG confirm and weak EMA score ${rec.ema_score}/10`)
+        void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker,
+          message: `[scan] Skipped ${rec.symbol} (${rec.setup} conf=${rec.confidence}% ema=${rec.ema_score}/10) — needs TG signal or ema≥7 for live` })
+        continue
+      }
+    }
+
     // Route the pick to its sleeve and size against that horizon's budget.
     // High-conviction setups (EMA score ≥ 8 + AI confidence ≥ 85%) get 1.4×, others 1.0×.
     // convictionMult is applied on top of categoryBias, combined cap is 1.8×.
