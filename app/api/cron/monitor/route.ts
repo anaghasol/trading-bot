@@ -258,9 +258,16 @@ async function monitorBroker(
     const canExit   = broker === 'alpaca_paper' || !isSameDay || pdt.can_day_trade
     const noHold    = !holdSymbols.has(pos.symbol)
 
-    // Tier 1 — first partial (+7% live / +8% paper): sell 50%
+    // Momentum-aware partial sizing:
+    //   gainPct < 20%  → sell 50% (standard lock-in)
+    //   gainPct 20–35% → sell 25% (strong mover — let the bulk ride)
+    //   gainPct > 35%  → sell 15% (rocket — protect a sliver, let it run)
+    const partialFrac = gainPct > 35 ? 0.15 : gainPct > 20 ? 0.25 : 0.50
+
+    // Tier 1 — first partial at P1 threshold
     if (!meta.partial_done && gainPct >= P1_PCT && canExit) {
-      const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
+      const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * partialFrac))
+      const pct_label  = `${Math.round(partialFrac * 100)}%`
       const stopId = extractStopOrderId(meta.reason)
       if (stopId) await api.cancelOrder(stopId)
 
@@ -276,16 +283,16 @@ async function monitorBroker(
         }
         if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
 
-        const alertRow = { type: 'SELL', message: `[${broker}] PARTIAL-1 (50%) ${partialQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}% | $${pnl.toFixed(2)} locked`, symbol: pos.symbol, pnl }
+        const alertRow = { type: 'SELL', message: `[${broker}] PARTIAL-1 (${pct_label}) ${partialQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}% | $${pnl.toFixed(2)} locked — trailing ${Math.round((1 - partialFrac) * 100)}%`, symbol: pos.symbol, pnl }
         const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })
         if (ae?.code === 'PGRST204') await db.from('tb_alerts').insert(alertRow)
 
-        statuses.push(`${pos.symbol}: PARTIAL-1 +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
+        statuses.push(`${pos.symbol}: PARTIAL-1 ${pct_label} +${gainPct.toFixed(1)}% $${pnl.toFixed(2)}`)
         continue
       }
     }
 
-    // Tier 2 — second partial (+12% live / +15% paper): sell 50% of remaining position
+    // Tier 2 — second partial at P2 threshold (always 50% of what's left)
     if (meta.partial_done && !meta.p2_done && gainPct >= P2_PCT && canExit && noHold) {
       const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
       const sellOrder = await api.placeOrder(pos.symbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
