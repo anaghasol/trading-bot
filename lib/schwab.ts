@@ -134,28 +134,22 @@ async function refreshAccessToken(refreshToken: string, currentHash: string): Pr
 }
 
 // Returns whether Schwab is connected — used by dashboard and monitor cron.
-// Cross-validates tb_settings flag with actual token expiry in tb_schwab_tokens:
-// if the access token is still valid (expiry > now+5m), treat as ok even if the
-// flag was never set (e.g. fresh OAuth install that hasn't triggered a refresh yet).
+// Calls getAccessToken() directly (which auto-refreshes expired access tokens)
+// so health check tests the ACTUAL connection, not a stale cached timestamp.
+// Access tokens last 30 min; checking the cached expiry always fires false alerts
+// between refreshes. Using the live token call is the only reliable approach.
 export async function getSchwabAuthStatus(): Promise<{ ok: boolean; refresh_expires_at: string | null; hours_left: number | null }> {
   const db = createServiceClient()
-  const [statusRow, expiryRow, tokenRow] = await Promise.all([
-    db.from('tb_settings').select('value').eq('key', 'schwab_auth_status').single(),
-    db.from('tb_settings').select('value').eq('key', 'schwab_refresh_expiry').single(),
-    db.from('tb_schwab_tokens').select('expiry, access_token').eq('id', 1).single(),
-  ])
 
-  const flagOk   = statusRow.data?.value === 'ok'
-  const tokenExp = tokenRow.data?.expiry ? new Date(tokenRow.data.expiry) : null
-  const tokenOk  = tokenExp ? tokenExp > new Date(Date.now() + 5 * 60 * 1000) : false
+  // Attempt to get a valid token — auto-refreshes if the 30-min access token expired.
+  // Returns null ONLY when the 7-day refresh token itself is expired (true auth failure).
+  const token = await getAccessToken()
+  const ok = token !== null
 
-  // Token is valid if either the settings flag says ok OR the actual stored token is unexpired.
-  // If token is valid but flag was stale/missing, heal the flag for next time.
-  const ok = flagOk || tokenOk
-  if (tokenOk && !flagOk) {
-    void db.from('tb_settings').upsert({ key: 'schwab_auth_status', value: 'ok' })
-  }
+  // Update the persistent flag to match reality so dashboard banners stay accurate
+  void db.from('tb_settings').upsert({ key: 'schwab_auth_status', value: ok ? 'ok' : 'expired' })
 
+  const expiryRow = await db.from('tb_settings').select('value').eq('key', 'schwab_refresh_expiry').single()
   const refresh_expires_at = expiryRow.data?.value ?? null
   const hours_left = refresh_expires_at
     ? Math.round((new Date(refresh_expires_at).getTime() - Date.now()) / 3600000)
