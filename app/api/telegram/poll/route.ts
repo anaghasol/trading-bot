@@ -308,12 +308,44 @@ export async function GET(req: Request) {
       const afterHours = parseInt(etHour) >= 16 || parseInt(etHour) < 9
       const afterHoursTag = afterHours ? ' [FILLS AT OPEN]' : ''
 
-      // Block OCC option symbols — AI occasionally extracts an options contract code
-      // instead of a stock ticker. Alpaca would fill it as an options trade.
+      // ── Options single-leg: route through dedicated options handler ─────────────
       if (isOCCSymbol(signal.symbol)) {
-        await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `[BLOCKED] OCC options symbol ${signal.symbol} from ${ch.name} — not a stock trade` })
-        await tgSend(`⛔ *Blocked options trade* (${ch.name})\nSymbol \`${signal.symbol}\` is an options contract — skipped. Check if signal meant the underlying stock.`)
-        return { id: msg.id, type: 'blocked_occ', symbol: signal.symbol }
+        // OCC symbol → options trade. Place order, journal with raw_symbol for monitor.
+        const m = signal.symbol.match(/^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/)
+        const displayLabel = m
+          ? (() => { const [,und,yy,mm,dd,type,sr] = m; const strike = parseInt(sr)/1000; return `${und} $${strike%1===0?strike.toFixed(0):strike.toFixed(1)}${type} ${parseInt(mm)}/${parseInt(dd)}` })()
+          : signal.symbol
+        const expiry = m ? `20${m[2]}-${m[3]}-${m[4]}` : null
+        const dteDays = expiry ? (new Date(expiry).getTime() - Date.now()) / 86400000 : 999
+
+        if (dteDays < 3) {
+          await tgSend(`⚠️ *Skipped options signal* — ${displayLabel} expires in <3 days, too risky`)
+          return { id: msg.id, type: 'skip', reason: 'options_expiry_too_close' }
+        }
+
+        // Size by premium risk: risk 3% of equity on premium paid
+        const premiumPerShare = signal.entry_price ?? 5  // fallback estimate
+        const maxRiskDollars  = equity * 0.03
+        const contracts       = Math.max(1, Math.floor(maxRiskDollars / (premiumPerShare * 100)))
+
+        const order = await Alpaca.placeOrder(signal.symbol, contracts, signal.action, 'MARKET')
+
+        await db.from('tb_alerts').insert({
+          type: signal.action, symbol: signal.symbol,
+          message: `${ch.name} → OPTIONS ${signal.action} ${contracts}x ${displayLabel} [conf:${signal.confidence}%]${afterHoursTag} — ${order.status}`,
+        })
+
+        if (order.status === 'PLACED' && signal.action === 'BUY') {
+          await db.from('tb_trades').insert({
+            symbol: displayLabel, broker: 'alpaca_paper', action: 'BUY',
+            quantity: contracts, entry_price: premiumPerShare,
+            status: 'OPEN', order_id: order.order_id ?? null,
+            confidence: signal.confidence, strategy: 'OPTION',
+            reason: `raw_symbol=${signal.symbol} | option_expiry=${expiry} | stop=50%prem | TG: ${ch.name}`,
+          })
+          await tgSend(`📈 *Options BUY* (${ch.name})\n${displayLabel} · ${contracts} contract${contracts > 1 ? 's' : ''} @ est $${premiumPerShare}/sh\nExpiry: ${expiry} · DTE: ${Math.floor(dteDays)}d\nStop: -50% premium | Target: +80%/+150%`)
+        }
+        return { id: msg.id, type: 'options_trade', symbol: displayLabel }
       }
 
       const liveQuote = await Alpaca.getQuote(signal.symbol)

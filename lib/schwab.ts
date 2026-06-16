@@ -14,6 +14,7 @@ const REDIRECT_URI  = process.env.SCHWAB_REDIRECT_URI!
 
 export interface Position {
   symbol: string
+  raw_symbol?: string      // OCC contract code for options (e.g. AMD260724P00485000), used for closing
   quantity: number
   avg_cost: number
   current_price: number

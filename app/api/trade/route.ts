@@ -23,9 +23,9 @@ export async function POST(req: Request) {
   if (!['BUY', 'SELL'].includes(action)) {
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
   }
-  // Options are not supported — bot cannot manage expiry, Greeks, or assignment risk
-  if (/^[A-Z]{1,6}\d{6}[CP]\d{8}$/.test(sym)) {
-    return NextResponse.json({ error: 'Options trading is not supported. This app only trades equities.' }, { status: 400 })
+  // Options (OCC format) are paper-only — never place on live Schwab account
+  if (/^[A-Z]{1,6}\d{6}[CP]\d{8}$/.test(sym) && broker === 'schwab') {
+    return NextResponse.json({ error: 'Options are paper-only. Switch to Paper tab to trade options.' }, { status: 400 })
   }
 
   let order

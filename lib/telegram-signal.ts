@@ -15,8 +15,8 @@ const TRADE_KEYWORDS = /\b(buy|sell|long|short|entry|sl|stop.?loss|target|t1|t2|
 const HAS_TICKER    = /\b[A-Z]{2,5}\b/
 const HAS_PRICE     = /\$[\d,]+(\.\d+)?|\d+\.?\d*\s*%/
 
-// Options-specific patterns — these are NEVER stock trade signals
-const OPTIONS_PATTERN = /\b(call spread|put spread|bull put|bear call|iron condor|straddle|strangle|butterfly|debit spread|credit spread|vertical spread|covered call|cash.secured put|\d{4}\/\d{4}|\d+[Cc]\/?[\d.]+|options? (expir|premium|contract|chain)|IV rank|implied vol|theta|delta|gamma|vega|0DTE|weekly options|buying? ?(calls?|puts?)|sell(ing)? ?(calls?|puts?)|calls?|puts?|\$\d+[CP]|\d+[CP] \d+\/\d+)\b/i
+// Multi-leg / complex options — bot cannot manage these, skip entirely
+const OPTIONS_PATTERN = /\b(call spread|put spread|bull put|bear call|iron condor|straddle|strangle|butterfly|debit spread|credit spread|vertical spread|covered call|cash.secured put|IV rank|implied vol|theta|delta|gamma|vega|0DTE)\b/i
 
 // OCC options symbol: TICKER + YYMMDD + C/P + 8-digit strike (e.g. AMD260724P00485000)
 const OCC_SYMBOL = /^[A-Z]{1,6}\d{6}[CP]\d{8}$/

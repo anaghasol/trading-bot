@@ -185,6 +185,59 @@ async function monitorBroker(
     const meta = tradeMap.get(pos.symbol)
     if (!meta || !meta.entry_price) { statuses.push(`${pos.symbol}: no journal`); continue }
 
+    // ── OPTIONS: separate exit logic ──────────────────────────────────────────
+    if (pos.asset_type === 'OPTION') {
+      // Only trade options on paper — never touch live Schwab account with options
+      if (broker !== 'alpaca_paper') { statuses.push(`${pos.symbol}: options skipped on live account`); continue }
+
+      // Recover raw OCC symbol from reason (needed for Alpaca order)
+      const rawMatch  = (meta.reason ?? '').match(/raw_symbol=([^\s|]+)/)
+      const rawSymbol = rawMatch ? rawMatch[1] : pos.symbol
+      const expiryMatch = (meta.reason ?? '').match(/option_expiry=(\d{4}-\d{2}-\d{2})/)
+      const expiry    = expiryMatch ? expiryMatch[1] : pos.option_expiry
+      const dteDays   = expiry ? (new Date(expiry).getTime() - Date.now()) / 86_400_000 : 999
+      const premPct   = pos.pnl_pct   // % gain/loss on premium paid
+      const pnlStr    = `${pos.unrealized_pnl >= 0 ? '+' : ''}$${pos.unrealized_pnl.toFixed(0)}`
+
+      let optExitReason = ''
+      if (dteDays <= 2)        optExitReason = `EXPIRY_PROTECTION (${Math.floor(dteDays)}d left)`
+      else if (premPct <= -50) optExitReason = `OPT_STOP (-50% premium)`
+      else if (premPct >= 150) optExitReason = `OPT_TARGET (+150% premium)`
+
+      // Partial profit at +80%: sell half, let rest run
+      if (!optExitReason && premPct >= 80 && !meta.partial_done) {
+        const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
+        const sellOrder  = await api.placeOrder(rawSymbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
+        if (sellOrder.status === 'PLACED') {
+          partial++
+          if (meta.id) await db.from('tb_settings').upsert({ key: `p1done_${meta.id}`, value: new Date().toISOString() })
+          await db.from('tb_alerts').insert({ type: 'SELL', symbol: pos.symbol, broker, message: `[paper] OPT PARTIAL-1 ${partialQty}x ${pos.symbol} +${premPct.toFixed(0)}% | ${pnlStr}` })
+          statuses.push(`${pos.symbol}: OPT PARTIAL-1 +${premPct.toFixed(0)}% ${pnlStr}`)
+        }
+        continue
+      }
+
+      if (optExitReason) {
+        const sellOrder = await api.placeOrder(rawSymbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
+        if (sellOrder.status === 'PLACED') {
+          closed++
+          runningPnl += pos.unrealized_pnl
+          if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl, pnl_pct: premPct, closed_at: new Date().toISOString() }).eq('id', meta.id)
+          await db.from('tb_alerts').insert({ type: premPct >= 0 ? 'SELL' : 'STOP_LOSS', symbol: pos.symbol, broker, message: `[paper] ${optExitReason} ${pos.symbol} | ${pnlStr}` })
+          const tgBot = process.env.TELEGRAM_BOT_TOKEN, tgChat = process.env.TELEGRAM_ALLOWED_CHAT_ID
+          if (tgBot && tgChat) {
+            const emoji = premPct >= 0 ? '💰' : '🛑'
+            await fetch(`https://api.telegram.org/bot${tgBot}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: tgChat, text: `${emoji} *Options exit (paper)*\n${pos.symbol}\n${optExitReason}\nP/L: ${pnlStr} (${premPct.toFixed(0)}% on premium)`, parse_mode: 'Markdown' }) }).catch(() => {})
+          }
+          statuses.push(`${pos.symbol}: OPT CLOSED ${optExitReason} ${pnlStr}`)
+        }
+        continue
+      }
+
+      statuses.push(`${pos.symbol}: OPT holding ${premPct.toFixed(1)}% | ${Math.floor(dteDays)}d left`)
+      continue
+    }
+
     const isSameDay   = meta.entry_date === todayStr
     const holdDays    = Math.round((Date.now() - new Date(meta.entry_date + 'T00:00:00Z').getTime()) / 86_400_000)
     const gainPct     = pos.pnl_pct  // shorthand

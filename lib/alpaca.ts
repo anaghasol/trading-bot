@@ -75,16 +75,19 @@ export async function getAccountBalance(): Promise<number | null> {
 
 // ── Positions ─────────────────────────────────────────────────────────────────
 
-/** Parse OCC option symbol into a human-readable label.
- *  e.g. NVDA240119P00500000 → "NVDA 500P 1/19" */
-function parseOCCSymbol(occ: string): string {
+/** Parse OCC option symbol → display label + ISO expiry date.
+ *  e.g. NVDA240119P00500000 → { label: "NVDA $500P 1/19", expiry: "2024-01-19" } */
+function parseOCCSymbol(occ: string): { label: string; expiry: string } {
   try {
     const m = occ.match(/^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/)
-    if (!m) return occ
+    if (!m) return { label: occ, expiry: '' }
     const [, und, yy, mm, dd, type, strikeRaw] = m
     const strike = parseInt(strikeRaw, 10) / 1000
-    return `${und} $${strike % 1 === 0 ? strike.toFixed(0) : strike.toFixed(1)}${type} ${parseInt(mm)}/${parseInt(dd)}`
-  } catch { return occ }
+    return {
+      label:  `${und} $${strike % 1 === 0 ? strike.toFixed(0) : strike.toFixed(1)}${type} ${parseInt(mm)}/${parseInt(dd)}`,
+      expiry: `20${yy}-${mm}-${dd}`,
+    }
+  } catch { return { label: occ, expiry: '' } }
 }
 
 export async function getPositions(): Promise<Position[]> {
@@ -99,11 +102,11 @@ export async function getPositions(): Promise<Position[]> {
     const isOption  = String(p.asset_class ?? '') === 'us_option'
     // Options P&L is per-share of the option premium (×100 per contract is already in unrealized_pl)
     const pnl_pct   = avg_cost > 0 ? ((cur_price - avg_cost) / avg_cost) * 100 : 0
-    // For options show parsed OCC label; for equity show raw symbol
-    const displaySymbol = isOption ? parseOCCSymbol(String(p.symbol)) : String(p.symbol)
+    const parsed = isOption ? parseOCCSymbol(String(p.symbol)) : null
 
     return {
-      symbol:         displaySymbol,
+      symbol:         parsed ? parsed.label : String(p.symbol),
+      raw_symbol:     isOption ? String(p.symbol) : undefined,
       quantity:       qty,
       avg_cost,
       current_price:  cur_price,
@@ -112,6 +115,7 @@ export async function getPositions(): Promise<Position[]> {
       pnl_pct:        Math.round(pnl_pct * 100) / 100,
       peak_pnl:       0,
       asset_type:     isOption ? 'OPTION' as const : 'EQUITY' as const,
+      option_expiry:  parsed?.expiry || undefined,
     }
   })
 }

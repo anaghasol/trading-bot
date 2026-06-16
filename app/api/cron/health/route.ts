@@ -52,32 +52,6 @@ export async function GET(req: Request) {
   const today   = new Date().toISOString().split('T')[0]
   const now     = new Date()
 
-  // ── 0. AUTO-CLOSE ANY OPTIONS POSITIONS ───────────────────────────────────
-  // Options are not supported — the bot cannot manage strikes, expiry, Greeks.
-  // If any slip through (from Telegram signals or manual entry), close them immediately.
-  try {
-    const alpacaPositions = await AlpacaBroker.getPositions().catch(() => [] as Awaited<ReturnType<typeof AlpacaBroker.getPositions>>)
-    const optionPositions = alpacaPositions.filter(p => p.asset_type === 'OPTION')
-    for (const opt of optionPositions) {
-      try {
-        // Use raw OCC symbol for closing — Alpaca needs the contract ID, not the display label
-        const rawSymbol = (opt as unknown as Record<string, unknown>).raw_symbol as string | undefined ?? opt.symbol
-        const closeRes = await AlpacaBroker.placeOrder(rawSymbol, Math.abs(opt.quantity), opt.quantity > 0 ? 'SELL' : 'BUY', 'MARKET')
-        const pnlStr = `${opt.unrealized_pnl >= 0 ? '+' : ''}$${opt.unrealized_pnl.toFixed(0)}`
-        if (closeRes.status === 'PLACED') {
-          healed.push(`AUTO-CLOSED options position ${opt.symbol} (${opt.quantity > 0 ? 'long' : 'short'} ${Math.abs(opt.quantity)}) P/L ${pnlStr}`)
-          await sendTG(`🔴 *Auto-closed options position*\n${opt.symbol} · ${opt.quantity > 0 ? 'long' : 'short'} ${Math.abs(opt.quantity)}\nP/L: ${pnlStr}\n_Options not supported — position closed automatically._`)
-        } else {
-          issues.push(`Failed to auto-close options ${opt.symbol}: ${closeRes.error ?? closeRes.status}`)
-        }
-      } catch (e) {
-        issues.push(`Error closing options ${opt.symbol}: ${String(e)}`)
-      }
-    }
-  } catch (e) {
-    issues.push(`Options auto-close check failed: ${String(e)}`)
-  }
-
   // ── 1. UNJOURNALED POSITIONS ───────────────────────────────────────────────
   // For each broker, find live positions with no open tb_trades entry.
   // Auto-insert a minimal journal row so the monitor can manage stops/exits.
@@ -101,12 +75,14 @@ export async function GET(req: Request) {
       for (const pos of positions) {
         if (journaledSymbols.has(pos.symbol)) continue
 
-        // Options are handled above — never auto-journal them
-        if (pos.asset_type === 'OPTION') continue
-
-        // Position exists at broker but has no journal — auto-create one
+        // Position exists at broker but has no journal entry — auto-create one
         const entryPrice = pos.avg_cost > 0 ? pos.avg_cost : pos.current_price
-        const stopPrice  = entryPrice * (isSchwab ? 0.975 : 0.965)
+        const isOpt      = pos.asset_type === 'OPTION'
+
+        // Options: store raw_symbol + expiry in reason so monitor can close via OCC code
+        const reason = isOpt
+          ? `raw_symbol=${pos.raw_symbol ?? pos.symbol} | option_expiry=${pos.option_expiry ?? ''} | stop=50%prem | auto-journaled`
+          : `stop=$${(entryPrice * (isSchwab ? 0.975 : 0.965)).toFixed(2)} | auto-journaled by health check`
 
         const { error } = await db.from('tb_trades').insert({
           symbol:      pos.symbol,
@@ -115,11 +91,11 @@ export async function GET(req: Request) {
           status:      'OPEN',
           entry_price: entryPrice,
           quantity:    Math.abs(pos.quantity),
-          strategy:    'RECOVERED',
+          strategy:    isOpt ? 'OPTION' : 'RECOVERED',
           confidence:  70,
-          reason:      `stop=$${stopPrice.toFixed(2)} | auto-journaled by health check (position existed at broker without tb_trades entry)`,
+          reason,
           peak_pnl:    Math.max(0, pos.pnl_pct),
-          created_at:  new Date(now.getTime() - 86_400_000).toISOString(), // assume entered yesterday
+          created_at:  new Date(now.getTime() - 86_400_000).toISOString(),
         })
 
         if (!error) {
