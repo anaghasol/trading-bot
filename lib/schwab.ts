@@ -133,14 +133,29 @@ async function refreshAccessToken(refreshToken: string, currentHash: string): Pr
   return data.access_token
 }
 
-// Returns whether Schwab is connected — used by dashboard and monitor cron
+// Returns whether Schwab is connected — used by dashboard and monitor cron.
+// Cross-validates tb_settings flag with actual token expiry in tb_schwab_tokens:
+// if the access token is still valid (expiry > now+5m), treat as ok even if the
+// flag was never set (e.g. fresh OAuth install that hasn't triggered a refresh yet).
 export async function getSchwabAuthStatus(): Promise<{ ok: boolean; refresh_expires_at: string | null; hours_left: number | null }> {
   const db = createServiceClient()
-  const [statusRow, expiryRow] = await Promise.all([
+  const [statusRow, expiryRow, tokenRow] = await Promise.all([
     db.from('tb_settings').select('value').eq('key', 'schwab_auth_status').single(),
     db.from('tb_settings').select('value').eq('key', 'schwab_refresh_expiry').single(),
+    db.from('tb_schwab_tokens').select('expiry, access_token').eq('id', 1).single(),
   ])
-  const ok = statusRow.data?.value === 'ok'
+
+  const flagOk   = statusRow.data?.value === 'ok'
+  const tokenExp = tokenRow.data?.expiry ? new Date(tokenRow.data.expiry) : null
+  const tokenOk  = tokenExp ? tokenExp > new Date(Date.now() + 5 * 60 * 1000) : false
+
+  // Token is valid if either the settings flag says ok OR the actual stored token is unexpired.
+  // If token is valid but flag was stale/missing, heal the flag for next time.
+  const ok = flagOk || tokenOk
+  if (tokenOk && !flagOk) {
+    void db.from('tb_settings').upsert({ key: 'schwab_auth_status', value: 'ok' })
+  }
+
   const refresh_expires_at = expiryRow.data?.value ?? null
   const hours_left = refresh_expires_at
     ? Math.round((new Date(refresh_expires_at).getTime() - Date.now()) / 3600000)
