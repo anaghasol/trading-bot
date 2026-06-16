@@ -649,8 +649,27 @@ export async function getAccountSummary(): Promise<AccountSummary | null> {
   const proj     = (sa.projectedBalances as Record<string, number>) ?? {}
   const positions = (sa.positions as Array<Record<string, unknown>>) ?? []
 
-  // Day P&L: sum per-position (account-level field not reliable in Schwab individual API)
-  const day_pnl = positions.reduce((sum, p) => sum + (Number(p.currentDayProfitLoss) || 0), 0)
+  // Day P&L: open positions (unrealized) + realized gains from closed trades today.
+  // Schwab's currentDayProfitLoss only covers OPEN positions — partial sells and
+  // closed trades don't appear here, causing the dashboard to show $0 after a profitable exit.
+  const openDayPnl = positions.reduce((sum, p) => sum + (Number(p.currentDayProfitLoss) || 0), 0)
+
+  // Add realized P/L from trades closed today (Schwab broker only)
+  let realizedTodayPnl = 0
+  try {
+    const db = (await import('./supabase-server')).createServiceClient()
+    const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
+    const { data: closedToday } = await db
+      .from('tb_trades')
+      .select('pnl')
+      .eq('status', 'CLOSED')
+      .or('broker.eq.schwab,broker.is.null')
+      .gte('closed_at', todayStart)
+      .not('pnl', 'is', null)
+    realizedTodayPnl = (closedToday ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
+  } catch { /* non-fatal — open P/L still shows */ }
+
+  const day_pnl = openDayPnl + realizedTodayPnl
 
   // Account value: for pure cash accounts (no positions) liquidationValue is often
   // rounded to the deposit amount — cashBalance is more precise in that case.
