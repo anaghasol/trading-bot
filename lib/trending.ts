@@ -61,7 +61,8 @@ export async function getTrendingSymbols(): Promise<DiscoverySymbol[]> {
 
 export async function getTopGainers(
   minVol    = 500_000,   // minimum volume — filters out micro-cap noise
-  minChange = 3.0        // minimum % gain
+  minChange = 3.0,       // minimum % gain
+  minPrice  = 3.0        // minimum price per share
 ): Promise<DiscoverySymbol[]> {
   try {
     const res = await fetch(
@@ -78,7 +79,8 @@ export async function getTopGainers(
         const sym = String(q.symbol ?? '')
         const vol = Number(q.regularMarketVolume ?? 0)
         const chg = Number(q.regularMarketChangePercent ?? 0)
-        return sym && !EXCLUDE.has(sym) && /^[A-Z]{1,5}$/.test(sym) && vol >= minVol && chg >= minChange
+        const price = Number(q.regularMarketPrice ?? 0)
+        return sym && !EXCLUDE.has(sym) && /^[A-Z]{1,5}$/.test(sym) && vol >= minVol && chg >= minChange && price >= minPrice
       })
       .map((q) => {
         const chg = Math.round(Number(q.regularMarketChangePercent) * 10) / 10
@@ -98,7 +100,7 @@ export async function getTopGainers(
 
 // ── Source 3: Yahoo Finance Most Active (by dollar volume) ───────────────────
 
-export async function getMostActive(minVol = 1_000_000): Promise<DiscoverySymbol[]> {
+export async function getMostActive(minVol = 1_000_000, minPrice = 3.0): Promise<DiscoverySymbol[]> {
   try {
     const res = await fetch(
       `${YF_BASE}/v1/finance/screener/predefined/saved?scrIds=most_actives&count=30&start=0`,
@@ -114,7 +116,7 @@ export async function getMostActive(minVol = 1_000_000): Promise<DiscoverySymbol
         const sym = String(q.symbol ?? '')
         const vol = Number(q.regularMarketVolume ?? 0)
         const price = Number(q.regularMarketPrice ?? 0)
-        return sym && !EXCLUDE.has(sym) && /^[A-Z]{1,5}$/.test(sym) && vol >= minVol && price >= 3
+        return sym && !EXCLUDE.has(sym) && /^[A-Z]{1,5}$/.test(sym) && vol >= minVol && price >= minPrice
       })
       .map((q) => {
         const vol = Number(q.regularMarketVolume)
@@ -139,8 +141,15 @@ export async function getMostActive(minVol = 1_000_000): Promise<DiscoverySymbol
 export async function getDiscoverySymbols(mode: 'live' | 'paper' = 'paper'): Promise<DiscoverySymbol[]> {
   const [trending, gainers, actives] = await Promise.all([
     getTrendingSymbols(),
-    getTopGainers(mode === 'live' ? 2_000_000 : 500_000, mode === 'live' ? 2.0 : 3.0),
-    getMostActive(mode === 'live' ? 2_000_000 : 1_000_000),
+    getTopGainers(
+      mode === 'live' ? 2_000_000 : 500_000,   // vol floor
+      mode === 'live' ? 2.0 : 3.0,              // min % gain
+      mode === 'live' ? 8.0 : 3.0,              // min price ($8 live, $3 paper)
+    ),
+    getMostActive(
+      mode === 'live' ? 2_000_000 : 1_000_000,  // vol floor
+      mode === 'live' ? 8.0 : 3.0,              // min price ($8 live, $3 paper)
+    ),
   ])
 
   // Merge all three sources — symbols appearing in multiple lists are strongest signals
@@ -163,11 +172,13 @@ export async function getDiscoverySymbols(mode: 'live' | 'paper' = 'paper'): Pro
 
   let results = Array.from(seen.values())
 
-  // Live mode: apply minimum liquidity filter — no illiquid names on real money
+  // Live mode: apply minimum liquidity + price filter — no illiquid or cheap names on real money
   if (mode === 'live') {
     results = results.filter((d) => {
       const vol = d.volume ?? 0
       return vol >= 2_000_000  // 2M+ daily volume for Schwab live fills
+      // Note: price ≥ $8 enforced via minVol in getTrendingSymbols + getMostActive
+      // and the spread gate (0.5% max) in the scan blocks remaining cheap names
     })
   }
 
