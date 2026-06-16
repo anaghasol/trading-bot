@@ -22,6 +22,7 @@ export interface Position {
   pnl_pct: number
   peak_pnl: number
   asset_type: 'EQUITY' | 'OPTION'
+  option_expiry?: string   // YYYY-MM-DD for options, undefined for equity
 }
 
 export interface Quote {
@@ -440,6 +441,32 @@ export async function getQuote(symbol: string): Promise<Quote | null> {
     bid:        q.bidPrice  || undefined,
     ask:        q.askPrice  || undefined,
   }
+}
+
+// Bulk quote — same endpoint, comma-separated symbols, one API call.
+// Used by the SSE stream so paper-tab prices use the same Schwab NBBO
+// data as the live tab (eliminates Alpaca SIP lag for thin ETFs).
+export async function getBulkQuotes(symbols: string[]): Promise<Record<string, Quote>> {
+  if (symbols.length === 0) return {}
+  const data = await apiGet<Record<string, unknown>>(
+    `${MARKET_BASE}/quotes?symbols=${symbols.join(',')}&fields=quote`
+  )
+  if (!data) return {}
+  const out: Record<string, Quote> = {}
+  for (const sym of symbols) {
+    if (!data[sym]) continue
+    const q = (data[sym] as Record<string, unknown>).quote as Record<string, number>
+    if (!q) continue
+    out[sym] = {
+      symbol:     sym,
+      price:      q.lastPrice || 0,
+      change_pct: q.netPercentChangeInDouble || 0,
+      volume:     q.totalVolume || 0,
+      bid:        q.bidPrice  || undefined,
+      ask:        q.askPrice  || undefined,
+    }
+  }
+  return out
 }
 
 // ── OAuth Flow ────────────────────────────────────────────────────────────────

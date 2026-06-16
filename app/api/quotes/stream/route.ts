@@ -12,7 +12,7 @@
  *
  * Vercel Pro streams up to 300s; EventSource auto-reconnects on close.
  */
-import { getQuote as schwabQuote } from '@/lib/schwab'
+import { getQuote as schwabQuote, getBulkQuotes as schwabBulkQuotes } from '@/lib/schwab'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 290   // just under Vercel 300s limit
@@ -24,27 +24,39 @@ const SEC  = process.env.ALPACA_SECRET_KEY ?? ''
 type PriceMap = Record<string, { price: number; change_pct: number }>
 
 async function alpacaPrices(symbols: string[]): Promise<PriceMap> {
+  // PRIMARY: Schwab bulk quotes — one API call, same NBBO data as the live tab.
+  // This eliminates the Alpaca SIP lag that causes thin ETFs (like SPCX) to show
+  // a stale price vs Schwab. Both tabs now read from the same source.
+  const out: PriceMap = {}
   try {
-    // quotes/latest returns current bid/ask (NBBO equivalent) — always live even for
-    // thin ETFs. trades/latest only updates when a trade actually executes, so it was
-    // stale for low-volume symbols like SPCX.
-    // Midpoint = (bid + ask) / 2 — matches what Schwab displays.
-    const res = await fetch(
-      `${ALPACA_DATA}/stocks/quotes/latest?symbols=${symbols.join(',')}&feed=sip`,
-      { headers: { 'APCA-API-KEY-ID': KEY, 'APCA-API-SECRET-KEY': SEC }, cache: 'no-store',
-        signal: AbortSignal.timeout(3000) }
-    )
-    if (!res.ok) return {}
-    const data = await res.json() as { quotes?: Record<string, { bp: number; ap: number }> }
-    const out: PriceMap = {}
-    for (const [sym, q] of Object.entries(data.quotes ?? {})) {
-      const bp = q.bp ?? 0, ap = q.ap ?? 0
-      if (bp > 0 && ap > 0) {
-        out[sym] = { price: Math.round((bp + ap) / 2 * 10000) / 10000, change_pct: 0 }
-      }
+    const schwab = await schwabBulkQuotes(symbols)
+    for (const [sym, q] of Object.entries(schwab)) {
+      if (q.price > 0) out[sym] = { price: q.price, change_pct: q.change_pct }
     }
-    return out
-  } catch { return {} }
+  } catch { /* Schwab down or token expired — fall through to Alpaca */ }
+
+  // FALLBACK: Alpaca quotes/latest (bid/ask midpoint) for any symbol Schwab couldn't price
+  const missing = symbols.filter(s => !out[s])
+  if (missing.length > 0) {
+    try {
+      const res = await fetch(
+        `${ALPACA_DATA}/stocks/quotes/latest?symbols=${missing.join(',')}&feed=sip`,
+        { headers: { 'APCA-API-KEY-ID': KEY, 'APCA-API-SECRET-KEY': SEC }, cache: 'no-store',
+          signal: AbortSignal.timeout(3000) }
+      )
+      if (res.ok) {
+        const data = await res.json() as { quotes?: Record<string, { bp: number; ap: number }> }
+        for (const [sym, q] of Object.entries(data.quotes ?? {})) {
+          const bp = q.bp ?? 0, ap = q.ap ?? 0
+          if (bp > 0 && ap > 0) {
+            out[sym] = { price: Math.round((bp + ap) / 2 * 10000) / 10000, change_pct: 0 }
+          }
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  return out
 }
 
 async function schwabPrices(symbols: string[]): Promise<PriceMap> {
