@@ -74,25 +74,27 @@ export async function getTopGainers(
       finance: { result: [{ quotes: Record<string, unknown>[] }] }
     }
     const quotes = data.finance?.result?.[0]?.quotes ?? []
-    return quotes
-      .filter((q) => {
-        const sym = String(q.symbol ?? '')
-        const vol = Number(q.regularMarketVolume ?? 0)
-        const chg = Number(q.regularMarketChangePercent ?? 0)
-        const price = Number(q.regularMarketPrice ?? 0)
-        return sym && !EXCLUDE.has(sym) && /^[A-Z]{1,5}$/.test(sym) && vol >= minVol && chg >= minChange && price >= minPrice
+    const accepted: DiscoverySymbol[] = []
+    for (const q of quotes) {
+      const sym = String(q.symbol ?? '')
+      if (!sym || EXCLUDE.has(sym) || !/^[A-Z]{1,5}$/.test(sym)) continue
+      const vol   = Number(q.regularMarketVolume ?? 0)
+      const chg   = Number(q.regularMarketChangePercent ?? 0)
+      const price = Number(q.regularMarketPrice ?? 0)
+      if (price < minPrice) { console.log(`[DISCOVERY] Skipped ${sym} (gainers) — price $${price.toFixed(2)} < $${minPrice}`); continue }
+      if (vol < minVol)     { console.log(`[DISCOVERY] Skipped ${sym} (gainers) — vol ${(vol/1e6).toFixed(1)}M < ${(minVol/1e6).toFixed(0)}M`); continue }
+      if (chg < minChange)  { console.log(`[DISCOVERY] Skipped ${sym} (gainers) — change ${chg.toFixed(1)}% < ${minChange}%`); continue }
+      const roundedChg = Math.round(chg * 10) / 10
+      console.log(`[DISCOVERY] Accepted ${sym} (gainers) — $${price.toFixed(2)}, +${roundedChg}%, ${(vol/1e6).toFixed(1)}M vol`)
+      accepted.push({
+        symbol:     sym,
+        source:     'gainer' as const,
+        change_pct: roundedChg,
+        volume:     vol,
+        signal:     `+${roundedChg}% today, ${(vol / 1_000_000).toFixed(1)}M vol`,
       })
-      .map((q) => {
-        const chg = Math.round(Number(q.regularMarketChangePercent) * 10) / 10
-        const vol = Number(q.regularMarketVolume)
-        return {
-          symbol:     String(q.symbol),
-          source:     'gainer' as const,
-          change_pct: chg,
-          volume:     vol,
-          signal:     `+${chg}% today, ${(vol / 1_000_000).toFixed(1)}M vol`,
-        }
-      })
+    }
+    return accepted
   } catch {
     return []
   }
@@ -111,24 +113,25 @@ export async function getMostActive(minVol = 1_000_000, minPrice = 3.0): Promise
       finance: { result: [{ quotes: Record<string, unknown>[] }] }
     }
     const quotes = data.finance?.result?.[0]?.quotes ?? []
-    return quotes
-      .filter((q) => {
-        const sym = String(q.symbol ?? '')
-        const vol = Number(q.regularMarketVolume ?? 0)
-        const price = Number(q.regularMarketPrice ?? 0)
-        return sym && !EXCLUDE.has(sym) && /^[A-Z]{1,5}$/.test(sym) && vol >= minVol && price >= minPrice
+    const accepted: DiscoverySymbol[] = []
+    for (const q of quotes) {
+      const sym = String(q.symbol ?? '')
+      if (!sym || EXCLUDE.has(sym) || !/^[A-Z]{1,5}$/.test(sym)) continue
+      const vol   = Number(q.regularMarketVolume ?? 0)
+      const price = Number(q.regularMarketPrice ?? 0)
+      if (price < minPrice) { console.log(`[DISCOVERY] Skipped ${sym} (actives) — price $${price.toFixed(2)} < $${minPrice}`); continue }
+      if (vol < minVol)     { console.log(`[DISCOVERY] Skipped ${sym} (actives) — vol ${(vol/1e6).toFixed(1)}M < ${(minVol/1e6).toFixed(0)}M`); continue }
+      const chg = Math.round(Number(q.regularMarketChangePercent) * 10) / 10
+      console.log(`[DISCOVERY] Accepted ${sym} (actives) — $${price.toFixed(2)}, ${chg > 0 ? '+' : ''}${chg}%, ${(vol/1e6).toFixed(1)}M vol`)
+      accepted.push({
+        symbol:     sym,
+        source:     'gainer' as const,
+        change_pct: chg,
+        volume:     vol,
+        signal:     `Most Active: ${(vol / 1_000_000).toFixed(1)}M vol, ${chg > 0 ? '+' : ''}${chg}%`,
       })
-      .map((q) => {
-        const vol = Number(q.regularMarketVolume)
-        const chg = Math.round(Number(q.regularMarketChangePercent) * 10) / 10
-        return {
-          symbol:     String(q.symbol),
-          source:     'gainer' as const,
-          change_pct: chg,
-          volume:     vol,
-          signal:     `Most Active: ${(vol / 1_000_000).toFixed(1)}M vol, ${chg > 0 ? '+' : ''}${chg}%`,
-        }
-      })
+    }
+    return accepted
   } catch {
     return []
   }
@@ -172,15 +175,18 @@ export async function getDiscoverySymbols(mode: 'live' | 'paper' = 'paper'): Pro
 
   let results = Array.from(seen.values())
 
-  // Live mode: apply minimum liquidity + price filter — no illiquid or cheap names on real money
+  // Live mode: apply minimum liquidity filter on final merged list
   if (mode === 'live') {
     results = results.filter((d) => {
       const vol = d.volume ?? 0
-      return vol >= 2_000_000  // 2M+ daily volume for Schwab live fills
-      // Note: price ≥ $8 enforced via minVol in getTrendingSymbols + getMostActive
-      // and the spread gate (0.5% max) in the scan blocks remaining cheap names
+      if (vol < 2_000_000) {
+        console.log(`[DISCOVERY] Skipped ${d.symbol} (final-live) — vol ${(vol/1e6).toFixed(1)}M < 2M (trending-only, no vol data)`)
+        return false
+      }
+      return true
     })
   }
+  console.log(`[DISCOVERY] ${mode.toUpperCase()} final pool: ${results.length} symbols — ${results.map(d => d.symbol).join(', ')}`)
 
   // Sort: multi-source (🔥) first, then by trending rank, then by volume/change
   return results.sort((a, b) => {
