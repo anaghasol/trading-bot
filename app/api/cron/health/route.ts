@@ -19,6 +19,18 @@ import { getSchwabAuthStatus } from '@/lib/schwab'
 import { sendHealthAlert } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
 
+async function sendTG(text: string) {
+  const bot  = process.env.TELEGRAM_BOT_TOKEN
+  const chat = process.env.TELEGRAM_ALLOWED_CHAT_ID
+  if (!bot || !chat) return
+  try {
+    await fetch(`https://api.telegram.org/bot${bot}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text, parse_mode: 'Markdown' }),
+    })
+  } catch { /* non-fatal */ }
+}
+
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
@@ -39,6 +51,32 @@ export async function GET(req: Request) {
   const healed:  string[] = []
   const today   = new Date().toISOString().split('T')[0]
   const now     = new Date()
+
+  // ── 0. AUTO-CLOSE ANY OPTIONS POSITIONS ───────────────────────────────────
+  // Options are not supported — the bot cannot manage strikes, expiry, Greeks.
+  // If any slip through (from Telegram signals or manual entry), close them immediately.
+  try {
+    const alpacaPositions = await AlpacaBroker.getPositions().catch(() => [] as Awaited<ReturnType<typeof AlpacaBroker.getPositions>>)
+    const optionPositions = alpacaPositions.filter(p => p.asset_type === 'OPTION')
+    for (const opt of optionPositions) {
+      try {
+        // Use raw OCC symbol for closing — Alpaca needs the contract ID, not the display label
+        const rawSymbol = (opt as unknown as Record<string, unknown>).raw_symbol as string | undefined ?? opt.symbol
+        const closeRes = await AlpacaBroker.placeOrder(rawSymbol, Math.abs(opt.quantity), opt.quantity > 0 ? 'SELL' : 'BUY', 'MARKET')
+        const pnlStr = `${opt.unrealized_pnl >= 0 ? '+' : ''}$${opt.unrealized_pnl.toFixed(0)}`
+        if (closeRes.status === 'PLACED') {
+          healed.push(`AUTO-CLOSED options position ${opt.symbol} (${opt.quantity > 0 ? 'long' : 'short'} ${Math.abs(opt.quantity)}) P/L ${pnlStr}`)
+          await sendTG(`🔴 *Auto-closed options position*\n${opt.symbol} · ${opt.quantity > 0 ? 'long' : 'short'} ${Math.abs(opt.quantity)}\nP/L: ${pnlStr}\n_Options not supported — position closed automatically._`)
+        } else {
+          issues.push(`Failed to auto-close options ${opt.symbol}: ${closeRes.error ?? closeRes.status}`)
+        }
+      } catch (e) {
+        issues.push(`Error closing options ${opt.symbol}: ${String(e)}`)
+      }
+    }
+  } catch (e) {
+    issues.push(`Options auto-close check failed: ${String(e)}`)
+  }
 
   // ── 1. UNJOURNALED POSITIONS ───────────────────────────────────────────────
   // For each broker, find live positions with no open tb_trades entry.
@@ -63,7 +101,7 @@ export async function GET(req: Request) {
       for (const pos of positions) {
         if (journaledSymbols.has(pos.symbol)) continue
 
-        // Skip options — bot can't manage option stops/exits; they journal separately
+        // Options are handled above — never auto-journal them
         if (pos.asset_type === 'OPTION') continue
 
         // Position exists at broker but has no journal — auto-create one
