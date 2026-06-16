@@ -4,7 +4,10 @@
  * Server-Sent Events stream — pushes live quote prices every 2s.
  * Browser subscribes with EventSource; no API keys exposed to client.
  *
- * Alpaca: bulk trades/latest (IEX feed, free, sub-second data)
+ * Alpaca: quotes/latest bid/ask midpoint (SIP feed) — always current even
+ *   for thin ETFs/stocks. trades/latest was stale for symbols that don't
+ *   trade every tick (SPCX showed $199 vs Schwab $212 because the last
+ *   actual trade was 20+ min ago; the live bid/ask is always current).
  * Schwab: parallel getQuote() calls (no public streaming API, 2s poll)
  *
  * Vercel Pro streams up to 300s; EventSource auto-reconnects on close.
@@ -22,17 +25,23 @@ type PriceMap = Record<string, { price: number; change_pct: number }>
 
 async function alpacaPrices(symbols: string[]): Promise<PriceMap> {
   try {
-    // Bulk latest-trade prices — faster and cheaper than bar endpoint
+    // quotes/latest returns current bid/ask (NBBO equivalent) — always live even for
+    // thin ETFs. trades/latest only updates when a trade actually executes, so it was
+    // stale for low-volume symbols like SPCX.
+    // Midpoint = (bid + ask) / 2 — matches what Schwab displays.
     const res = await fetch(
-      `${ALPACA_DATA}/stocks/trades/latest?symbols=${symbols.join(',')}&feed=sip`,
+      `${ALPACA_DATA}/stocks/quotes/latest?symbols=${symbols.join(',')}&feed=sip`,
       { headers: { 'APCA-API-KEY-ID': KEY, 'APCA-API-SECRET-KEY': SEC }, cache: 'no-store',
         signal: AbortSignal.timeout(3000) }
     )
     if (!res.ok) return {}
-    const data = await res.json() as { trades?: Record<string, { p: number; s: number; t: string }> }
+    const data = await res.json() as { quotes?: Record<string, { bp: number; ap: number }> }
     const out: PriceMap = {}
-    for (const [sym, t] of Object.entries(data.trades ?? {})) {
-      out[sym] = { price: t.p, change_pct: 0 }
+    for (const [sym, q] of Object.entries(data.quotes ?? {})) {
+      const bp = q.bp ?? 0, ap = q.ap ?? 0
+      if (bp > 0 && ap > 0) {
+        out[sym] = { price: Math.round((bp + ap) / 2 * 10000) / 10000, change_pct: 0 }
+      }
     }
     return out
   } catch { return {} }
