@@ -63,6 +63,9 @@ export async function GET(req: Request) {
       for (const pos of positions) {
         if (journaledSymbols.has(pos.symbol)) continue
 
+        // Skip options — bot can't manage option stops/exits; they journal separately
+        if (pos.asset_type === 'OPTION') continue
+
         // Position exists at broker but has no journal — auto-create one
         const entryPrice = pos.avg_cost > 0 ? pos.avg_cost : pos.current_price
         const stopPrice  = entryPrice * (isSchwab ? 0.975 : 0.965)
@@ -70,6 +73,7 @@ export async function GET(req: Request) {
         const { error } = await db.from('tb_trades').insert({
           symbol:      pos.symbol,
           broker,
+          action:      'BUY',
           status:      'OPEN',
           entry_price: entryPrice,
           quantity:    Math.abs(pos.quantity),
