@@ -37,13 +37,28 @@ interface ChannelCfg {
   tradeEnabled: boolean // false = learn/log only, no order execution
 }
 
-// Index symbols → tradeable ETF equivalents (indices can't be ordered on Alpaca)
+// Index + commodity/forex → tradeable ETF equivalents
 const INDEX_MAP: Record<string, string> = {
-  RUT: 'IWM', RTY: 'IWM',   // Russell 2000
-  SPX: 'SPY', ES: 'SPY',    // S&P 500
-  NDX: 'QQQ', NQ: 'QQQ',   // Nasdaq 100
-  DJI: 'DIA', YM: 'DIA',   // Dow Jones
-  VIX: 'UVXY',              // Volatility (closest tradeable proxy)
+  // Equity indices
+  RUT: 'IWM', RTY: 'IWM',
+  SPX: 'SPY', ES:  'SPY',
+  NDX: 'QQQ', NQ:  'QQQ',
+  DJI: 'DIA', YM:  'DIA',
+  VIX: 'UVXY',
+  // Commodities / forex → best liquid ETF proxy
+  XAUUSD: 'GLD', GOLD: 'GLD',
+  XAGUSD: 'SLV', SILVER: 'SLV',
+  OIL: 'USO', CL: 'USO', CRUDE: 'USO', WTI: 'USO',
+  BTC: 'MSTR', BTCUSD: 'MSTR', BITCOIN: 'MSTR',
+  ETH: 'COIN', ETHUSD: 'COIN', ETHEREUM: 'COIN',
+  NG: 'UNG', NATGAS: 'UNG',
+}
+
+// Pre-AI spam filter — promo/affiliate/prop-firm noise that wastes API tokens
+const SPAM_PATTERN = /\b(prop.?firm|subscribe|40%.?off|linktr\.ee|tinyurl|referral|funded.?account|activation.?fee|challenge.*\d+[Kk]|\d+[Kk].*challenge|payouts?|coupon|discount code|get \d+|Join.*free|DM me|click.*link|check.*bio)\b/i
+
+function isSpam(text: string): boolean {
+  return SPAM_PATTERN.test(text)
 }
 
 function resolveSymbol(sym: string): string {
@@ -156,16 +171,43 @@ export async function GET(req: Request) {
       const text = msg.text ?? ''
       if (!isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
 
-      // Options signals are never stock trades — fast-path to learn without AI call
+      // Spam gate — prop firm promos, affiliate links, subscription ads → skip before AI call
+      if (isSpam(text)) {
+        await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `🚫 ${ch.name} [spam]: ${text.slice(0, 80)}` })
+        return { id: msg.id, type: 'spam' }
+      }
+
+      // Closed-trade result (e.g. "XAUUSD TP hit +$4,769") — extract commodity insight
+      // without burning a full AI classify call. Map to equity proxy and store as learning.
+      const tpMatch = text.match(/\b(XAUUSD|XAGUSD|BTC\w*|ETH\w*|OIL|CRUDE|CL|NG|GOLD|SILVER)\b.*\bTP\s*hit\b/i)
+                   ?? text.match(/\bTP\s*hit\b.*\b(XAUUSD|XAGUSD|BTC\w*|ETH\w*|OIL|CRUDE|CL|NG|GOLD|SILVER)\b/i)
+      if (tpMatch) {
+        const raw = tpMatch[1].toUpperCase()
+        const etf = resolveSymbol(raw)
+        const pnlM = text.match(/\+\$?([\d,]+)/)
+        const pnlStr = pnlM ? ` (+$${pnlM[1]})` : ''
+        await db.from('tb_learning').insert({
+          symbol: etf, source: ch.source, sentiment: 'bullish', sector: 'commodities',
+          insight: `${raw} TP hit${pnlStr} — ${raw} running, ${etf} is the equity proxy. Momentum signal.`,
+          created_at: new Date().toISOString(),
+        })
+        await addIntention({ symbol: etf, type: 'watch_only', urgency: 'medium', price_zone: null, context: `${raw} TP hit${pnlStr} — momentum`, expires_hours: 24 })
+        const tgMsg = `📚 *${ch.name} insight* 🟢\n${raw} TP hit${pnlStr} — mapped to *${etf}* · Adding to scanner watchlist for 24h`
+        await tgSend(tgMsg)
+        await db.from('tb_alerts').insert({ type: 'INFO', symbol: etf, message: tgMsg.replace(/\*/g, '') })
+        return { id: msg.id, type: 'commodity_learn', symbol: etf }
+      }
+
+      // Multi-leg options — log only
       if (isOptionsSignal(text)) {
-        await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `📊 ${ch.name} [options]: ${text.slice(0, 120)}` })
+        await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `📊 ${ch.name} [complex-options]: ${text.slice(0, 120)}` })
         return { id: msg.id, type: 'options_learn' }
       }
 
       const signal = await parseSignal(text, ch.name)
       if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
-      // Resolve index symbols → ETF only for TRADE and EXIT signals (not learn — index context is fine)
+      // Resolve index/commodity symbols → ETF for TRADE and EXIT signals
       if ((signal.type === 'trade' || signal.type === 'exit') && 'symbol' in signal && signal.symbol) {
         const resolved = resolveSymbol(signal.symbol)
         if (resolved !== signal.symbol) {
