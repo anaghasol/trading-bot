@@ -15,13 +15,15 @@
  * This is what would have caught SNDK on day 1 of its listing.
  *
  * Composite score: 35% RSI / 25% deviation / 20% green streak / 10% RS vs SPY / 10% recency
+ *
+ * Early-Watch layer: stocks passing relaxed gates (RSI ≥ 60, +20% 200MA, 2+ green months)
+ * but NOT yet full criteria are stored as WATCHLIST — auto-promoted when they graduate.
  */
 
 const ALPACA_DATA    = 'https://data.alpaca.markets'
 const ALPACA_TRADING = 'https://paper-api.alpaca.markets'
 
 // Negative filter — skip articles that match these even if a positive keyword also matches.
-// Prevents tickers appearing in distress news (bankruptcy, SEC, lawsuits) from entering the pool.
 const NEGATIVE_KEYWORDS = [
   'bankruptcy', 'bankrupt', 'chapter 11', 'chapter 7', 'delisting', 'delisted',
   'sec investigation', 'sec charges', 'fraud charges', 'class action',
@@ -29,9 +31,7 @@ const NEGATIVE_KEYWORDS = [
   'going concern', 'default notice', 'debt restructuring',
 ]
 
-// Discovery keywords — Alpaca news headlines/summaries are scanned for these.
-// Catches spin-offs, IPOs, and structural narrative catalysts (FDA, contracts, pivots)
-// that create the "new identity + megatrend" pattern behind SNDK-style moves.
+// Discovery keywords — Alpaca news headlines/summaries scanned for these.
 const SPINOFF_KEYWORDS = [
   // Corporate structure changes
   'spin-off', 'spinoff', 'spun off', 'begins trading', 'begins trading independently',
@@ -50,7 +50,6 @@ const SPINOFF_KEYWORDS = [
 ]
 
 // ── Universe: S&P 500 + Nasdaq-100 + spin-off / narrative names ─────────────
-// Expanded quarterly — getExpandedUniverse() adds dynamic spin-off discoveries on top
 export const SUPERCYCLE_UNIVERSE: string[] = [
   // Always include SPY for RS benchmark calculation
   'SPY', 'QQQ', 'IWM',
@@ -103,7 +102,7 @@ export interface SupercycleConfig {
   min_consecutive_green_months: number
   require_volume_expansion: boolean
   max_listing_age_years: number
-  min_avg_dollar_vol: number       // $5M daily avg → filters micro-cap noise
+  min_avg_dollar_vol: number
 }
 
 export const DEFAULT_CONFIG: SupercycleConfig = {
@@ -116,6 +115,17 @@ export const DEFAULT_CONFIG: SupercycleConfig = {
   min_avg_dollar_vol:            5_000_000,
 }
 
+// Relaxed gates for Early Watch — catches SNDK-style runners 2-4 months before they light up
+export const WATCHLIST_CONFIG: SupercycleConfig = {
+  monthly_rsi_min:               60,
+  rsi_period:                    14,
+  min_pct_above_200dma:          20,
+  min_consecutive_green_months:  2,
+  require_volume_expansion:      false,
+  max_listing_age_years:         5,
+  min_avg_dollar_vol:            5_000_000,
+}
+
 export interface SupercycleCandidate {
   ticker: string
   monthly_rsi: number
@@ -123,10 +133,15 @@ export interface SupercycleCandidate {
   consecutive_green_months: number
   listing_age_years: number | null
   volume_expanding: boolean
-  rs_vs_spy_6m: number   // stock 6m return / SPY 6m return — >1 = outperforming
-  avg_dollar_vol_m: number  // 20-day avg daily dollar volume in $M
+  rs_vs_spy_6m: number
+  avg_dollar_vol_m: number
   score: number
-  discovered?: boolean   // true if added via news discovery (not in static list)
+  discovered?: boolean
+}
+
+// WatchlistItem = SupercycleCandidate + criteria_met (how many of the 4 full gates pass)
+export interface WatchlistItem extends SupercycleCandidate {
+  criteria_met: number   // 0–4: gates met against DEFAULT_CONFIG thresholds
 }
 
 // ── Indicators ───────────────────────────────────────────────────────────────
@@ -169,14 +184,12 @@ function volumeExpanding(volumes: number[]): boolean {
   return prior > 0 ? recent > prior : true
 }
 
-// RS vs SPY over ~6 months (130 trading days)
-// Returns ratio: 2.0 means stock returned 2× what SPY did
 function rsVsSpy6m(closes: number[], spyCloses: number[]): number {
   const BARS = 130
   if (closes.length < BARS || spyCloses.length < BARS) return 1
   const stockRet = closes[closes.length - 1] / closes[closes.length - BARS] - 1
   const spyRet   = spyCloses[spyCloses.length - 1] / spyCloses[spyCloses.length - BARS] - 1
-  if (spyRet <= 0) return stockRet > 0 ? 2 : 1  // edge case: SPY flat/down
+  if (spyRet <= 0) return stockRet > 0 ? 2 : 1
   return Math.round((stockRet / spyRet) * 100) / 100
 }
 
@@ -225,9 +238,6 @@ async function fetchBars(
 }
 
 // ── Dynamic discovery: Alpaca news spin-off scanner ──────────────────────────
-// Scans last 90 days of Alpaca news for spin-off / new-listing headlines.
-// Returns symbols mentioned in matching articles — these are added to the
-// screener universe so brand-new tickers (SNDK-style) get evaluated.
 async function discoverNewListings(): Promise<string[]> {
   const headers = {
     'APCA-API-KEY-ID':     process.env.ALPACA_KEY_ID!,
@@ -256,14 +266,14 @@ async function discoverNewListings(): Promise<string[]> {
         const isNegative = NEGATIVE_KEYWORDS.some(kw => text.includes(kw))
         if (!isNegative && SPINOFF_KEYWORDS.some(kw => text.includes(kw))) {
           for (const sym of article.symbols ?? []) {
-            if (/^[A-Z]{1,5}$/.test(sym)) found.add(sym)  // only clean tickers
+            if (/^[A-Z]{1,5}$/.test(sym)) found.add(sym)
           }
         }
       }
       pageToken = d.next_page_token ?? null
     } catch { break }
     pages++
-  } while (pageToken && pages < 20)  // max 1000 articles
+  } while (pageToken && pages < 20)
 
   return Array.from(found)
 }
@@ -283,7 +293,7 @@ export async function getExpandedUniverse(): Promise<{ symbols: string[]; discov
   return { symbols: Array.from(base), discovered }
 }
 
-// ── Scorer (updated weights: +RS vs SPY factor) ───────────────────────────────
+// ── Scorer ────────────────────────────────────────────────────────────────────
 function score(
   rsi: number,
   pctAbove: number,
@@ -295,7 +305,6 @@ function score(
   const rsiTerm   = (rsi - cfg.monthly_rsi_min) / (100 - cfg.monthly_rsi_min)
   const devTerm   = Math.min(pctAbove / 1000, 1)
   const greenTerm = Math.min(greenMonths / 12, 1)
-  // RS term: 0 if stock tracked SPY, 1.0 if stock returned 5x SPY over 6 months
   const rsTerm    = Math.min(1, Math.max(0, (rs6m - 1) / 4))
   const recency   = ageYears != null && ageYears <= cfg.max_listing_age_years
     ? 1 - ageYears / cfg.max_listing_age_years : 0
@@ -304,35 +313,21 @@ function score(
   ) / 100
 }
 
-// ── Public entrypoint ─────────────────────────────────────────────────────────
-export async function scanSupercycles(
-  cfg: SupercycleConfig = DEFAULT_CONFIG,
-  universe: string[] = SUPERCYCLE_UNIVERSE,
-  discoveredSet: Set<string> = new Set(),
-): Promise<SupercycleCandidate[]> {
-  const now = new Date()
-
-  // Always ensure SPY is in universe (needed for RS benchmark)
-  if (!universe.includes('SPY')) universe = ['SPY', ...universe]
-
-  const monthlyStart = new Date(now)
-  monthlyStart.setFullYear(monthlyStart.getFullYear() - 10)
-
-  const dailyStart = new Date(now)
-  dailyStart.setMonth(dailyStart.getMonth() - 14)  // ~14 months → well over 200 trading days + RS lookback
-
-  const [monthlyBars, dailyBars] = await Promise.all([
-    fetchBars(universe, '1Month', monthlyStart.toISOString().split('T')[0]),
-    fetchBars(universe, '1Day',   dailyStart.toISOString().split('T')[0]),
-  ])
-
-  // SPY daily bars used for RS calculation across all candidates
-  const spyDaily = (dailyBars['SPY'] ?? []).map(b => b.c)
-
+// ── Internal: evaluate a universe against a config given pre-fetched bars ─────
+// Separated from bar-fetching so scanAll() can call it twice without double-fetching.
+function evaluateTickers(
+  cfg: SupercycleConfig,
+  universe: string[],
+  monthlyBars: Record<string, Bar[]>,
+  dailyBars: Record<string, Bar[]>,
+  spyDaily: number[],
+  discoveredSet: Set<string>,
+  now: Date,
+): SupercycleCandidate[] {
   const candidates: SupercycleCandidate[] = []
 
   for (const ticker of universe) {
-    if (ticker === 'SPY' || ticker === 'QQQ' || ticker === 'IWM') continue  // skip benchmarks
+    if (ticker === 'SPY' || ticker === 'QQQ' || ticker === 'IWM') continue
 
     const monthly = monthlyBars[ticker] ?? []
     const daily   = dailyBars[ticker]   ?? []
@@ -343,45 +338,31 @@ export async function scanSupercycles(
     const mVols   = monthly.map(b => b.v)
     const dCloses = daily.map(b => b.c)
 
-    // ── Liquidity gate: 20-day avg dollar volume + minimum price ─────────────
-    // Price check first (fast, no division) — sub-$5 stocks have wide spreads
-    // and often can't be shorted; their RSI 80+ moves are rarely tradeable.
     const lastPrice = dCloses[dCloses.length - 1]
-    if (lastPrice < 5) {
-      console.log(`[supercycle] skip ${ticker} — price $${lastPrice.toFixed(2)} < $5`)
-      continue
-    }
+    if (lastPrice < 5) continue
+
     const last20 = daily.slice(-20)
     const avgDolVol = last20.reduce((s, b) => s + b.c * b.v, 0) / last20.length
-    if (avgDolVol < cfg.min_avg_dollar_vol) {
-      console.log(`[supercycle] skip ${ticker} — low liquidity $${(avgDolVol / 1e6).toFixed(1)}M avg`)
-      continue
-    }
+    if (avgDolVol < cfg.min_avg_dollar_vol) continue
 
-    // ── RSI ──────────────────────────────────────────────────────────────────
     const rsi = wilderRSI(mCloses, cfg.rsi_period)
     if (!isFinite(rsi) || rsi < cfg.monthly_rsi_min) continue
 
-    // ── 200-day MA deviation ─────────────────────────────────────────────────
     const ma200 = sma200(dCloses)
     if (!isFinite(ma200) || ma200 <= 0) continue
     const pctAbove = (dCloses[dCloses.length - 1] / ma200 - 1) * 100
     if (pctAbove < cfg.min_pct_above_200dma) continue
 
-    // ── Green streak ─────────────────────────────────────────────────────────
     const greenMonths = consecutiveGreenMonths(mCloses)
     if (greenMonths < cfg.min_consecutive_green_months) continue
 
-    // ── Volume expansion ─────────────────────────────────────────────────────
     const volExpanding = volumeExpanding(mVols)
     if (cfg.require_volume_expansion && !volExpanding) continue
 
-    // ── RS vs SPY 6-month ────────────────────────────────────────────────────
     const rs6m = rsVsSpy6m(dCloses, spyDaily)
 
-    // ── Listing age ──────────────────────────────────────────────────────────
-    const firstBar  = monthly[0]
-    const ageYears  = firstBar
+    const firstBar = monthly[0]
+    const ageYears = firstBar
       ? Math.round(((now.getTime() - new Date(firstBar.t).getTime()) / (365.25 * 86400000)) * 100) / 100
       : null
 
@@ -400,4 +381,59 @@ export async function scanSupercycles(
   }
 
   return candidates.sort((a, b) => b.score - a.score)
+}
+
+// ── Public: scan all — returns full candidates + early-watch list ─────────────
+// Fetches bars ONCE and evaluates against both DEFAULT_CONFIG and WATCHLIST_CONFIG.
+// Use this in the cron — it's more efficient than calling scanSupercycles + a second pass.
+export async function scanAll(
+  universe: string[] = SUPERCYCLE_UNIVERSE,
+  discoveredSet: Set<string> = new Set(),
+): Promise<{ candidates: SupercycleCandidate[]; watchlist: WatchlistItem[] }> {
+  const now = new Date()
+  if (!universe.includes('SPY')) universe = ['SPY', ...universe]
+
+  const monthlyStart = new Date(now)
+  monthlyStart.setFullYear(monthlyStart.getFullYear() - 10)
+  const dailyStart = new Date(now)
+  dailyStart.setMonth(dailyStart.getMonth() - 14)
+
+  console.log('[supercycle] Fetching bars for', universe.length, 'symbols…')
+  const [monthlyBars, dailyBars] = await Promise.all([
+    fetchBars(universe, '1Month', monthlyStart.toISOString().split('T')[0]),
+    fetchBars(universe, '1Day',   dailyStart.toISOString().split('T')[0]),
+  ])
+
+  const spyDaily = (dailyBars['SPY'] ?? []).map(b => b.c)
+
+  // Full supercycle candidates
+  const candidates = evaluateTickers(DEFAULT_CONFIG, universe, monthlyBars, dailyBars, spyDaily, discoveredSet, now)
+  const candidateSymbols = new Set(candidates.map(c => c.ticker))
+
+  // Relaxed pass — filter out already-promoted tickers
+  const relaxed = evaluateTickers(WATCHLIST_CONFIG, universe, monthlyBars, dailyBars, spyDaily, discoveredSet, now)
+    .filter(c => !candidateSymbols.has(c.ticker))
+
+  // Count which of the 4 FULL gates each watchlist item currently meets
+  const watchlist: WatchlistItem[] = relaxed.map(c => ({
+    ...c,
+    criteria_met: [
+      c.monthly_rsi               >= DEFAULT_CONFIG.monthly_rsi_min,
+      c.pct_above_200dma          >= DEFAULT_CONFIG.min_pct_above_200dma,
+      c.consecutive_green_months  >= DEFAULT_CONFIG.min_consecutive_green_months,
+      c.volume_expanding,
+    ].filter(Boolean).length,
+  })).sort((a, b) => b.criteria_met - a.criteria_met || b.monthly_rsi - a.monthly_rsi)
+
+  return { candidates, watchlist }
+}
+
+// Backward-compat wrapper — cron code that called scanSupercycles still works.
+export async function scanSupercycles(
+  cfg: SupercycleConfig = DEFAULT_CONFIG,
+  universe: string[] = SUPERCYCLE_UNIVERSE,
+  discoveredSet: Set<string> = new Set(),
+): Promise<SupercycleCandidate[]> {
+  const { candidates } = await scanAll(universe, discoveredSet)
+  return candidates
 }

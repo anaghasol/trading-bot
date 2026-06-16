@@ -363,7 +363,10 @@ export default function DashboardPage() {
   const [scanning, setScanning] = useState(false)
   const [showRegimeInfo, setShowRegimeInfo] = useState(false)
   const [perfData, setPerfData] = useState<Record<string, StrategyStats> | null>(null)
-  const [supercycle, setSupercycle] = useState<{ ticker: string; monthly_rsi: number; pct_above_200dma: number; consecutive_green_months: number; listing_age_years: number | null; rs_vs_spy_6m?: number; avg_dollar_vol_m?: number; score: number; discovered?: boolean; scanned_at: string }[]>([])
+  type ScItem = { ticker: string; monthly_rsi: number; pct_above_200dma: number; consecutive_green_months: number; listing_age_years: number | null; rs_vs_spy_6m?: number; avg_dollar_vol_m?: number; score: number; discovered?: boolean; scanned_at: string }
+  type WlItem = ScItem & { criteria_met: number }
+  const [supercycle, setSupercycle] = useState<ScItem[]>([])
+  const [scWatchlist, setScWatchlist] = useState<WlItem[]>([])
   const [streamActive, setStreamActive] = useState(false)
   const esRef = useRef<EventSource | null>(null)
   const market = useMarketClock()
@@ -409,6 +412,7 @@ export default function DashboardPage() {
     // Supercycle radar — weekly screener results, broker-agnostic
     fetch('/api/supercycle').then(r => r.json()).then(d => {
       if (Array.isArray(d?.candidates)) setSupercycle(d.candidates)
+      if (Array.isArray(d?.watchlist)) setScWatchlist(d.watchlist)
     }).catch(() => {})
   }, [])
 
@@ -974,7 +978,7 @@ export default function DashboardPage() {
                       <td style={{ textAlign: 'right', color: pnlColor(unreal) }}>{signed(unreal)}</td>
                       <td style={{ textAlign: 'right' }}><span style={{ color: pnlColor(totLive - totCost), fontWeight: 600 }}>{p2(totCost > 0 ? ((totLive - totCost) / totCost) * 100 : 0)}</span></td>
                       <td>—</td>
-                      <td style={{ textAlign: 'right' }}>{money(netLiq)}</td>
+                      <td>—</td>
                       <td></td>
                     </tr>
                   </tfoot>
@@ -1140,6 +1144,72 @@ export default function DashboardPage() {
                     <> <span style={{ color: '#13c98e' }}>+10</span> = auto-queued for next scan.</>
                   )}
                 </div>
+
+                {/* Early Watch — approaching full criteria */}
+                {scWatchlist.length > 0 && (
+                  <div style={{ borderTop: '1px solid var(--border)', marginTop: 4 }}>
+                    <div style={{ padding: '8px 14px 4px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--fg-2)', letterSpacing: '0.05em' }}>
+                        👀 EARLY WATCH
+                      </span>
+                      <span style={{ fontSize: '0.63rem', color: 'var(--fg-3)' }}>
+                        approaching full criteria — auto-promoted when all 4 gates pass
+                      </span>
+                    </div>
+                    <table className="ptbl" style={{ minWidth: 720, fontSize: '0.70rem' }}>
+                      <thead>
+                        <tr>
+                          <th className="l">Ticker</th>
+                          <th style={{ textAlign: 'right' }}>Mo RSI</th>
+                          <th style={{ textAlign: 'right' }}>vs 200MA</th>
+                          <th style={{ textAlign: 'right' }}>Green</th>
+                          <th style={{ textAlign: 'right' }}>RS/SPY 6m</th>
+                          <th style={{ textAlign: 'right' }}>Vol $M</th>
+                          <th style={{ textAlign: 'right' }}>Gates</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {scWatchlist.slice(0, 10).map(w => {
+                          const gateColor = w.criteria_met >= 3 ? '#13c98e' : w.criteria_met >= 2 ? '#fbbf24' : 'var(--fg-3)'
+                          return (
+                            <tr key={w.ticker} style={{ opacity: 0.72 }}>
+                              <td className="l">
+                                <span className="psym">{w.ticker}</span>
+                                {w.discovered && (
+                                  <span className="pbadge" style={{ background: 'rgba(139,92,246,0.15)', color: '#a78bfa', marginLeft: 4 }}>NEW</span>
+                                )}
+                                <span className="pbadge" style={{ background: 'rgba(251,191,36,0.10)', color: '#fbbf24', marginLeft: 4 }}>WATCH</span>
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--fg-2)' }}>
+                                {w.monthly_rsi?.toFixed(1)}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--fg-2)' }}>
+                                +{w.pct_above_200dma?.toFixed(0)}%
+                              </td>
+                              <td style={{ textAlign: 'right', color: 'var(--fg-2)' }}>
+                                {w.consecutive_green_months}mo
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--fg-2)' }}>
+                                {w.rs_vs_spy_6m != null ? `${w.rs_vs_spy_6m.toFixed(1)}×` : '—'}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--fg-3)' }}>
+                                {w.avg_dollar_vol_m != null ? `$${w.avg_dollar_vol_m.toFixed(0)}M` : '—'}
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <span style={{ color: gateColor, fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+                                  {w.criteria_met}/4
+                                </span>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: '0.63rem', color: 'var(--fg-3)', padding: '4px 14px 10px' }}>
+                      <span style={{ color: '#13c98e' }}>3/4</span> = near promotion · <span style={{ color: '#fbbf24' }}>2/4</span> = watching · updated weekly
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
