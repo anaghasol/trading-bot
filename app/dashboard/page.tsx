@@ -101,7 +101,7 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
   const liveQ = qmap[upper] ?? fetchedQuote ?? null
   const livePrice = liveQ?.price ?? 0
 
-  // Fetch live price for symbols not already in qmap
+  // Fetch live price for symbols not in qmap
   useEffect(() => {
     if (quoteFetchRef.current) clearTimeout(quoteFetchRef.current)
     if (!upper || upper.length < 1 || qmap[upper]) { setFetchedQuote(null); setQuoteLoading(false); return }
@@ -118,11 +118,27 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upper])
 
+  const limitPxNum = parseFloat(limitPx) || 0
+  const execPrice = orderType === 'LIMIT' && limitPxNum > 0 ? limitPxNum : livePrice
+
   const shares = mode === 'shares'
     ? parseFloat(qty) || 0
-    : livePrice > 0 ? Math.floor((parseFloat(qty) || 0) / livePrice) : 0
-  const estCost = shares * (orderType === 'LIMIT' && parseFloat(limitPx) > 0 ? parseFloat(limitPx) : livePrice)
+    : execPrice > 0 ? Math.floor((parseFloat(qty) || 0) / execPrice) : 0
+
+  const estCost = shares * execPrice
   const canAfford = action === 'SELL' || cash <= 0 || estCost <= cash
+
+  // How many shares can we buy with available cash at exec price
+  const maxShares = execPrice > 0 && cash > 0 ? Math.floor(cash / execPrice) : 0
+  const bpUsedPct = cash > 0 && estCost > 0 ? Math.min((estCost / cash) * 100, 100) : 0
+
+  function fillFraction(frac: number) {
+    if (execPrice <= 0 || cash <= 0) return
+    const sh = Math.floor((cash * frac) / execPrice)
+    if (sh <= 0) return
+    setMode('shares')
+    setQty(String(sh))
+  }
 
   function onSymChange(val: string) {
     const v = val.toUpperCase()
@@ -153,13 +169,17 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
   }
 
   async function submit() {
-    if (!upper || shares <= 0) return
+    if (!upper || shares <= 0 || !canAfford) return
     setStatus('loading'); setMsg('')
     try {
       const res = await fetch('/api/trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: upper, quantity: shares, action, broker, orderType, limitPrice: orderType === 'LIMIT' ? parseFloat(limitPx) : undefined }),
+        body: JSON.stringify({
+          symbol: upper, quantity: shares, action, broker,
+          orderType, limitPrice: orderType === 'LIMIT' ? limitPxNum : undefined,
+          manual: true,  // manual trades bypass bot confidence gates
+        }),
       })
       const data = await res.json()
       if (data.status === 'PLACED') {
@@ -168,11 +188,10 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
         setTimeout(() => { setStatus('idle'); setMsg(''); onDone() }, 2500)
       } else {
         const errMsg: string = data.error ?? 'Order failed'
-        // IPO stocks require LIMIT orders — auto-switch and pre-fill price
         if (errMsg.includes('only limit orders')) {
           setOrderType('LIMIT')
           if (livePrice > 0) setLimitPx(livePrice.toFixed(2))
-          setStatus('err'); setMsg(`IPO stock — switched to Limit order. Confirm price and retry.`)
+          setStatus('err'); setMsg(`IPO stock — switched to Limit. Confirm price and retry.`)
         } else {
           setStatus('err'); setMsg(errMsg)
         }
@@ -186,18 +205,20 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
 
   const isPaper = broker === 'alpaca_paper'
   const accent = isPaper ? 'var(--blue)' : action === 'BUY' ? 'var(--green)' : 'var(--red)'
+  const limitDiff = livePrice > 0 && limitPxNum > 0 ? ((limitPxNum - livePrice) / livePrice * 100) : null
 
   return (
     <div className="card">
       <div className="card-head plain">
         <h3 className="card-title neutral">⚡ Quick Trade <span className="chip mut" style={{ fontSize: '0.6rem' }}>{isPaper ? 'Paper · Alpaca' : 'Live · Schwab'}</span></h3>
-        <span className="eyebrow">Buying power: <b style={{ color: 'var(--fg-1)' }}>${Math.floor(cash).toLocaleString()}</b></span>
+        <span className="eyebrow">BUYING POWER <b style={{ color: cash > 0 ? 'var(--fg-1)' : 'var(--red)' }}>${Math.floor(cash).toLocaleString()}</b></span>
       </div>
       <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {/* Symbol row */}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <div style={{ flex: 1, position: 'relative' }}>
-            <div className="eyebrow" style={{ marginBottom: 3 }}>Symbol</div>
+
+        {/* Symbol input */}
+        <div style={{ position: 'relative' }}>
+          <div className="eyebrow" style={{ marginBottom: 3 }}>SYMBOL</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               ref={symRef}
               value={sym}
@@ -207,136 +228,165 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
               onBlur={() => setTimeout(() => setShowSug(false), 150)}
               placeholder="NVDA, OKLO, SPY…"
               autoComplete="off"
-              style={{ width: '100%', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '6px 10px', color: 'var(--fg-1)', fontSize: '0.88rem', fontFamily: 'var(--font-mono)', letterSpacing: '0.04em' }}
+              style={{ flex: 1, background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '7px 10px', color: 'var(--fg-1)', fontSize: '0.9rem', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}
             />
-            {/* Autocomplete dropdown */}
-            {showSug && suggestions.length > 0 && (
-              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, background: 'var(--bg-3)', border: '1px solid var(--divider)', borderRadius: 6, marginTop: 2, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
-                {suggestions.map((s, i) => (
-                  <div
-                    key={s.symbol}
-                    onMouseDown={() => pickSuggestion(s)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', cursor: 'pointer',
-                      background: i === sugIdx ? 'var(--bg-2)' : 'transparent',
-                      borderBottom: i < suggestions.length - 1 ? '1px solid var(--divider)' : 'none',
-                    }}
-                  >
-                    <span className="tabular" style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--fg-1)', minWidth: 52 }}>{s.symbol}</span>
-                    <span style={{ fontSize: '0.72rem', color: 'var(--fg-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
-                  </div>
-                ))}
+            {quoteLoading && <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)' }}>…</div>}
+            {livePrice > 0 && !quoteLoading && (
+              <div style={{ textAlign: 'right', minWidth: 72 }}>
+                <div className="tabular" style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--fg-1)' }}>${num(livePrice)}</div>
+                <div className="tabular" style={{ fontSize: '0.68rem', color: (liveQ?.change_pct ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{p2(liveQ?.change_pct ?? 0)}</div>
               </div>
             )}
           </div>
-          {(livePrice > 0 || quoteLoading) && (
-            <div style={{ textAlign: 'right', paddingTop: 18 }}>
-              {quoteLoading && !livePrice ? (
-                <div style={{ fontSize: '0.75rem', color: 'var(--fg-3)' }}>…</div>
-              ) : livePrice > 0 ? (<>
-                <div className="tabular" style={{ fontWeight: 700, fontSize: '1.05rem', color: 'var(--fg-1)' }}>${num(livePrice)}</div>
-                <div className="tabular" style={{ fontSize: '0.7rem', color: (liveQ?.change_pct ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{p2(liveQ?.change_pct ?? 0)}</div>
-              </>) : null}
+          {showSug && suggestions.length > 0 && (
+            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, background: 'var(--bg-3)', border: '1px solid var(--divider)', borderRadius: 6, marginTop: 2, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+              {suggestions.map((s, i) => (
+                <div key={s.symbol} onMouseDown={() => pickSuggestion(s)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', cursor: 'pointer', background: i === sugIdx ? 'var(--bg-2)' : 'transparent', borderBottom: i < suggestions.length - 1 ? '1px solid var(--divider)' : 'none' }}>
+                  <span className="tabular" style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--fg-1)', minWidth: 52 }}>{s.symbol}</span>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--fg-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
 
-        {/* Live price + total cost bar */}
-        {livePrice > 0 && upper && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-2)', borderRadius: 7, padding: '7px 12px', border: '1px solid var(--divider)' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span style={{ fontSize: '0.7rem', color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{upper}</span>
-              <span className="tabular" style={{ fontWeight: 700, fontSize: '1.1rem', color: 'var(--fg-1)' }}>${num(livePrice)}</span>
-              <span className="tabular" style={{ fontSize: '0.72rem', color: (liveQ?.change_pct ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{p2(liveQ?.change_pct ?? 0)}</span>
+        {/* BUY / SELL  +  Market / Limit */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <div className="seg" style={{ flex: 1 }}>
+            <button className={`seg-btn ${action === 'BUY' ? 'on' : ''}`}
+              style={action === 'BUY' ? { background: 'var(--green-faint)', color: 'var(--green)', borderColor: 'var(--green)', fontWeight: 800 } : {}}
+              onClick={() => setAction('BUY')}>BUY</button>
+            <button className={`seg-btn ${action === 'SELL' ? 'on-red' : ''}`}
+              style={action === 'SELL' ? { fontWeight: 800 } : {}}
+              onClick={() => setAction('SELL')}>SELL</button>
+          </div>
+          <div className="seg">
+            <button className={`seg-btn ${orderType === 'MARKET' ? 'on' : ''}`} onClick={() => { setOrderType('MARKET'); setLimitPx('') }}>Market</button>
+            <button className={`seg-btn ${orderType === 'LIMIT' ? 'on' : ''}`} onClick={() => { setOrderType('LIMIT'); if (livePrice > 0 && !limitPx) setLimitPx(livePrice.toFixed(2)) }}>Limit</button>
+          </div>
+        </div>
+
+        {/* Limit price row — only when LIMIT selected */}
+        {orderType === 'LIMIT' && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
+                <span className="eyebrow">LIMIT PRICE</span>
+                {livePrice > 0 && (
+                  <button onClick={() => setLimitPx(livePrice.toFixed(2))}
+                    style={{ fontSize: '0.65rem', color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                    Set to mkt ${num(livePrice)}
+                  </button>
+                )}
+              </div>
+              <input type="number" min="0" step="0.01"
+                value={limitPx}
+                onChange={(e) => setLimitPx(e.target.value)}
+                placeholder={livePrice > 0 ? livePrice.toFixed(2) : '0.00'}
+                style={{ width: '100%', background: 'var(--bg-2)', border: `1px solid ${limitDiff !== null && Math.abs(limitDiff) > 2 ? 'var(--yellow, #f5a623)' : 'var(--divider)'}`, borderRadius: 6, padding: '7px 10px', color: 'var(--fg-1)', fontSize: '0.9rem', fontFamily: 'var(--font-mono)' }}
+              />
             </div>
-            {shares > 0 && (
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: '0.68rem', color: 'var(--fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{action === 'BUY' ? 'Total cost' : 'Proceeds'}</div>
-                <div className="tabular" style={{ fontWeight: 700, fontSize: '0.95rem', color: canAfford ? (action === 'BUY' ? 'var(--green)' : 'var(--red)') : 'var(--red)' }}>${num(estCost)}</div>
+            {limitDiff !== null && (
+              <div style={{ paddingBottom: 2, fontSize: '0.7rem', color: limitDiff >= 0 ? 'var(--green)' : 'var(--red)', whiteSpace: 'nowrap' }}>
+                {limitDiff >= 0 ? '+' : ''}{limitDiff.toFixed(1)}% vs mkt
               </div>
             )}
           </div>
         )}
 
-        {/* Action + Order type */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          <div className="seg" style={{ flex: 1 }}>
-            <button className={`seg-btn ${action === 'BUY' ? 'on' : ''}`} style={action === 'BUY' ? { background: 'var(--green-faint)', color: 'var(--green)', borderColor: 'var(--green)' } : {}} onClick={() => setAction('BUY')}>BUY</button>
-            <button className={`seg-btn ${action === 'SELL' ? 'on-red' : ''}`} onClick={() => setAction('SELL')}>SELL</button>
+        {/* Shares / $ input + quick-fill buttons */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
+            <span className="eyebrow">{mode === 'shares' ? 'SHARES' : 'DOLLAR AMOUNT'}</span>
+            {maxShares > 0 && action === 'BUY' && (
+              <span style={{ fontSize: '0.65rem', color: 'var(--fg-3)' }}>
+                Can buy <b style={{ color: 'var(--fg-2)' }}>{maxShares.toLocaleString()}</b> max
+              </span>
+            )}
           </div>
-          <div className="seg">
-            <button className={`seg-btn ${orderType === 'MARKET' ? 'on' : ''}`} onClick={() => setOrderType('MARKET')}>Market</button>
-            <button className={`seg-btn ${orderType === 'LIMIT' ? 'on' : ''}`} onClick={() => setOrderType('LIMIT')}>Limit</button>
-          </div>
-        </div>
-
-        {/* Qty row */}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-          <div style={{ flex: 1 }}>
-            <div className="eyebrow" style={{ marginBottom: 3 }}>
-              {mode === 'shares' ? 'Shares' : 'Dollar amount'}
-            </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input
               type="number" min="0"
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               placeholder={mode === 'shares' ? '10' : '500'}
-              style={{ width: '100%', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '6px 10px', color: 'var(--fg-1)', fontSize: '0.88rem', fontFamily: 'var(--font-mono)' }}
+              style={{ flex: 1, background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '7px 10px', color: 'var(--fg-1)', fontSize: '0.9rem', fontFamily: 'var(--font-mono)' }}
             />
+            <button onClick={() => setMode(m => m === 'shares' ? 'dollars' : 'shares')}
+              style={{ padding: '6px 8px', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, fontSize: '0.68rem', color: 'var(--fg-3)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              {mode === 'shares' ? '$ amt' : '# sh'}
+            </button>
           </div>
-          <button
-            onClick={() => setMode(m => m === 'shares' ? 'dollars' : 'shares')}
-            style={{ padding: '6px 10px', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, fontSize: '0.72rem', color: 'var(--fg-3)', cursor: 'pointer', whiteSpace: 'nowrap', marginBottom: 1 }}
-          >{mode === 'shares' ? '$ switch' : '# switch'}</button>
+
+          {/* Quick-fill fraction buttons — only shown when we have a price */}
+          {execPrice > 0 && cash > 0 && action === 'BUY' && (
+            <div style={{ display: 'flex', gap: 5, marginTop: 6 }}>
+              {([['25%', 0.25], ['50%', 0.5], ['75%', 0.75], ['Max', 1]] as [string, number][]).map(([label, frac]) => (
+                <button key={label} onClick={() => fillFraction(frac)}
+                  style={{
+                    flex: 1, padding: '4px 0', background: 'var(--bg-2)', border: '1px solid var(--divider)',
+                    borderRadius: 5, fontSize: '0.68rem', color: label === 'Max' ? accent : 'var(--fg-2)',
+                    cursor: 'pointer', fontWeight: label === 'Max' ? 700 : 400,
+                    transition: 'border-color 0.12s',
+                  }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Limit price */}
-        {orderType === 'LIMIT' && (
+        {/* Buying power bar — shows while a valid order is staged */}
+        {bpUsedPct > 0 && action === 'BUY' && (
           <div>
-            <div className="eyebrow" style={{ marginBottom: 3 }}>Limit price</div>
-            <input
-              type="number" min="0" step="0.01"
-              value={limitPx}
-              onChange={(e) => setLimitPx(e.target.value)}
-              placeholder={livePrice > 0 ? livePrice.toFixed(2) : '0.00'}
-              style={{ width: '100%', background: 'var(--bg-2)', border: '1px solid var(--divider)', borderRadius: 6, padding: '6px 10px', color: 'var(--fg-1)', fontSize: '0.88rem', fontFamily: 'var(--font-mono)' }}
-            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--fg-3)', marginBottom: 3 }}>
+              <span>{bpUsedPct.toFixed(0)}% of buying power</span>
+              <span style={{ color: canAfford ? 'var(--fg-2)' : 'var(--red)', fontWeight: 600 }}>${num(estCost)} of ${Math.floor(cash).toLocaleString()}</span>
+            </div>
+            <div style={{ height: 4, borderRadius: 2, background: 'var(--bg-2)', overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${bpUsedPct}%`, borderRadius: 2, background: canAfford ? accent : 'var(--red)', transition: 'width 0.2s' }} />
+            </div>
           </div>
         )}
 
-        {/* Execute row */}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
-          <div style={{ flex: 1, fontSize: '0.78rem', color: 'var(--fg-3)' }}>
-            {mode === 'dollars' && shares > 0 && livePrice > 0 && (
-              <span className="faint">{shares} sh</span>
-            )}
+        {/* Order summary line when SELL */}
+        {action === 'SELL' && shares > 0 && livePrice > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--fg-3)', background: 'var(--bg-2)', borderRadius: 6, padding: '6px 10px' }}>
+            <span>Proceeds</span>
+            <span className="tabular" style={{ color: 'var(--red)', fontWeight: 700 }}>${num(estCost)}</span>
           </div>
-          <button
-            disabled={!upper || shares <= 0 || status === 'loading' || !canAfford}
-            onClick={submit}
-            style={{
-              padding: '8px 18px', borderRadius: 7, border: 'none', cursor: 'pointer', fontWeight: 700,
-              fontSize: '0.82rem', letterSpacing: '0.04em',
-              background: status === 'loading' ? 'var(--bg-3)' : !canAfford ? 'var(--bg-3)' : accent,
-              color: status === 'loading' || !canAfford ? 'var(--fg-3)' : '#fff',
-              opacity: (!upper || shares <= 0) ? 0.5 : 1,
-              transition: 'all 0.15s',
-            }}
-          >
-            {status === 'loading' ? '…' : `${action} ${shares > 0 ? shares + ' sh' : ''}`}
-          </button>
-        </div>
+        )}
 
-        {/* Status message */}
+        {/* Execute button */}
+        <button
+          disabled={!upper || shares <= 0 || status === 'loading' || !canAfford}
+          onClick={submit}
+          style={{
+            width: '100%', padding: '10px 18px', borderRadius: 8, border: 'none',
+            cursor: (!upper || shares <= 0 || !canAfford) ? 'not-allowed' : 'pointer',
+            fontWeight: 800, fontSize: '0.85rem', letterSpacing: '0.05em',
+            background: status === 'loading' ? 'var(--bg-3)' : !canAfford ? 'var(--red-faint)' : accent,
+            color: status === 'loading' ? 'var(--fg-3)' : !canAfford ? 'var(--red)' : '#fff',
+            opacity: (!upper || shares <= 0) ? 0.45 : 1,
+            transition: 'all 0.15s',
+            marginTop: 2,
+          }}
+        >
+          {status === 'loading'
+            ? '…'
+            : !canAfford
+              ? `Need $${num(estCost - cash)} more`
+              : shares > 0
+                ? `${action} ${shares} sh${estCost > 0 ? ` — $${num(estCost)}` : ''}`
+                : action
+          }
+        </button>
+
+        {/* Status feedback */}
         {msg && (
           <div style={{ fontSize: '0.78rem', padding: '6px 10px', borderRadius: 6, background: status === 'ok' ? 'var(--green-faint)' : 'var(--red-faint)', color: status === 'ok' ? 'var(--green)' : 'var(--red)', border: `1px solid ${status === 'ok' ? 'var(--green)' : 'var(--red)'}` }}>
             {msg}
-          </div>
-        )}
-
-        {!canAfford && shares > 0 && (
-          <div style={{ fontSize: '0.72rem', color: 'var(--red)' }}>
-            Insufficient buying power — need {money(estCost)}, have {money(cash)}
           </div>
         )}
       </div>
