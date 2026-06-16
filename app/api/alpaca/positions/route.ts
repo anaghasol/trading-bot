@@ -47,27 +47,37 @@ export async function GET() {
       const symbol      = String(p.symbol)
       const qty         = parseFloat(String(p.qty ?? 0))
       const alpacaEntry = parseFloat(String(p.avg_entry_price ?? 0))
-      const cur_price   = parseFloat(String(p.current_price ?? alpacaEntry))
+      const cur_price   = parseFloat(String(p.current_price ?? 0)) || alpacaEntry
       const market_val  = parseFloat(String(p.market_value ?? 0))
+      const hasOverride = !!overrides[symbol]
 
-      // Apply corrected entry price if override exists
-      const avg_cost    = overrides[symbol] ?? alpacaEntry
-      const unreal      = (cur_price - avg_cost) * qty
-      const pnl_pct     = avg_cost > 0 ? ((cur_price - avg_cost) / avg_cost) * 100 : 0
+      // Apply corrected entry price if /fix-entry override exists
+      const avg_cost = overrides[symbol] ?? alpacaEntry
+
+      // P/L: recompute only when entry is overridden (we changed the cost basis).
+      // Otherwise trust Alpaca's own unrealized_pl — it's computed server-side
+      // against their actual price feed and is correct even when current_price
+      // comes back null/0 from the API (positions not yet repriced for the session).
+      const unreal  = hasOverride
+        ? (cur_price - avg_cost) * qty
+        : parseFloat(String(p.unrealized_pl ?? 0))
+      const pnl_pct = hasOverride
+        ? (avg_cost > 0 ? ((cur_price - avg_cost) / avg_cost) * 100 : 0)
+        : parseFloat(String(p.unrealized_plpc ?? 0)) * 100
 
       return {
         symbol,
-        quantity:       qty,
+        quantity:           qty,
         avg_cost,
-        current_price:  cur_price,
-        market_value:   market_val,
-        unrealized_pnl: Math.round(unreal * 100) / 100,
+        current_price:      cur_price,
+        market_value:       market_val,
+        unrealized_pnl:     Math.round(unreal * 100) / 100,
         unrealized_pnl_pct: Math.round(pnl_pct * 100) / 100,
-        day_pnl:        parseFloat(String(p.unrealized_intraday_pl ?? 0)),
-        pnl_pct:        Math.round(pnl_pct * 100) / 100,
-        cost_basis:     avg_cost * qty,
-        asset_type:     'EQUITY' as const,
-        entry_corrected: !!overrides[symbol],  // flag so UI can show indicator
+        day_pnl:            parseFloat(String(p.unrealized_intraday_pl ?? 0)),
+        pnl_pct:            Math.round(pnl_pct * 100) / 100,
+        cost_basis:         avg_cost * qty,
+        asset_type:         'EQUITY' as const,
+        entry_corrected:    hasOverride,
       }
     })
 

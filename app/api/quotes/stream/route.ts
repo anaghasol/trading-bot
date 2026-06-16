@@ -24,7 +24,7 @@ async function alpacaPrices(symbols: string[]): Promise<PriceMap> {
   try {
     // Bulk latest-trade prices — faster and cheaper than bar endpoint
     const res = await fetch(
-      `${ALPACA_DATA}/stocks/trades/latest?symbols=${symbols.join(',')}&feed=iex`,
+      `${ALPACA_DATA}/stocks/trades/latest?symbols=${symbols.join(',')}&feed=sip`,
       { headers: { 'APCA-API-KEY-ID': KEY, 'APCA-API-SECRET-KEY': SEC }, cache: 'no-store',
         signal: AbortSignal.timeout(3000) }
     )
