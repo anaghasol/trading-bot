@@ -242,7 +242,7 @@ async function monitorBroker(
 
     const isSameDay   = meta.entry_date === todayStr
     const holdDays    = Math.round((Date.now() - new Date(meta.entry_date + 'T00:00:00Z').getTime()) / 86_400_000)
-    const gainPct     = pos.pnl_pct  // shorthand
+    const gainPct     = pos.pnl_pct
 
     // ── Staged Exit Intelligence ───────────────────────────────────────────────
     // Three-tier profit taking based on current gain. Each tier fires once per trade.
@@ -332,17 +332,29 @@ async function monitorBroker(
     }
 
     // Full exit check — hold_mode determines trail width and calendar limit
-    //   trend: 8% trail (wider room to breathe), no calendar close (hold until stop fires)
+    //   trend: starts at 8% trail, tightens to 4% once up 30%, floor at breakeven once up 8%
     //   day:   tight 3% trail, must exit by EOD (handled by close cron)
     //   swing: profile default (5% trail, max_hold_days cap)
     const profile = profileFor(broker)
     const isTrend = meta.hold_mode === 'trend'
     const isDay   = meta.hold_mode === 'day'
-    const effectiveTrail   = isTrend ? 0.08 : isDay ? 0.03 : profile.trail_pct
+
+    // Trend trail ladder: wide early, tighten as gains compound
+    //   +0%  to +30%: 8% trail — give room to run
+    //   +30% and up:  4% trail — lock most of the gain, still let it run further
+    const effectiveTrail   = isTrend
+      ? (gainPct >= 30 ? 0.04 : 0.08)
+      : isDay ? 0.03 : profile.trail_pct
     const effectiveMaxHold = isTrend ? 999  : profile.max_hold_days  // trend: never force-close on calendar
 
+    // Trend breakeven floor: once up 8%, floor the initial stop at entry price.
+    // A winner can never become a loser — we just stop risking our cost basis.
+    const effectiveInitialStop = isTrend && gainPct >= 8
+      ? Math.max(meta.initial_stop, meta.entry_price)
+      : meta.initial_stop
+
     const exit = checkExitCondition(
-      pos.current_price, meta.entry_price, meta.peak_price, meta.initial_stop,
+      pos.current_price, meta.entry_price, meta.peak_price, effectiveInitialStop,
       holdDays, false, effectiveTrail, effectiveMaxHold,
       broker === 'alpaca_paper'
     )
@@ -351,8 +363,10 @@ async function monitorBroker(
     }
 
     if (!exit.should_exit) {
-      const modeTag = isTrend ? ' [TREND 8%trail]' : isDay ? ' [DAY 3%trail]' : ''
-      statuses.push(`${pos.symbol}: ${exit.reason}${modeTag}`)
+      const trailLabel = isTrend
+        ? (gainPct >= 30 ? '[TREND 4%trail 🔒]' : gainPct >= 8 ? '[TREND 8%trail BE🛡]' : '[TREND 8%trail]')
+        : isDay ? '[DAY 3%trail]' : ''
+      statuses.push(`${pos.symbol}: ${exit.reason} ${trailLabel}`.trim())
       continue
     }
 
