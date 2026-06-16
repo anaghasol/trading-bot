@@ -11,7 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase-server'
-import { scanSupercycles } from '@/lib/supercycle'
+import { scanSupercycles, getExpandedUniverse } from '@/lib/supercycle'
 
 export const runtime = 'nodejs'
 export const maxDuration = 290
@@ -33,8 +33,11 @@ export async function GET(req: NextRequest) {
   })
 
   try {
-    console.log('[supercycle] Fetching Alpaca bars for universe…')
-    const candidates = await scanSupercycles()
+    console.log('[supercycle] Building expanded universe (static + news discovery)…')
+    const { symbols: universe, discovered } = await getExpandedUniverse()
+    const discoveredSet = new Set(discovered)
+    console.log(`[supercycle] Scanning ${universe.length} symbols (${discovered.length} newly discovered)…`)
+    const candidates = await scanSupercycles(undefined, universe, discoveredSet)
     const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
 
     if (candidates.length === 0) {
@@ -61,7 +64,10 @@ export async function GET(req: NextRequest) {
           consecutive_green_months: c.consecutive_green_months,
           listing_age_years:        c.listing_age_years,
           volume_expanding:         c.volume_expanding,
+          rs_vs_spy_6m:             c.rs_vs_spy_6m,
+          avg_dollar_vol_m:         c.avg_dollar_vol_m,
           score:                    c.score,
+          discovered:               c.discovered ?? false,
         }),
       }))
     )
@@ -70,9 +76,9 @@ export async function GET(req: NextRequest) {
     const top3 = candidates.filter(c => c.score >= 70).slice(0, 3)
     if (top3.length > 0) {
       const lines = top3.map(
-        c => `${c.ticker}: RSI ${c.monthly_rsi.toFixed(0)} / +${c.pct_above_200dma.toFixed(0)}% 200MA / ${c.consecutive_green_months}mo green / score ${c.score}`
+        c => `${c.discovered ? '🆕 ' : ''}${c.ticker}: RSI ${c.monthly_rsi.toFixed(0)} / +${c.pct_above_200dma.toFixed(0)}% 200MA / ${c.consecutive_green_months}mo green / RS ${c.rs_vs_spy_6m?.toFixed(1)}x SPY / score ${c.score}`
       )
-      const body = `🚀 SUPERCYCLE RADAR\n${lines.join('\n')}\n\nQueued for paper trading next scan.`
+      const body = `🚀 SUPERCYCLE RADAR (${universe.length} scanned)\n${lines.join('\n')}\n\nQueued for paper trading next scan.`
       await sendSMS(body)
 
       // Auto-queue top-3 for paper scan: write to tb_learning so the scan cron sees them
@@ -86,21 +92,28 @@ export async function GET(req: NextRequest) {
       )
     }
 
+    const newlyDiscovered = candidates.filter(c => c.discovered).map(c => c.ticker)
     await db.from('tb_cron_log').insert({
       job: 'supercycle',
       status: 'ok',
-      message: `Found ${candidates.length} candidates, top: ${candidates[0]?.ticker} score=${candidates[0]?.score} (${elapsed}s)`,
+      message: `Scanned ${universe.length} (${discovered.length} discovered). Found ${candidates.length} candidates. Top: ${candidates[0]?.ticker} score=${candidates[0]?.score}. New discoveries that passed: [${newlyDiscovered.join(', ') || 'none'}] (${elapsed}s)`,
     })
 
     return NextResponse.json({
-      candidates: candidates.length,
+      universe_size:   universe.length,
+      discovered_news: discovered.length,
+      candidates:      candidates.length,
+      new_discoveries: newlyDiscovered,
       top: candidates.slice(0, 10).map(c => ({
-        ticker: c.ticker,
-        monthly_rsi: c.monthly_rsi,
-        pct_above_200dma: c.pct_above_200dma,
+        ticker:                   c.ticker,
+        monthly_rsi:              c.monthly_rsi,
+        pct_above_200dma:         c.pct_above_200dma,
         consecutive_green_months: c.consecutive_green_months,
-        listing_age_years: c.listing_age_years,
-        score: c.score,
+        listing_age_years:        c.listing_age_years,
+        rs_vs_spy_6m:             c.rs_vs_spy_6m,
+        avg_dollar_vol_m:         c.avg_dollar_vol_m,
+        score:                    c.score,
+        discovered:               c.discovered,
       })),
       elapsed_s: elapsed,
     })

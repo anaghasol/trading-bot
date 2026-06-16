@@ -363,7 +363,7 @@ export default function DashboardPage() {
   const [scanning, setScanning] = useState(false)
   const [showRegimeInfo, setShowRegimeInfo] = useState(false)
   const [perfData, setPerfData] = useState<Record<string, StrategyStats> | null>(null)
-  const [supercycle, setSupercycle] = useState<{ ticker: string; monthly_rsi: number; pct_above_200dma: number; consecutive_green_months: number; listing_age_years: number | null; score: number; scanned_at: string }[]>([])
+  const [supercycle, setSupercycle] = useState<{ ticker: string; monthly_rsi: number; pct_above_200dma: number; consecutive_green_months: number; listing_age_years: number | null; rs_vs_spy_6m?: number; avg_dollar_vol_m?: number; score: number; discovered?: boolean; scanned_at: string }[]>([])
   const [streamActive, setStreamActive] = useState(false)
   const esRef = useRef<EventSource | null>(null)
   const market = useMarketClock()
@@ -1068,29 +1068,33 @@ export default function DashboardPage() {
                 </span>
               </div>
               <div style={{ overflowX: 'auto' }}>
-                <table className="ptbl" style={{ minWidth: 620, fontSize: '0.72rem' }}>
+                <table className="ptbl" style={{ minWidth: 760, fontSize: '0.72rem' }}>
                   <thead>
                     <tr>
                       <th className="l">Ticker</th>
-                      <th style={{ textAlign: 'right' }}>Monthly RSI</th>
+                      <th style={{ textAlign: 'right' }}>Mo RSI</th>
                       <th style={{ textAlign: 'right' }}>vs 200MA</th>
-                      <th style={{ textAlign: 'right' }}>Green Mos</th>
-                      <th style={{ textAlign: 'right' }}>Age (yrs)</th>
+                      <th style={{ textAlign: 'right' }}>Green</th>
+                      <th style={{ textAlign: 'right' }}>RS/SPY 6m</th>
+                      <th style={{ textAlign: 'right' }}>Vol $M</th>
+                      <th style={{ textAlign: 'right' }}>Age</th>
                       <th style={{ textAlign: 'right' }}>Score</th>
                       <th style={{ textAlign: 'right' }}>Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {supercycle.slice(0, 8).map((c, i) => {
-                      const rsiColor = c.monthly_rsi >= 90 ? '#f87171' : c.monthly_rsi >= 85 ? '#fbbf24' : '#13c98e'
+                      const rsiColor   = c.monthly_rsi >= 90 ? '#f87171' : c.monthly_rsi >= 85 ? '#fbbf24' : '#13c98e'
+                      const rsColor    = (c.rs_vs_spy_6m ?? 1) >= 3 ? '#13c98e' : (c.rs_vs_spy_6m ?? 1) >= 1.5 ? '#fbbf24' : 'var(--fg-3)'
                       const scoreColor = c.score >= 70 ? '#13c98e' : c.score >= 40 ? '#fbbf24' : 'var(--fg-2)'
-                      const isQueued = c.score >= 70
+                      const isQueued   = c.score >= 70
                       return (
                         <tr key={c.ticker}>
                           <td className="l">
                             <span className="psym">{c.ticker}</span>
-                            {i === 0 && <span className="pbadge" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', marginLeft: 5 }}>TOP</span>}
-                            {isQueued && <span className="pbadge" style={{ background: 'rgba(19,201,142,0.12)', color: '#13c98e', marginLeft: 5 }}>+10 conf</span>}
+                            {c.discovered && <span className="pbadge" style={{ background: 'rgba(139,92,246,0.15)', color: '#a78bfa', marginLeft: 4 }}>NEW</span>}
+                            {i === 0 && !c.discovered && <span className="pbadge" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', marginLeft: 4 }}>TOP</span>}
+                            {isQueued && <span className="pbadge" style={{ background: 'rgba(19,201,142,0.12)', color: '#13c98e', marginLeft: 4 }}>+10</span>}
                           </td>
                           <td style={{ textAlign: 'right' }}>
                             <span style={{ color: rsiColor, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{c.monthly_rsi?.toFixed(1)}</span>
@@ -1099,10 +1103,18 @@ export default function DashboardPage() {
                             +{c.pct_above_200dma?.toFixed(0)}%
                           </td>
                           <td style={{ textAlign: 'right', color: c.consecutive_green_months >= 6 ? '#13c98e' : 'var(--fg-2)' }}>
-                            {c.consecutive_green_months}
+                            {c.consecutive_green_months}mo
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <span style={{ color: rsColor, fontFamily: 'var(--font-mono)' }}>
+                              {c.rs_vs_spy_6m != null ? `${c.rs_vs_spy_6m.toFixed(1)}×` : '—'}
+                            </span>
+                          </td>
+                          <td style={{ textAlign: 'right', color: 'var(--fg-3)', fontFamily: 'var(--font-mono)' }}>
+                            {c.avg_dollar_vol_m != null ? `$${c.avg_dollar_vol_m.toFixed(0)}M` : '—'}
                           </td>
                           <td style={{ textAlign: 'right', color: (c.listing_age_years ?? 99) <= 3 ? '#fbbf24' : 'var(--fg-3)' }}>
-                            {c.listing_age_years != null ? c.listing_age_years.toFixed(1) : '—'}
+                            {c.listing_age_years != null ? `${c.listing_age_years.toFixed(1)}y` : '—'}
                           </td>
                           <td style={{ textAlign: 'right' }}>
                             <span style={{ color: scoreColor, fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{c.score}</span>
@@ -1123,8 +1135,9 @@ export default function DashboardPage() {
                 </table>
                 <div style={{ fontSize: '0.65rem', color: 'var(--fg-3)', padding: '6px 14px 8px' }}>
                   ⚠ Discovery tool — validate with AI scan before trading. RSI 99 is a sell signal; the edge is 80–85 (early entry).
+                  {supercycle.some(c => c.discovered) && <> <span style={{ color: '#a78bfa' }}>NEW</span> = found via Alpaca news spin-off scan, not in base universe.</>}
                   {supercycle.some(c => c.score >= 70) && (
-                    <> Candidates with <span style={{ color: '#13c98e' }}>+10 conf</span> badge are auto-queued — next scan will prioritize them.</>
+                    <> <span style={{ color: '#13c98e' }}>+10</span> = auto-queued for next scan.</>
                   )}
                 </div>
               </div>
