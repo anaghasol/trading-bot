@@ -57,8 +57,8 @@ export async function GET(req: NextRequest) {
       const lines = promoted.map(
         c => `${c.ticker}: RSI ${c.monthly_rsi.toFixed(0)} / +${c.pct_above_200dma.toFixed(0)}% 200MA / score ${c.score}`
       )
-      await sendSMS(
-        `🎯 WATCHLIST PROMOTED — full criteria met:\n${lines.join('\n')}\n\nAuto-queued for next scan.`
+      await sendTG(
+        `🎯 *WATCHLIST PROMOTED — full criteria met:*\n${lines.join('\n')}\n\nAuto-queued for next scan.`
       )
       await db.from('tb_alerts').insert(
         promoted.map(c => ({
@@ -122,8 +122,8 @@ export async function GET(req: NextRequest) {
       const lines = top3.map(
         c => `${c.discovered ? '🆕 ' : ''}${c.ticker}: RSI ${c.monthly_rsi.toFixed(0)} / +${c.pct_above_200dma.toFixed(0)}% 200MA / ${c.consecutive_green_months}mo green / RS ${c.rs_vs_spy_6m?.toFixed(1)}x SPY / score ${c.score}`
       )
-      await sendSMS(
-        `🚀 SUPERCYCLE RADAR (${universe.length} scanned)\n${lines.join('\n')}\n\nQueued for paper trading next scan.`
+      await sendTG(
+        `🚀 *SUPERCYCLE RADAR* (${universe.length} scanned)\n${lines.join('\n')}\n\nQueued for paper trading next scan.`
       )
       await db.from('tb_alerts').insert(
         top3.map(c => ({
@@ -166,18 +166,15 @@ export async function GET(req: NextRequest) {
   }
 }
 
-async function sendSMS(body: string) {
-  const sid   = process.env.TWILIO_ACCOUNT_SID
-  const token = process.env.TWILIO_AUTH_TOKEN
-  const from  = process.env.TWILIO_FROM
-  const to    = process.env.TWILIO_PHONE_NUMBER ?? '+12516800461'
-  if (!sid || !token || !from) return
+async function sendTG(body: string) {
+  const bot  = process.env.TELEGRAM_BOT_TOKEN
+  const chat = process.env.TELEGRAM_ALLOWED_CHAT_ID
+  if (!bot || !chat) return
   try {
-    const creds = Buffer.from(`${sid}:${token}`).toString('base64')
-    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    await fetch(`https://api.telegram.org/bot${bot}/sendMessage`, {
       method: 'POST',
-      headers: { Authorization: `Basic ${creds}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ To: to, From: from, Body: body }).toString(),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: body, parse_mode: 'Markdown' }),
     })
   } catch { /* non-fatal */ }
 }
