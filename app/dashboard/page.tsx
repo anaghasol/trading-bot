@@ -363,6 +363,7 @@ export default function DashboardPage() {
   const [scanning, setScanning] = useState(false)
   const [showRegimeInfo, setShowRegimeInfo] = useState(false)
   const [perfData, setPerfData] = useState<Record<string, StrategyStats> | null>(null)
+  const [supercycle, setSupercycle] = useState<{ ticker: string; monthly_rsi: number; pct_above_200dma: number; consecutive_green_months: number; listing_age_years: number | null; score: number; scanned_at: string }[]>([])
   const [streamActive, setStreamActive] = useState(false)
   const esRef = useRef<EventSource | null>(null)
   const market = useMarketClock()
@@ -404,6 +405,10 @@ export default function DashboardPage() {
     // Strategy ranking — lazy, non-blocking
     fetch(`/api/performance?broker=${b}&days=30`).then(r => r.json()).then(d => {
       if (d?.by_strategy) setPerfData(d.by_strategy as Record<string, StrategyStats>)
+    }).catch(() => {})
+    // Supercycle radar — weekly screener results, broker-agnostic
+    fetch('/api/supercycle').then(r => r.json()).then(d => {
+      if (Array.isArray(d?.candidates)) setSupercycle(d.candidates)
     }).catch(() => {})
   }, [])
 
@@ -503,6 +508,7 @@ export default function DashboardPage() {
   }
   const totDay = pos.reduce((s, p) => s + (dayChangeOf(p) ?? 0), 0)
   const totCost = pos.reduce((s, p) => s + p.avg_cost * p.quantity * (p.asset_type === 'OPTION' ? 100 : 1), 0)
+  const totLive = pos.reduce((s, p) => { const lp = qmap[p.symbol]?.price ?? p.current_price; return s + lp * Math.abs(p.quantity) * (p.asset_type === 'OPTION' ? 100 : 1) }, 0)
   const totDelta = pos.reduce((s, p) => s + (p.asset_type === 'OPTION' ? 0 : p.quantity), 0)
 
   // indices + watchlist from quote map
@@ -963,10 +969,10 @@ export default function DashboardPage() {
                       <td className="l" style={{ fontWeight: 600 }}>Totals</td>
                       <td style={{ textAlign: 'right' }}>{pos.reduce((s, p) => s + p.quantity, 0)}</td>
                       <td style={{ textAlign: 'right', color: 'var(--fg-3)', fontSize: '0.72rem' }}>{money(totCost)}</td>
-                      <td>—</td>
+                      <td style={{ textAlign: 'right', color: 'var(--fg-2)', fontSize: '0.72rem' }}>{money(totLive)}</td>
                       <td style={{ textAlign: 'right', color: pnlColor(totDay) }}>{signed(totDay)}</td>
                       <td style={{ textAlign: 'right', color: pnlColor(unreal) }}>{signed(unreal)}</td>
-                      <td>—</td>
+                      <td style={{ textAlign: 'right' }}><span style={{ color: pnlColor(totLive - totCost), fontWeight: 600 }}>{p2(totCost > 0 ? ((totLive - totCost) / totCost) * 100 : 0)}</span></td>
                       <td>—</td>
                       <td style={{ textAlign: 'right' }}>{money(netLiq)}</td>
                       <td></td>
@@ -1048,6 +1054,82 @@ export default function DashboardPage() {
               </div>
             )
           })()}
+
+          {/* 🚀 Supercycle Radar — weekly screener for SNDK-style narrative momentum stocks */}
+          {supercycle.length > 0 && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div className="card-head plain">
+                <h3 className="card-title neutral">🚀 Supercycle Radar</h3>
+                <span style={{ fontSize: '0.65rem', color: 'var(--fg-3)' }}>
+                  Monthly RSI ≥ 80 · +100% above 200MA · 4+ green months · scored weekly
+                  {supercycle[0]?.scanned_at && (
+                    <> · scanned {new Date(supercycle[0].scanned_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</>
+                  )}
+                </span>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="ptbl" style={{ minWidth: 620, fontSize: '0.72rem' }}>
+                  <thead>
+                    <tr>
+                      <th className="l">Ticker</th>
+                      <th style={{ textAlign: 'right' }}>Monthly RSI</th>
+                      <th style={{ textAlign: 'right' }}>vs 200MA</th>
+                      <th style={{ textAlign: 'right' }}>Green Mos</th>
+                      <th style={{ textAlign: 'right' }}>Age (yrs)</th>
+                      <th style={{ textAlign: 'right' }}>Score</th>
+                      <th style={{ textAlign: 'right' }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {supercycle.slice(0, 8).map((c, i) => {
+                      const rsiColor = c.monthly_rsi >= 90 ? '#f87171' : c.monthly_rsi >= 85 ? '#fbbf24' : '#13c98e'
+                      const scoreColor = c.score >= 70 ? '#13c98e' : c.score >= 40 ? '#fbbf24' : 'var(--fg-2)'
+                      const isQueued = c.score >= 70
+                      return (
+                        <tr key={c.ticker}>
+                          <td className="l">
+                            <span className="psym">{c.ticker}</span>
+                            {i === 0 && <span className="pbadge" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', marginLeft: 5 }}>TOP</span>}
+                            {isQueued && <span className="pbadge" style={{ background: 'rgba(19,201,142,0.12)', color: '#13c98e', marginLeft: 5 }}>+10 conf</span>}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <span style={{ color: rsiColor, fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{c.monthly_rsi?.toFixed(1)}</span>
+                          </td>
+                          <td style={{ textAlign: 'right', color: '#13c98e', fontFamily: 'var(--font-mono)' }}>
+                            +{c.pct_above_200dma?.toFixed(0)}%
+                          </td>
+                          <td style={{ textAlign: 'right', color: c.consecutive_green_months >= 6 ? '#13c98e' : 'var(--fg-2)' }}>
+                            {c.consecutive_green_months}
+                          </td>
+                          <td style={{ textAlign: 'right', color: (c.listing_age_years ?? 99) <= 3 ? '#fbbf24' : 'var(--fg-3)' }}>
+                            {c.listing_age_years != null ? c.listing_age_years.toFixed(1) : '—'}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <span style={{ color: scoreColor, fontWeight: 700, fontFamily: 'var(--font-mono)' }}>{c.score}</span>
+                          </td>
+                          <td style={{ textAlign: 'right' }}>
+                            <button className="closex" style={{ background: 'var(--blue-faint)', color: 'var(--blue)', borderColor: 'var(--blue)' }}
+                              onClick={() => {
+                                const el = document.querySelector<HTMLInputElement>('input[placeholder*="NVDA"]')
+                                if (el) { el.value = c.ticker; el.dispatchEvent(new Event('input', { bubbles: true })) }
+                              }}>
+                              Trade
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: '0.65rem', color: 'var(--fg-3)', padding: '6px 14px 8px' }}>
+                  ⚠ Discovery tool — validate with AI scan before trading. RSI 99 is a sell signal; the edge is 80–85 (early entry).
+                  {supercycle.some(c => c.score >= 70) && (
+                    <> Candidates with <span style={{ color: '#13c98e' }}>+10 conf</span> badge are auto-queued — next scan will prioritize them.</>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="section-row">
             {/* Activity */}

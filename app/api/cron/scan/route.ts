@@ -241,10 +241,22 @@ async function runScan(
     .not('symbol', 'is', null)
   const tgSymbols = new Set((tgRows ?? []).map((r) => r.symbol as string))
 
+  // Supercycle queue boost: symbols queued by weekly supercycle screener get +10 confidence.
+  // SUPERCYCLE_QUEUE entries written by /api/cron/supercycle every Sunday — valid for 7 days.
+  const supercycleCutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
+  const { data: scRows } = await db
+    .from('tb_alerts')
+    .select('symbol')
+    .eq('type', 'SUPERCYCLE_QUEUE')
+    .gte('created_at', supercycleCutoff)
+    .not('symbol', 'is', null)
+  const supercycleSymbols = new Set((scRows ?? []).map((r) => r.symbol as string))
+
   // Rotation overlay: rank by confidence × category bias.
   // Paper mode: COLD categories get bias=0.5 (not filtered out) so we still collect data.
   // Live (Schwab): COLD categories are filtered out completely.
   // Telegram-confirmed symbols get +8 confidence bonus before ranking.
+  // Supercycle-queued symbols get +10 confidence bonus (monthly momentum confirmed).
   // Research layer applied BEFORE the confidence gate so high-RS stocks can unlock themselves.
   const rankedPre = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
@@ -254,7 +266,7 @@ async function runScan(
       const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias
 
       const intent = intentionMap.get(r.symbol)
-      // Intention confidence boosts: buy_zone in range > watch_only > tg_alert
+      // Intention confidence boosts: buy_zone in range > watch_only > tg_alert > supercycle
       let intentBoost = 0
       if (intent?.type === 'buy_zone' && intent.price_zone) {
         intentBoost = intent.urgency === 'high' ? 15 : 10
@@ -263,11 +275,14 @@ async function runScan(
       } else if (tgSymbols.has(r.symbol)) {
         intentBoost = 8
       }
+      // Supercycle stacks on top of other boosts (monthly RSI + 200MA evidence is independent)
+      const supercycleBoost = supercycleSymbols.has(r.symbol) ? 10 : 0
 
       return {
-        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost) },
+        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost + supercycleBoost) },
         bias,
-        tg_confirmed: tgSymbols.has(r.symbol) || !!intent,
+        tg_confirmed:  tgSymbols.has(r.symbol) || !!intent,
+        supercycle:    supercycleSymbols.has(r.symbol),
         intent,
       }
     })
