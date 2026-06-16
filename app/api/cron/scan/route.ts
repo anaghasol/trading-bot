@@ -419,11 +419,11 @@ async function runScan(
           continue
         }
       }
-      // Even allowed strategies need either TG confirmation OR strong mechanical score
-      if (!tg_confirmed && (rec.ema_score ?? 0) < 7) {
-        console.log(`[schwab] SKIPPED ${rec.symbol} — no TG confirm and weak EMA score ${rec.ema_score}/10`)
+      // Even allowed strategies need either TG confirmation OR acceptable mechanical score
+      if (!tg_confirmed && (rec.ema_score ?? 0) < 5) {
+        console.log(`[schwab] SKIPPED ${rec.symbol} — no TG confirm and low EMA score ${rec.ema_score}/10`)
         void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker,
-          message: `[scan] Skipped ${rec.symbol} (${rec.setup} conf=${rec.confidence}% ema=${rec.ema_score}/10) — needs TG signal or ema≥7 for live` })
+          message: `[scan] Skipped ${rec.symbol} (${rec.setup} conf=${rec.confidence}% ema=${rec.ema_score}/10) — needs TG signal or ema≥5 for live` })
         continue
       }
     }
