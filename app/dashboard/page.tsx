@@ -365,8 +365,13 @@ export default function DashboardPage() {
   const [perfData, setPerfData] = useState<Record<string, StrategyStats> | null>(null)
   type ScItem = { ticker: string; monthly_rsi: number; pct_above_200dma: number; consecutive_green_months: number; listing_age_years: number | null; rs_vs_spy_6m?: number; avg_dollar_vol_m?: number; score: number; discovered?: boolean; scanned_at: string }
   type WlItem = ScItem & { criteria_met: number }
+  type HotItem = { symbol: string; price: number; change_pct: number; vol_ratio: number; hot_score: number; updated_at: string }
+  type ScanPick = { symbol: string; confidence: number; setup: string; score: number; rs_score?: number; rs_label?: string; rs_vs_spy?: number }
+  type ScanSnap = { ts: string; broker: string; regime: string; vix: number; market: string; scanned: number; candidates: number; ranked: number; trades: number; picks: ScanPick[]; discoveries: { symbol: string; signal: string }[] }
   const [supercycle, setSupercycle] = useState<ScItem[]>([])
   const [scWatchlist, setScWatchlist] = useState<WlItem[]>([])
+  const [hotlist, setHotlist] = useState<HotItem[]>([])
+  const [scanStatus, setScanStatus] = useState<{ schwab?: ScanSnap; alpaca_paper?: ScanSnap }>({})
   const [streamActive, setStreamActive] = useState(false)
   const esRef = useRef<EventSource | null>(null)
   const market = useMarketClock()
@@ -414,6 +419,9 @@ export default function DashboardPage() {
       if (Array.isArray(d?.candidates)) setSupercycle(d.candidates)
       if (Array.isArray(d?.watchlist)) setScWatchlist(d.watchlist)
     }).catch(() => {})
+    // Hot list + scan status initial fetch (also on auto-refresh interval below)
+    fetch('/api/hotlist').then(r => r.json()).then(d => { if (Array.isArray(d?.hot)) setHotlist(d.hot) }).catch(() => {})
+    fetch('/api/scan-status').then(r => r.json()).then(d => { setScanStatus(d ?? {}) }).catch(() => {})
   }, [])
 
   // Clear stale data instantly when broker tab switches — no cross-contamination
@@ -431,6 +439,16 @@ export default function DashboardPage() {
     const iv = setInterval(() => load(broker), ms)
     return () => clearInterval(iv)
   }, [broker, market.open, load])
+
+  // Hot list + scan status auto-refresh every 30s
+  useEffect(() => {
+    const refresh = () => {
+      fetch('/api/hotlist').then(r => r.json()).then(d => { if (Array.isArray(d?.hot)) setHotlist(d.hot) }).catch(() => {})
+      fetch('/api/scan-status').then(r => r.json()).then(d => { setScanStatus(d ?? {}) }).catch(() => {})
+    }
+    const iv = setInterval(refresh, 30000)
+    return () => clearInterval(iv)
+  }, [])
 
   // Live price stream via SSE — 2s cadence, replaces watchlist polling during market hours
   // Alpaca: bulk trades/latest WebSocket-equivalent | Schwab: parallel quote polling server-side
@@ -1211,6 +1229,110 @@ export default function DashboardPage() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* 🔥 Hot Today + 🔍 Live Signals — side by side, auto-refresh every 30s */}
+          {(hotlist.length > 0 || scanStatus.schwab || scanStatus.alpaca_paper) && (
+            <div className="section-row" style={{ marginBottom: 16 }}>
+
+              {/* Hot Today */}
+              {hotlist.length > 0 && (() => {
+                const updMins = hotlist[0]?.updated_at
+                  ? Math.round((Date.now() - new Date(hotlist[0].updated_at).getTime()) / 60000)
+                  : null
+                return (
+                  <div className="card" style={{ flex: 1 }}>
+                    <div className="card-head plain">
+                      <h3 className="card-title neutral">🔥 Hot Today</h3>
+                      <span style={{ fontSize: '0.63rem', color: 'var(--fg-3)' }}>
+                        top movers · momentum × volume · {updMins != null ? `${updMins}m ago` : 'live'}
+                      </span>
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="ptbl" style={{ fontSize: '0.72rem', width: '100%' }}>
+                        <thead>
+                          <tr>
+                            <th className="l">Symbol</th>
+                            <th style={{ textAlign: 'right' }}>Price</th>
+                            <th style={{ textAlign: 'right' }}>Change</th>
+                            <th style={{ textAlign: 'right' }}>Vol×</th>
+                            <th style={{ textAlign: 'right' }}>Score</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {hotlist.slice(0, 10).map((h, i) => (
+                            <tr key={h.symbol}>
+                              <td className="l">
+                                <span className="psym">{h.symbol}</span>
+                                {i === 0 && <span className="pbadge" style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', marginLeft: 4 }}>#1</span>}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--fg-2)' }}>
+                                ${h.price?.toFixed(2)}
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                                <span style={{ color: '#13c98e', fontWeight: 600 }}>+{h.change_pct?.toFixed(1)}%</span>
+                              </td>
+                              <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', color: (h.vol_ratio ?? 1) >= 2 ? '#fbbf24' : 'var(--fg-3)' }}>
+                                {h.vol_ratio?.toFixed(1)}×
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <span style={{ color: (h.hot_score ?? 0) >= 0.6 ? '#13c98e' : 'var(--fg-2)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                                  {h.hot_score?.toFixed(2)}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <div style={{ fontSize: '0.62rem', color: 'var(--fg-3)', padding: '4px 14px 8px' }}>
+                        Refreshes every 30 min · +6 confidence boost in next scan if AI agrees
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Live Signals — from last scan snapshot */}
+              {(() => {
+                const snap: ScanSnap | undefined = broker === 'schwab' ? scanStatus.schwab : scanStatus.alpaca_paper
+                if (!snap?.picks?.length) return null
+                const scanMins = Math.round((Date.now() - new Date(snap.ts).getTime()) / 60000)
+                const mktColor = snap.market === 'GOOD' ? '#13c98e' : snap.market === 'TOUGH' ? '#fbbf24' : '#f87171'
+                return (
+                  <div className="card" style={{ flex: 1 }}>
+                    <div className="card-head plain">
+                      <h3 className="card-title neutral">🔍 Last Scan</h3>
+                      <span style={{ fontSize: '0.63rem', color: 'var(--fg-3)' }}>
+                        <span style={{ color: mktColor, fontWeight: 600 }}>{snap.market}</span>
+                        {' '}· VIX {snap.vix?.toFixed(1)} · {snap.scanned} scanned · {scanMins}m ago
+                      </span>
+                    </div>
+                    <div style={{ padding: '8px 14px 4px' }}>
+                      {snap.picks.map(p => (
+                        <div key={p.symbol} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <span className="psym" style={{ minWidth: 52 }}>{p.symbol}</span>
+                          <div style={{ flex: 1, background: 'var(--bg-2)', borderRadius: 3, height: 6, overflow: 'hidden' }}>
+                            <div style={{ height: '100%', background: p.confidence >= 85 ? '#13c98e' : p.confidence >= 78 ? '#fbbf24' : 'var(--fg-3)', width: `${p.confidence}%`, transition: 'width 0.3s' }} />
+                          </div>
+                          <span style={{ fontSize: '0.68rem', fontFamily: 'var(--font-mono)', color: p.confidence >= 85 ? '#13c98e' : 'var(--fg-2)', minWidth: 34, textAlign: 'right' }}>{p.confidence}%</span>
+                          {p.rs_label && <span className="pbadge" style={{ background: 'rgba(19,201,142,0.1)', color: '#13c98e' }}>{p.rs_label}</span>}
+                          <span style={{ fontSize: '0.62rem', color: 'var(--fg-3)', minWidth: 60 }}>{(p.setup ?? '').replace(/_/g, ' ')}</span>
+                        </div>
+                      ))}
+                      {snap.discoveries?.length > 0 && (
+                        <div style={{ marginTop: 8, fontSize: '0.63rem', color: 'var(--fg-3)', borderTop: '1px solid var(--border)', paddingTop: 6 }}>
+                          🔍 {snap.discoveries.map(d => d.symbol).join(', ')} new discovery
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '0.62rem', color: 'var(--fg-3)', padding: '0 14px 8px' }}>
+                      {snap.candidates} candidates · {snap.ranked} ranked · {snap.trades} trade{snap.trades !== 1 ? 's' : ''} placed
+                    </div>
+                  </div>
+                )
+              })()}
+
             </div>
           )}
 

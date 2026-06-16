@@ -252,6 +252,17 @@ async function runScan(
     .not('symbol', 'is', null)
   const supercycleSymbols = new Set((scRows ?? []).map((r) => r.symbol as string))
 
+  // Hot List boost: symbols in today's hot list (last 90 min) get +6 confidence.
+  // These are intraday momentum movers ranked by change% × volume surge.
+  const hotlistCutoff = new Date(Date.now() - 90 * 60 * 1000).toISOString()
+  const { data: hotRows } = await db
+    .from('tb_alerts')
+    .select('symbol')
+    .eq('type', 'HOT_LIST')
+    .gte('created_at', hotlistCutoff)
+    .not('symbol', 'is', null)
+  const hotlistSymbols = new Set((hotRows ?? []).map((r) => r.symbol as string))
+
   // Rotation overlay: rank by confidence × category bias.
   // Paper mode: COLD categories get bias=0.5 (not filtered out) so we still collect data.
   // Live (Schwab): COLD categories are filtered out completely.
@@ -275,11 +286,13 @@ async function runScan(
       } else if (tgSymbols.has(r.symbol)) {
         intentBoost = 8
       }
-      // Supercycle stacks on top of other boosts (monthly RSI + 200MA evidence is independent)
+      // Supercycle stacks on top (monthly RSI + 200MA evidence is independent)
       const supercycleBoost = supercycleSymbols.has(r.symbol) ? 10 : 0
+      // Hot list: intraday momentum mover confirmed by volume surge
+      const hotlistBoost = hotlistSymbols.has(r.symbol) ? 6 : 0
 
       return {
-        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost + supercycleBoost) },
+        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost + supercycleBoost + hotlistBoost) },
         bias,
         tg_confirmed:  tgSymbols.has(r.symbol) || !!intent,
         supercycle:    supercycleSymbols.has(r.symbol),
