@@ -140,8 +140,16 @@ async function runClose(
       }
 
       await recordLearning({
-        symbol: pos.symbol, strategy: meta.strategy,
-        pnl_pct: pos.pnl_pct, hold_days: holdDays, regime: 'NORMAL',
+        symbol:     pos.symbol,
+        strategy:   meta.strategy,
+        pnl_pct:    pos.pnl_pct,
+        hold_days:  holdDays,
+        regime:     'NORMAL',
+        exit_type:  exitReason,
+        exit_price: pos.current_price,
+        entry_price: meta.entry_price,
+        hold_mode:  meta.hold_mode,
+        broker,
       })
 
       await db.from('tb_alerts').insert({

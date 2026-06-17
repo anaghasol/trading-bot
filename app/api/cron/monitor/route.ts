@@ -392,7 +392,20 @@ async function monitorBroker(
 
       if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl, pnl_pct: exit.pnl_pct, days_held: holdDays, closed_at: new Date().toISOString() }).eq('id', meta.id)
       if (acctRow?.id) await db.from('tb_account').update({ daily_pnl: runningPnl }).eq('id', acctRow.id)
-      await recordLearning({ symbol: pos.symbol, strategy: meta.strategy, pnl_pct: exit.pnl_pct, hold_days: holdDays, regime: 'NORMAL' })
+      await recordLearning({
+        symbol:     pos.symbol,
+        strategy:   meta.strategy,
+        pnl_pct:    exit.pnl_pct,
+        hold_days:  holdDays,
+        regime:     'NORMAL',
+        exit_type:  exit.exit_type,
+        exit_price: pos.current_price,
+        entry_price: meta.entry_price,
+        hold_mode:  meta.hold_mode,
+        confidence: undefined,
+        reason:     meta.reason,
+        broker,
+      })
 
       const alertRow = { type: pnl >= 0 ? 'SELL' : 'STOP_LOSS', message: `[${broker}] ${exit.exit_type} ${pos.symbol} | ${exit.reason} | $${pnl.toFixed(2)}`, symbol: pos.symbol, pnl }
       const { error: ae } = await db.from('tb_alerts').insert({ ...alertRow, broker })

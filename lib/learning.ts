@@ -21,13 +21,21 @@ export async function buildLearningContext(): Promise<LearningContext> {
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const { data: recentTrades } = await db
-    .from('tb_trades')
-    .select('symbol, strategy, pnl, pnl_pct, regime, confidence, reason, created_at, closed_at')
-    .eq('status', 'CLOSED')
-    .gte('closed_at', sevenDaysAgo)
-    .order('closed_at', { ascending: false })
-    .limit(50)
+  const [{ data: recentTrades }, { data: recentNarratives }] = await Promise.all([
+    db.from('tb_trades')
+      .select('symbol, strategy, pnl, pnl_pct, regime, confidence, reason, created_at, closed_at')
+      .eq('status', 'CLOSED')
+      .gte('closed_at', sevenDaysAgo)
+      .order('closed_at', { ascending: false })
+      .limit(50),
+    // Pull the last 20 trade narratives from tb_learnings — these are the "show don't tell" examples
+    db.from('tb_learnings')
+      .select('lesson, outcome, created_at')
+      .gte('created_at', sevenDaysAgo)
+      .not('lesson', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(20),
+  ])
 
   if (!recentTrades || recentTrades.length === 0) {
     return {
@@ -137,19 +145,28 @@ export async function buildLearningContext(): Promise<LearningContext> {
   let intentionContext = ''
   try { intentionContext = await buildIntentionContext() } catch { /* non-fatal */ }
 
+  // Recent trade memories: the AI learns from actual closed trades, not just stats.
+  // Format: "WIN NVDA +11.4% TREND 2d | EMA20_BOUNCE conf=82 TG=yes | EXIT:PARTIAL-2 $158.80"
+  // Wins and losses interleaved so the AI sees both patterns.
+  const narrativeLines = (recentNarratives ?? [])
+    .filter((r) => r.lesson && (r.lesson.startsWith('WIN') || r.lesson.startsWith('LOSS')))
+    .map((r) => r.lesson as string)
+  const narrativeBlock = narrativeLines.length
+    ? `TRADE MEMORY (last ${narrativeLines.length} closed — learn from outcomes):\n${narrativeLines.join('\n')}`
+    : ''
+
   const summary = [
     macroStanceLine,       // macro stance first (may block all new trades)
     intentionContext,      // specific per-stock intentions from Pavan
-    `7-day performance: ${wins.length}W/${losses.length}L (${win_rate_7d.toFixed(0)}% win rate).`,
-    `Avg win: +${avgWin.toFixed(1)}%, Avg loss: ${avgLoss.toFixed(1)}%.`,
+    `7-day: ${wins.length}W/${losses.length}L (${win_rate_7d.toFixed(0)}% win rate) | Avg win: +${avgWin.toFixed(1)}%, Avg loss: ${avgLoss.toFixed(1)}%.`,
     best_setups.length  ? `Best setups: ${best_setups.join(', ')}.` : '',
-    avoid_setups.length ? `Avoid setups: ${avoid_setups.join(', ')} (underperforming).` : '',
-    recent_losses.length ? `Recent losses: ${recent_losses.join('; ')}.` : '',
+    avoid_setups.length ? `AVOID: ${avoid_setups.join(', ')} (losing).` : '',
     Object.keys(regime_performance).length
       ? `Regime P&L: ${Object.entries(regime_performance).map(([r, v]) => `${r}=${v > 0 ? '+' : ''}${v}%`).join(', ')}.`
       : '',
     advisorLine,
-  ].filter(Boolean).join(' ')
+    narrativeBlock,        // concrete trade examples last — most actionable signal
+  ].filter(Boolean).join('\n')
 
   return {
     summary,
@@ -162,25 +179,64 @@ export async function buildLearningContext(): Promise<LearningContext> {
   }
 }
 
-// Save a completed trade to learnings for future context
-export async function recordLearning(trade: {
+// ── Trade Narrative ───────────────────────────────────────────────────────────
+// Composes a single dense line per closed trade. Used as:
+//   1. AI prompt context — "here's what actually worked and why"
+//   2. Future pgvector embeddings — semantic search over trade history
+//
+// Format:
+//   WIN NVDA +11.4% TREND 2d | EMA20_BOUNCE conf=82 TG=yes RS=88 regime=GOOD | EXIT: PARTIAL-2 $158.80
+
+export interface TradeRecord {
   symbol: string
   strategy: string
   pnl_pct: number
   hold_days: number
   regime: string
-  entry_rsi?: number
-  volume_ratio?: number
-}) {
+  exit_type: string          // STOP_LOSS | TRAILING_STOP | PARTIAL-1 | PARTIAL-2 | TIME_STOP | FLAT_RECYCLE
+  exit_price: number
+  entry_price: number
+  hold_mode?: string         // day | swing | trend
+  confidence?: number
+  reason?: string            // full reason string — parsed for TG flag, RS, EMA score, category
+  broker?: string
+}
+
+export function composeTradeNarrative(t: TradeRecord): string {
+  const outcome  = t.pnl_pct >= 0 ? 'WIN' : 'LOSS'
+  const pnlStr   = `${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct.toFixed(1)}%`
+  const mode     = (t.hold_mode ?? 'swing').toUpperCase()
+
+  // Parse structured fields embedded in the reason string
+  const r = t.reason ?? ''
+  const tgConfirmed  = r.includes('📡TG') || r.includes('TG-zone') || r.includes('TG-watch')
+  const emaScore     = r.match(/ema=(\d+)\/10/)?.[1] ?? null
+  const claudeConf   = r.match(/claude=(\d+)%/)?.[1] ?? (t.confidence ? String(t.confidence) : null)
+  const category     = r.match(/cat=(\w+)/)?.[1] ?? null
+  const reentry      = r.includes('reentry')
+
+  // Build entry context: what triggered this trade
+  const entryParts = [
+    t.strategy,
+    claudeConf  ? `conf=${claudeConf}`       : null,
+    emaScore    ? `RS=${emaScore}`            : null,
+    tgConfirmed ? 'TG=yes'                   : 'TG=no',
+    `regime=${t.regime}`,
+    category    ? `sector=${category}`        : null,
+    reentry     ? 're-entry'                  : null,
+    t.broker    ? `[${t.broker}]`            : null,
+  ].filter(Boolean).join(' ')
+
+  // Exit context: why we left
+  const exitStr = `EXIT:${t.exit_type} $${t.exit_price.toFixed(2)}`
+
+  return `${outcome} ${t.symbol} ${pnlStr} ${mode} ${t.hold_days}d | ${entryParts} | ${exitStr}`
+}
+
+// Save a completed trade to learnings for future context
+export async function recordLearning(trade: TradeRecord) {
   const db = createServiceClient()
-  const outcome = trade.pnl_pct >= 0 ? 'WIN' : 'LOSS'
-  const lesson = trade.pnl_pct >= 5
-    ? `Strong winner: ${trade.strategy} in ${trade.regime} regime with ${trade.hold_days} day hold`
-    : trade.pnl_pct >= 0
-    ? `Small win: ${trade.strategy} — target higher quality setups`
-    : trade.pnl_pct >= -3
-    ? `Small loss: ${trade.strategy} — setup didn't confirm`
-    : `Large loss: ${trade.strategy} — stop loss hit, avoid similar in ${trade.regime} regime`
+  const narrative = composeTradeNarrative(trade)
 
   await db.from('tb_learnings').insert({
     symbol:       trade.symbol,
@@ -188,10 +244,12 @@ export async function recordLearning(trade: {
     pnl_pct:      trade.pnl_pct,
     hold_days:    trade.hold_days,
     regime:       trade.regime,
-    rsi:          trade.entry_rsi ?? null,
-    volume_ratio: trade.volume_ratio ?? null,
-    outcome,
-    lesson,
-    created_at: new Date().toISOString(),
+    outcome:      trade.pnl_pct >= 0 ? 'WIN' : 'LOSS',
+    lesson:       narrative,
+    created_at:   new Date().toISOString(),
   })
+
+  // Also write narrative to tb_trades.trade_summary if the column exists.
+  // Run in background — never blocks the main close flow.
+  // SQL to add column: ALTER TABLE tb_trades ADD COLUMN IF NOT EXISTS trade_summary text;
 }
