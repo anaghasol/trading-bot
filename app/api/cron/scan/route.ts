@@ -199,6 +199,9 @@ async function runScan(
   const { recommendations, regime, scanned, candidates, new_discoveries } =
     await getRecommendations(equity, heldSymbols, pdt.day_trades_remaining, broker)
 
+  // Log how many raw recommendations came back (before EMA bypass / signal boosts)
+  console.log(`[${broker}] getRecommendations → ${recommendations.length} recs from Claude (${candidates} candidates, ${scanned} scanned)`)
+
   // Alert on genuinely new discoveries (not in static watchlist) — once per symbol per day
   // Now fires for BOTH live and paper since discovery is enabled for both
   if (new_discoveries.length > 0) {

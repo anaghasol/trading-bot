@@ -284,33 +284,37 @@ export async function GET(req: Request) {
         const BIG_MOVE_KW = /\b(huge.?move|big.?move|both.?side|volatile|whipsaw|choppy)\b/i
         const rawText = msg.text ?? ''
         if ((EVENT_KW.test(rawText) || BIG_MOVE_KW.test(rawText))) {
-          // Extract time mention — "1pm CST", "2pm ET", "13:00", "14:00 UTC"
-          const timeMatch = rawText.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(CST|CDT|EST|ET|EDT|CT|UTC)?/i)
+          // Extract time mention — must be "H:MM" format OR "H am/pm" (with meridiem or TZ).
+          // Bare numbers like "60%" or "7507" are NOT valid times — reject them.
+          // Valid: "2pm ET", "1:30 CST", "14:00 UTC". Invalid: "60%", "SPX 7507".
+          const timeMatch = rawText.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\s*(CST|CDT|EST|ET|EDT|CT|UTC)?\b/i)
+                         ?? rawText.match(/\b(\d{1,2})\s*(am|pm)\s*(CST|CDT|EST|ET|EDT|CT|UTC)?\b/i)
           let pauseUntil: Date | null = null
           if (timeMatch) {
             let hour = parseInt(timeMatch[1], 10)
-            const meridiem = (timeMatch[3] ?? '').toLowerCase()
-            const tz = (timeMatch[4] ?? 'ET').toUpperCase()
-            if (meridiem === 'pm' && hour < 12) hour += 12
-            if (meridiem === 'am' && hour === 12) hour = 0
-            // Convert to ET (our operating timezone)
-            const tzOffset: Record<string, number> = { CST: 1, CDT: 1, CT: 1, EST: 0, EDT: 0, ET: 0, UTC: -5 }
-            const etHour = hour + (tzOffset[tz] ?? 0)
-            const now = new Date()
-            const eventET = new Date(now)
-            eventET.setUTCHours(etHour + 5, 0, 0, 0)  // ET = UTC-5 (rough)
-            // Pause: 30 min before event through 90 min after
-            const pauseStart = new Date(eventET.getTime() - 30 * 60_000)
-            pauseUntil = new Date(eventET.getTime() + 90 * 60_000)
-            if (Date.now() < pauseUntil.getTime()) {
-              await db.from('tb_settings').upsert({
-                key: 'event_pause_until',
-                value: JSON.stringify({ until: pauseUntil.toISOString(), reason: rawText.slice(0, 120), set_at: new Date().toISOString() }),
-              })
-              await tgSend(`⏸️ *Event pause set* — no new live entries from ${pauseStart.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET until ${pauseUntil.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET\nReason: ${rawText.slice(0, 80)}`)
+            // Reject obviously invalid hours (> 23) — catches any remaining bad matches
+            if (hour <= 23) {
+              const meridiem = (timeMatch[3] ?? timeMatch[2] ?? '').toLowerCase()
+              const tz = (timeMatch[4] ?? timeMatch[3] ?? 'ET').toUpperCase()
+              if (meridiem === 'pm' && hour < 12) hour += 12
+              if (meridiem === 'am' && hour === 12) hour = 0
+              const tzOffset: Record<string, number> = { CST: 1, CDT: 1, CT: 1, EST: 0, EDT: 0, ET: 0, UTC: -5 }
+              const etHour = hour + (tzOffset[tz] ?? 0)
+              const now = new Date()
+              const eventET = new Date(now)
+              eventET.setUTCHours(etHour + 5, 0, 0, 0)  // ET = UTC-5 (rough)
+              const pauseStart = new Date(eventET.getTime() - 30 * 60_000)
+              pauseUntil = new Date(eventET.getTime() + 90 * 60_000)
+              if (Date.now() < pauseUntil.getTime()) {
+                await db.from('tb_settings').upsert({
+                  key: 'event_pause_until',
+                  value: JSON.stringify({ until: pauseUntil.toISOString(), reason: rawText.slice(0, 120), set_at: new Date().toISOString() }),
+                })
+                await tgSend(`⏸️ *Event pause set* — no new live entries from ${pauseStart.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET until ${pauseUntil.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET\nReason: ${rawText.slice(0, 80)}`)
+              }
             }
           } else if (EVENT_KW.test(rawText)) {
-            // Event mentioned but no time — pause for next 3 hours as safety
+            // Named event (FOMC/CPI/NFP) but no parseable time → 3h safety pause
             pauseUntil = new Date(Date.now() + 3 * 3600_000)
             await db.from('tb_settings').upsert({
               key: 'event_pause_until',
@@ -318,6 +322,7 @@ export async function GET(req: Request) {
             })
             await tgSend(`⏸️ *Event pause set (3h)* — FOMC/CPI/NFP detected, pausing live entries\n${rawText.slice(0, 80)}`)
           }
+          // BIG_MOVE_KW without a parseable time and without EVENT_KW → no pause (just volatile language, not an event)
         }
 
         if (isMacroSignal) {
