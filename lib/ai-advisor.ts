@@ -66,7 +66,8 @@ function buildPrompt(
   broker: string,
   model: 'claude' | 'openai',
   newsContext: string,
-  learnedRules: string
+  learnedRules: string,
+  signalMap: Map<string, string>
 ): string {
   const isPaper = broker === 'alpaca_paper'
   return `You are a ${isPaper ? 'PAPER TRADING bot collecting data aggressively' : 'conservative swing trader'}. Rate these pre-screened setups.
@@ -93,6 +94,14 @@ IMPORTANT: ▼bearish news = strong negative catalyst, reduce confidence -10 to 
 ` : ''}
 ${isPaper ? `PAPER MODE: Rate EVERY setup >= ${minConf}% with any positive momentum. Be generous — we need data.` : `LIVE MODE: Only high-conviction setups >= ${minConf}%.`}
 
+SIGNAL LEGEND — "signals" field on each setup, factor into confidence rating:
+  TG✓       = advisor channel bullish on this ticker in last 4h → +6-10pts
+  SC✓       = in weekly supercycle queue (monthly RS + 200MA confirmed) → +8-12pts
+  HL✓       = today's hot mover by volume surge → +4-6pts
+  DISCOVERY = found via live market scan, not in static watchlist → weight with chart quality
+  none      = chart only, no external confirmation
+Multiple signals compound. TG✓ + SC✓ + HL✓ on one name = rare high-conviction entry.
+
 SETUPS to rate (rs_rank=relative momentum percentile 0-100; from_52wh=% below 52w high):
 ${JSON.stringify(setups.map((s) => ({
   sym: s.symbol, type: s.setup_type, price: s.price,
@@ -100,9 +109,11 @@ ${JSON.stringify(setups.map((s) => ({
   rsi: s.rsi, d1: `${s.change_1d.toFixed(1)}%`, d5: `${s.change_5d.toFixed(1)}%`,
   rs_rank: s.rs_rank, from_52wh: `${s.pct_from_52w_high.toFixed(1)}%`,
   score: `${s.pullback_score}/10`, why: s.reason,
+  signals: signalMap.get(s.symbol) ?? 'none',
 })))}
 
-hold_mode: "day"=exit by EOD (momentum spikes), "swing"=1-5 days default, "trend"=hold weeks/months — ONLY for stocks near 52w high with RS>70 in sustained uptrend (like SNDK 2025 — cheap base then never looked back). These get wider trailing stop and no forced calendar exit.
+Rate HOLISTICALLY — chart data + signals + news + learned rules + regime all together.
+hold_mode: "day"=exit by EOD, "swing"=1-5 days default, "trend"=weeks/months for Stage 2 uptrenders near 52w high with RS>70.
 
 Return ONLY a JSON array. Include ALL setups you'd take at ${minConf}%+ confidence:
 [{"symbol":"X","action":"BUY","confidence":72,"setup":"EMA20_BOUNCE","reason":"brief reason","target_pct":8,"hold_days":3,"stop_pct":-5,"hold_mode":"swing"}]`
@@ -113,12 +124,12 @@ Return ONLY a JSON array. Include ALL setups you'd take at ${minConf}%+ confiden
 async function askClaude(
   setups: EMASetup[], regime: MarketRegime,
   equity: number, held: string[], learning: string, minConf: number, broker: string,
-  newsContext: string, learnedRules: string
+  newsContext: string, learnedRules: string, signalMap: Map<string, string>
 ): Promise<Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }>> {
   try {
     const msg = await claude.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 1500,
-      messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude', newsContext, learnedRules) }],
+      messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude', newsContext, learnedRules, signalMap) }],
     })
     let text = (msg.content[0] as { type: string; text: string }).text.trim()
     if (text.includes('```')) text = text.split('```')[1].replace(/^json/, '').trim()
@@ -135,7 +146,7 @@ async function askClaude(
 async function askOpenAI(
   setups: EMASetup[], regime: MarketRegime,
   equity: number, held: string[], learning: string, minConf: number, broker: string,
-  newsContext: string, learnedRules: string
+  newsContext: string, learnedRules: string, signalMap: Map<string, string>
 ): Promise<Array<{ symbol: string; confidence: number }>> {
   if (!OAI_KEY) return []
   try {
@@ -146,7 +157,7 @@ async function askOpenAI(
         model: 'gpt-4o-mini',
         temperature: 0.15,
         max_tokens: 512,
-        messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules) }],
+        messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap) }],
       }),
     })
     if (!res.ok) return []
@@ -329,18 +340,47 @@ export async function getRecommendations(
     }
   }
 
-  // 3. Learning context + synthesized rules (both cheap Supabase reads)
+  // 3. ALL signals fetched in parallel — learning context, rules, TG, supercycle, hotlist
+  //    These used to be applied as mechanical boosts AFTER Claude. Now they go INTO Claude
+  //    so it can make a single holistic decision with full context per symbol.
   let learning = 'No history yet'
   let learnedRules = ''
+  const tgSymbols        = new Set<string>()
+  const supercycleSymbols = new Set<string>()
+  const hotlistSymbols   = new Set<string>()
+
   try {
-    const [ctx, rulesRow] = await Promise.all([
+    const db = (await import('./supabase-server')).createServiceClient()
+    const since4h          = new Date(Date.now() - 4  * 3600_000).toISOString()
+    const since90m         = new Date(Date.now() - 90 * 60_000).toISOString()
+    const since7d          = new Date(Date.now() - 7  * 86_400_000).toISOString()
+
+    const [ctx, rulesRow, tgRows, scRows, hotRows] = await Promise.all([
       buildLearningContext(),
-      (await import('./supabase-server')).createServiceClient()
-        .from('tb_settings').select('value').eq('key', 'learned_rules').single(),
+      db.from('tb_settings').select('value').eq('key', 'learned_rules').single(),
+      db.from('tb_alerts').select('symbol').in('type', ['BUY','SELL']).gte('created_at', since4h).not('symbol', 'is', null),
+      db.from('tb_alerts').select('symbol').eq('type', 'SUPERCYCLE_QUEUE').gte('created_at', since7d).not('symbol', 'is', null),
+      db.from('tb_alerts').select('symbol').eq('type', 'HOT_LIST').gte('created_at', since90m).not('symbol', 'is', null),
     ])
+
     learning     = ctx.summary
     learnedRules = rulesRow.data?.value ?? ''
+    for (const r of tgRows.data  ?? []) tgSymbols.add(r.symbol as string)
+    for (const r of scRows.data  ?? []) supercycleSymbols.add(r.symbol as string)
+    for (const r of hotRows.data ?? []) hotlistSymbols.add(r.symbol as string)
   } catch { /* ignore — non-fatal */ }
+
+  // Build per-symbol signal string for the AI prompt.
+  // Claude sees these alongside chart data and weights them in its confidence rating.
+  const signalMap = new Map<string, string>()
+  for (const s of rawSetups) {
+    const flags: string[] = []
+    if (tgSymbols.has(s.symbol))         flags.push('TG✓')        // advisor channel just mentioned bullish
+    if (supercycleSymbols.has(s.symbol)) flags.push('SC✓')        // weekly supercycle queue — monthly momentum confirmed
+    if (hotlistSymbols.has(s.symbol))    flags.push('HL✓')        // today's hot mover by volume
+    if (discoverySyms.includes(s.symbol)) flags.push('DISCOVERY') // not in static watchlist — just found via market scan
+    signalMap.set(s.symbol, flags.join(' ') || 'none')
+  }
 
   // 4. Dynamic gate: widen in good markets, tighten in caution.
   const baseConf = profile.min_confidence
@@ -381,10 +421,10 @@ export async function getRecommendations(
   const aiLimit  = isPaper ? 12 : 6
   const aiSetups = setups.slice(0, aiLimit)
 
-  // 6. Claude + OpenAI IN PARALLEL — enriched with news + learned rules from our own history
+  // 6. Claude + OpenAI IN PARALLEL — each sees chart data + all signals in one prompt
   const [claudePicks, openaiPicks] = await Promise.all([
-    askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules),
-    askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules),
+    askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
+    askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
   ])
 
   console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Raw:${rawSetups.length} NewsFiltered:${aiSetups.length} | Claude:${claudePicks.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)

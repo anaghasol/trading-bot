@@ -316,21 +316,20 @@ async function runScan(
       const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias
 
       const intent = intentionMap.get(r.symbol)
-      // Intention confidence boosts: buy_zone in range > watch_only > tg_alert > supercycle
+      // Post-Claude safety-net boosts — reduced since Claude now sees signals directly in the prompt.
+      // These exist so a borderline setup (e.g. 72% Claude but strong TG+SC combo) still passes gate.
+      // buy_zone / watch_only intents are still full-strength (price-zone logic not in Claude prompt).
       let intentBoost = 0
       if (intent?.type === 'buy_zone' && intent.price_zone) {
-        intentBoost = intent.urgency === 'high' ? 15 : 10
+        intentBoost = intent.urgency === 'high' ? 15 : 10  // price-zone entry unchanged
       } else if (intent?.type === 'watch_only') {
         intentBoost = 5
       } else if (tgSymbols.has(r.symbol)) {
-        intentBoost = 8
+        intentBoost = 4   // was 8 — Claude already got +6-10 from TG✓ in prompt
       }
-      // Supercycle stacks on top (monthly RSI + 200MA evidence is independent)
-      const supercycleBoost = supercycleSymbols.has(r.symbol) ? 10 : 0
-      // Hot list: intraday momentum mover confirmed by volume surge
-      const hotlistBoost = hotlistSymbols.has(r.symbol) ? 6 : 0
-      // Re-entry boost: was stopped out recently but thesis may still hold — skip the repeat fear
-      const reentryBoost = recentStopSymbols.has(r.symbol) ? 5 : 0
+      const supercycleBoost = supercycleSymbols.has(r.symbol) ? 5 : 0   // was 10
+      const hotlistBoost    = hotlistSymbols.has(r.symbol)    ? 3 : 0   // was 6
+      const reentryBoost    = recentStopSymbols.has(r.symbol) ? 3 : 0   // was 5
 
       return {
         rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost + supercycleBoost + hotlistBoost + reentryBoost) },
