@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase-server'
 import { scanAll, getExpandedUniverse } from '@/lib/supercycle'
+import { buildStage2Watchlist } from '@/lib/stage2-screener'
 
 export const runtime = 'nodejs'
 export const maxDuration = 290
@@ -35,6 +36,23 @@ export async function GET(req: NextRequest) {
   })
 
   try {
+    // ── Stage 2 full-market screen (runs in parallel with universe build) ────
+    // Scans all 7000+ US stocks via Finviz + Yahoo to find SNDK-pattern stocks:
+    // sustained uptrends near 52w highs, above 200 SMA, RSI > 50.
+    // Saved to tb_settings['stage2_watchlist'] → injected into every scan tick.
+    const stage2Promise = buildStage2Watchlist().then(async (result) => {
+      if (result.symbols.length > 0) {
+        await db.from('tb_settings').upsert({
+          key: 'stage2_watchlist',
+          value: JSON.stringify({ ...result }),
+        })
+        console.log(`[supercycle] Stage 2 watchlist saved: ${result.total} symbols (finviz=${result.from_finviz} yahoo=${result.from_yahoo} 52wh=${result.from_52wh})`)
+        const top10 = result.symbols.slice(0, 10).join(', ')
+        await sendTG(`🔭 *Stage 2 Full-Market Screen* (${result.total} candidates)\nTop picks: ${top10}\n_Finviz:${result.from_finviz} Yahoo:${result.from_yahoo} 52wH:${result.from_52wh}_\nAdded to scan universe.`)
+      }
+      return result
+    }).catch((e) => { console.error('[supercycle] Stage 2 screen failed:', e); return null })
+
     console.log('[supercycle] Building expanded universe (static + news discovery)…')
     const { symbols: universe, discovered } = await getExpandedUniverse()
     const discoveredSet = new Set(discovered)
@@ -138,10 +156,12 @@ export async function GET(req: NextRequest) {
     const newlyDiscovered = candidates.filter(c => c.discovered).map(c => c.ticker)
     const top3Watch = watchlist.slice(0, 3).map(w => `${w.ticker}(${w.criteria_met}/4)`)
 
+    const stage2 = await stage2Promise
+
     await db.from('tb_cron_log').insert({
       job: 'supercycle',
       status: 'ok',
-      message: `Scanned ${universe.length} (${discovered.length} discovered). Found ${candidates.length} supercycle, ${watchlist.length} watchlist. Promoted: [${promoted.map(c => c.ticker).join(', ') || 'none'}]. Top watch: [${top3Watch.join(', ')}] (${elapsed}s)`,
+      message: `Scanned ${universe.length} (${discovered.length} discovered). Found ${candidates.length} supercycle, ${watchlist.length} watchlist. Stage2: ${stage2?.total ?? 0}. Promoted: [${promoted.map(c => c.ticker).join(', ') || 'none'}]. Top watch: [${top3Watch.join(', ')}] (${elapsed}s)`,
     })
 
     return NextResponse.json({
@@ -149,10 +169,12 @@ export async function GET(req: NextRequest) {
       discovered_news:  discovered.length,
       candidates:       candidates.length,
       watchlist:        watchlist.length,
+      stage2_candidates: stage2?.total ?? 0,
       promoted:         promoted.map(c => c.ticker),
       new_discoveries:  newlyDiscovered,
       top_candidates:   candidates.slice(0, 5).map(c => ({ ticker: c.ticker, score: c.score })),
       top_watch:        watchlist.slice(0, 5).map(w => ({ ticker: w.ticker, criteria_met: w.criteria_met, monthly_rsi: w.monthly_rsi })),
+      top_stage2:       stage2?.symbols.slice(0, 10) ?? [],
       elapsed_s:        elapsed,
     })
   } catch (err) {

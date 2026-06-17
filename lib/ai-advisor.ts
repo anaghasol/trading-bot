@@ -98,9 +98,10 @@ SIGNAL LEGEND — "signals" field on each setup, factor into confidence rating:
   TG✓       = advisor channel bullish on this ticker in last 4h → +6-10pts
   SC✓       = in weekly supercycle queue (monthly RS + 200MA confirmed) → +8-12pts
   HL✓       = today's hot mover by volume surge → +4-6pts
-  DISCOVERY = found via live market scan, not in static watchlist → weight with chart quality
+  S2✓       = Stage 2 upertrender: full-market screen found this near 52w high, above 200 SMA, RSI>50 → sustained run → +5-8pts
+  DISCOVERY = found via live market scan today, not in static watchlist → weight with chart quality
   none      = chart only, no external confirmation
-Multiple signals compound. TG✓ + SC✓ + HL✓ on one name = rare high-conviction entry.
+Multiple signals compound. TG✓ + S2✓ + HL✓ on one name = rare high-conviction entry — trend trader's dream.
 
 SETUPS to rate (rs_rank=relative momentum percentile 0-100; from_52wh=% below 52w high):
 ${JSON.stringify(setups.map((s) => ({
@@ -286,27 +287,42 @@ export async function getRecommendations(
 
   const isPaper = isPaperBroker(broker)
 
+  // Load Stage 2 watchlist from DB — built weekly by supercycle cron.
+  // These are SNDK-pattern stocks: sustained uptrenders near 52w highs, above 200 SMA.
+  // Full market screen (7000+ stocks → 50-100 candidates). Zero API cost at scan time.
+  let stage2Symbols: string[] = []
+  try {
+    const db2 = (await import('./supabase-server')).createServiceClient()
+    const { data: s2row } = await db2.from('tb_settings').select('value').eq('key', 'stage2_watchlist').single()
+    if (s2row?.value) {
+      const parsed = JSON.parse(s2row.value)
+      stage2Symbols = (parsed.symbols ?? []).filter((s: string) => /^[A-Z]{1,5}$/.test(s))
+      if (stage2Symbols.length > 0) console.log(`[advisor] Stage2 watchlist: ${stage2Symbols.length} stocks injected`)
+    }
+  } catch { /* non-fatal — runs fine without stage2 */ }
+
   // 1. Market regime + market-wide discovery IN PARALLEL (both free, no API key)
   // Discovery runs for BOTH live and paper — live uses tighter liquidity filters
   // (vol≥2M enforced inside getDiscoverySymbols) so no penny stocks on real money.
-  // This replaces the hardcoded 17-symbol live watchlist with a dynamic 60-100
-  // symbol universe from Yahoo trending + top gainers + most active.
+  // Combined universe: discovery (today's movers) + stage2 (sustained uptrenders) +
+  // advisor picks (TG channel) + static base = comprehensive full-market coverage.
   const [regime, discoveries] = await Promise.all([
     getMarketRegime(),
     getDiscoverySymbols(isPaper ? 'paper' : 'live'),
   ])
 
   const discoverySyms = discoveries.map((d) => d.symbol)
-  const staticSet     = new Set([...advisorSymbols, ...baseSymbols])
+  const staticSet     = new Set([...advisorSymbols, ...baseSymbols, ...stage2Symbols])
   const newDiscoveries = discoveries.filter((d) => !staticSet.has(d.symbol))
 
   if (regime.regime === 'RISK_OFF') {
     return { recommendations: [], regime, position_size_pct: 0, scanned: 0, candidates: 0, learning_context: 'RISK_OFF', discoveries, new_discoveries: newDiscoveries }
   }
 
-  // Discovery symbols come first — they're the most time-sensitive
+  // Discovery (today's movers) come first — most time-sensitive.
+  // Stage 2 after advisorSymbols — they're known uptrenders, worth a scan every tick.
   const seen2 = new Set<string>()
-  const symbols = [...discoverySyms, ...advisorSymbols, ...baseSymbols]
+  const symbols = [...discoverySyms, ...advisorSymbols, ...stage2Symbols, ...baseSymbols]
     .filter((s) => !seen2.has(s) && seen2.add(s))
 
   // 2. EMA pullback + Momentum spike scans RUN IN PARALLEL (free, no AI cost)
@@ -372,13 +388,15 @@ export async function getRecommendations(
 
   // Build per-symbol signal string for the AI prompt.
   // Claude sees these alongside chart data and weights them in its confidence rating.
+  const stage2Set = new Set(stage2Symbols)
   const signalMap = new Map<string, string>()
   for (const s of rawSetups) {
     const flags: string[] = []
-    if (tgSymbols.has(s.symbol))         flags.push('TG✓')        // advisor channel just mentioned bullish
-    if (supercycleSymbols.has(s.symbol)) flags.push('SC✓')        // weekly supercycle queue — monthly momentum confirmed
-    if (hotlistSymbols.has(s.symbol))    flags.push('HL✓')        // today's hot mover by volume
-    if (discoverySyms.includes(s.symbol)) flags.push('DISCOVERY') // not in static watchlist — just found via market scan
+    if (tgSymbols.has(s.symbol))          flags.push('TG✓')        // advisor channel just mentioned bullish
+    if (supercycleSymbols.has(s.symbol))  flags.push('SC✓')        // weekly supercycle queue — monthly momentum confirmed
+    if (hotlistSymbols.has(s.symbol))     flags.push('HL✓')        // today's hot mover by volume
+    if (stage2Set.has(s.symbol))          flags.push('S2✓')        // Stage 2 upertrender — near 52w high, above 200 SMA
+    if (discoverySyms.includes(s.symbol)) flags.push('DISCOVERY')  // not in static watchlist — just found via market scan
     signalMap.set(s.symbol, flags.join(' ') || 'none')
   }
 

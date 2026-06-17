@@ -66,7 +66,7 @@ export async function getTopGainers(
 ): Promise<DiscoverySymbol[]> {
   try {
     const res = await fetch(
-      `${YF_BASE}/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=25&start=0`,
+      `${YF_BASE}/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=100&start=0`,
       { headers: HEADERS, next: { revalidate: 180 } }
     )
     if (!res.ok) return []
@@ -105,7 +105,7 @@ export async function getTopGainers(
 export async function getMostActive(minVol = 1_000_000, minPrice = 3.0): Promise<DiscoverySymbol[]> {
   try {
     const res = await fetch(
-      `${YF_BASE}/v1/finance/screener/predefined/saved?scrIds=most_actives&count=30&start=0`,
+      `${YF_BASE}/v1/finance/screener/predefined/saved?scrIds=most_actives&count=100&start=0`,
       { headers: HEADERS, next: { revalidate: 180 } }
     )
     if (!res.ok) return []
