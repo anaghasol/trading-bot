@@ -331,8 +331,21 @@ async function runScan(
       const hotlistBoost    = hotlistSymbols.has(r.symbol)    ? 3 : 0   // was 6
       const reentryBoost    = recentStopSymbols.has(r.symbol) ? 3 : 0   // was 5
 
+      const totalBoost = intentBoost + supercycleBoost + hotlistBoost + reentryBoost
+      const finalConf  = Math.min(100, r.confidence + totalBoost)
+      if (totalBoost > 0 || tgSymbols.has(r.symbol) || supercycleSymbols.has(r.symbol)) {
+        const sigLabels = [
+          tgSymbols.has(r.symbol) ? 'TG✓' : '',
+          supercycleSymbols.has(r.symbol) ? 'SC✓' : '',
+          hotlistSymbols.has(r.symbol) ? 'HL✓' : '',
+          recentStopSymbols.has(r.symbol) ? 'RE✓' : '',
+          intent ? `INTENT(${intent.type})` : '',
+        ].filter(Boolean).join(' ')
+        console.log(`[SIGNALS] ${r.symbol}: ${sigLabels || 'none'} | claude=${r.confidence}% boost=+${totalBoost} → final=${finalConf}%`)
+      }
+
       return {
-        rec: { ...r, confidence: Math.min(100, r.confidence + intentBoost + supercycleBoost + hotlistBoost + reentryBoost) },
+        rec: { ...r, confidence: finalConf },
         bias,
         tg_confirmed:  tgSymbols.has(r.symbol) || !!intent,
         supercycle:    supercycleSymbols.has(r.symbol),
