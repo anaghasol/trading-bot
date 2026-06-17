@@ -235,17 +235,18 @@ async function runScan(
 
   if (!aboveSma || vix > 28) {
     marketTier    = 'BAD'
-    dynamicMinConf = Math.max(profile.min_confidence + 12, 65)
-    dynamicMaxPos  = Math.min(profile.max_positions, 6)
+    // Paper: still trade in bad markets — that's the lab. Half the live penalty.
+    dynamicMinConf = isSchwab ? Math.max(profile.min_confidence + 12, 65) : profile.min_confidence + 6
+    dynamicMaxPos  = isSchwab ? Math.min(profile.max_positions, 6) : Math.min(profile.max_positions, 8)
   } else if (vix > 22) {
     marketTier    = 'TOUGH'
-    dynamicMinConf = profile.min_confidence + 5
+    dynamicMinConf = isSchwab ? profile.min_confidence + 5 : profile.min_confidence + 2
     dynamicMaxPos  = profile.max_positions
   } else {
     marketTier    = 'GOOD'
     dynamicMinConf = profile.min_confidence
-    // Paper in a good market: expand to 12 positions (aggressive lab mode)
-    dynamicMaxPos  = !isSchwab ? 12 : profile.max_positions
+    // Paper in a good market: expand to 15 positions (max aggressive lab)
+    dynamicMaxPos  = !isSchwab ? 15 : profile.max_positions
   }
 
   // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).
@@ -376,11 +377,16 @@ async function runScan(
   const openSlots = dynamicMaxPos - positions.length
   const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 25)
 
+  const skipReasons: string[] = []  // collected per scan tick, sent as one TG if no trades made
+
   for (const { rec, bias, tg_confirmed, intent } of ranked.slice(0, reviewLimit)) {
     const quote = isSchwab
       ? await SchwabBroker.getQuote(rec.symbol)
       : await AlpacaBroker.getQuote(rec.symbol)
-    if (!quote || quote.price <= 0) continue
+    if (!quote || quote.price <= 0) {
+      skipReasons.push(`${rec.symbol}: no quote`)
+      continue
+    }
 
     // Alpaca IEX price sanity check: IEX bars can be stale for thin/new stocks.
     // Cross-check against Yahoo Finance — if >30% apart, the IEX price is lying, skip the trade.
@@ -398,6 +404,7 @@ async function runScan(
             const msg = `[alpaca] Stale IEX price ${rec.symbol}: IEX=$${quote.price.toFixed(2)} vs Yahoo=$${yhPrice.toFixed(2)} (${(Math.abs(quote.price - yhPrice)/yhPrice*100).toFixed(0)}% diff) — skipping trade`
             console.warn(msg)
             void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, message: msg })
+            skipReasons.push(`${rec.symbol}: stale IEX $${quote.price.toFixed(0)} vs Yahoo $${yhPrice.toFixed(0)}`)
             continue
           }
           // If Yahoo agrees within 30%, use Yahoo price for entry — it's fresher
@@ -444,6 +451,7 @@ async function runScan(
         const msg = `[schwab] Wide spread ${rec.symbol}: ${spreadPct.toFixed(2)}% > ${MAX_SPREAD_PCT}% max — skipping entry`
         console.warn(msg)
         void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, message: msg })
+        skipReasons.push(`${rec.symbol}: spread ${spreadPct.toFixed(1)}%>${MAX_SPREAD_PCT}%`)
         continue
       }
       if (spreadPct !== null) {
@@ -455,7 +463,10 @@ async function runScan(
     // If price is outside zone → skip this tick, wait for the right entry point.
     if (intent?.type === 'buy_zone' && intent.price_zone) {
       const { low, high } = intent.price_zone
-      if (quote.price < low || quote.price > high) continue  // not at the right price yet
+      if (quote.price < low || quote.price > high) {
+        skipReasons.push(`${rec.symbol}: price $${quote.price.toFixed(2)} outside zone $${low}–$${high}`)
+        continue
+      }
     }
 
     // LIVE SCHWAB QUALITY GATE — real money only enters on high-conviction setups.
@@ -466,17 +477,19 @@ async function runScan(
       const weakStrategies = ['EMA20_BOUNCE', 'BREAKOUT']
       if (weakStrategies.includes(rec.setup ?? '')) {
         if (!tg_confirmed) {
-          console.log(`[schwab] BLOCKED ${rec.symbol} — ${rec.setup} has poor live win rate and no TG confirmation`)
-          void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker,
-            message: `[scan] Blocked ${rec.symbol} (${rec.setup} ${rec.confidence}%) — strategy banned on live without TG signal` })
+          const msg = `[schwab] BLOCKED ${rec.symbol} — ${rec.setup} has poor live win rate and no TG confirmation`
+          console.log(msg)
+          void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
+          skipReasons.push(`${rec.symbol}: ${rec.setup} needs TG (live gate)`)
           continue
         }
       }
       // Even allowed strategies need either TG confirmation OR acceptable mechanical score
       if (!tg_confirmed && (rec.ema_score ?? 0) < 5) {
-        console.log(`[schwab] SKIPPED ${rec.symbol} — no TG confirm and low EMA score ${rec.ema_score}/10`)
-        void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker,
-          message: `[scan] Skipped ${rec.symbol} (${rec.setup} conf=${rec.confidence}% ema=${rec.ema_score}/10) — needs TG signal or ema≥5 for live` })
+        const msg = `[schwab] SKIPPED ${rec.symbol} — no TG confirm and low EMA score ${rec.ema_score}/10`
+        console.log(msg)
+        void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
+        skipReasons.push(`${rec.symbol}: ema=${rec.ema_score}/10 no TG`)
         continue
       }
     }
@@ -495,19 +508,32 @@ async function runScan(
     const trendMult = rec.hold_mode === 'trend' ? 1.5 : 1.0
     const combinedMult = Math.min(convictionMult * boostMult * trendMult, 2.0)
     const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, combinedMult)
-    if (sizing.qty < 1) continue
+    if (sizing.qty < 1) {
+      skipReasons.push(`${rec.symbol}: qty=0 (${sizing.note})`)
+      console.log(`[${broker}] SKIP ${rec.symbol} — sizing returned qty=0: ${sizing.note}`)
+      continue
+    }
 
     // Per-trade exposure gate: check BEFORE each trade, not just at scan start.
     // Prevents multiple picks in one scan run from collectively exceeding the cap.
     const tradeCost = sizing.qty * quote.price
     if ((runningExposure + tradeCost) / equity > MAX_EXPOSURE) {
-      console.log(`[${broker}] Skip ${rec.symbol} — would push exposure to ${((runningExposure + tradeCost) / equity * 100).toFixed(0)}% (cap ${MAX_EXPOSURE * 100}%)`)
+      const pct = ((runningExposure + tradeCost) / equity * 100).toFixed(0)
+      console.log(`[${broker}] Skip ${rec.symbol} — would push exposure to ${pct}% (cap ${MAX_EXPOSURE * 100}%)`)
+      skipReasons.push(`${rec.symbol}: exposure ${pct}%>${MAX_EXPOSURE * 100}%`)
       continue
     }
 
     const { buy, stop_order_id } = isSchwab
       ? await SchwabBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
       : await AlpacaBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
+
+    if (buy.status !== 'PLACED') {
+      const msg = `[${broker}] Order FAILED ${rec.symbol} ${sizing.qty}sh @ $${quote.price.toFixed(2)} — status: ${buy.status}`
+      console.error(msg)
+      void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
+      skipReasons.push(`${rec.symbol}: order rejected (${buy.status})`)
+    }
 
     if (buy.status === 'PLACED') {
       runningExposure += tradeCost  // keep cap accurate within this scan run
@@ -555,16 +581,23 @@ async function runScan(
     }
   }
 
-  // Pre-market alert: surface top setup found (even if not entered yet)
+  // Diagnostic alert: if setups were ranked but nothing traded, explain WHY in TG
   if (tradesMade === 0 && ranked.length > 0) {
     const top = ranked[0].rec
-    await alertPreMarket({
-      setups_found: candidates,
-      top_symbol: top.symbol,
-      top_score: top.ema_score ?? 0,
-      regime: regime.regime,
-      vix: regime.vix,
-    })
+    const BOT = process.env.TELEGRAM_BOT_TOKEN
+    const GID = process.env.TELEGRAM_ALLOWED_CHAT_ID
+    const brokerLabel = isSchwab ? '🔴 Schwab' : '🔵 Paper'
+    if (BOT && GID) {
+      const reasonLines = skipReasons.length > 0
+        ? skipReasons.slice(0, 5).join('\n')
+        : 'All ranked setups passed gates — order placement may have failed'
+      const text = `⏸ *${brokerLabel} — ${ranked.length} setup${ranked.length > 1 ? 's' : ''} found, 0 traded*\nTop: ${top.symbol} conf=${top.confidence}% ema=${top.ema_score}/10\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\n\n*Why blocked:*\n${reasonLines}`
+      fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: GID, text, parse_mode: 'Markdown' }),
+      }).catch(() => {})
+    }
   }
 
   const hot = rotation.hottest ? ` Hot:${rotation.hottest}` : ''
