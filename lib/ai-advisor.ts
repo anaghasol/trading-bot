@@ -65,7 +65,8 @@ function buildPrompt(
   minConf: number,
   broker: string,
   model: 'claude' | 'openai',
-  newsContext: string
+  newsContext: string,
+  learnedRules: string
 ): string {
   const isPaper = broker === 'alpaca_paper'
   return `You are a ${isPaper ? 'PAPER TRADING bot collecting data aggressively' : 'conservative swing trader'}. Rate these pre-screened setups.
@@ -73,7 +74,13 @@ function buildPrompt(
 ACCOUNT: $${equity.toFixed(0)} | MODE: ${isPaper ? 'PAPER (fake money — be aggressive, rate high)' : 'LIVE ($2K real — be selective)'}
 MARKET: ${regime.label} | VIX ${regime.vix.toFixed(0)} | SPY 200SMA: ${regime.spy_above_200sma ? 'above' : 'below'}
 HELD: ${held.join(', ') || 'none'}
-
+${learnedRules ? `
+RULES LEARNED FROM OUR OWN TRADE HISTORY (apply these — they came from real outcomes):
+${learnedRules.split('\n').filter(Boolean).map((r) => {
+  const p = r.split('|')
+  return p.length >= 5 ? `• [${p[4]?.trim() ?? 'MEDIUM'} confidence] ${p[2]?.trim()} → ${p[3]?.trim()}` : ''
+}).filter(Boolean).join('\n')}
+` : ''}
 ADVISOR CONTEXT (recent signals from trading channels we follow):
 ${learning}
 
@@ -106,12 +113,12 @@ Return ONLY a JSON array. Include ALL setups you'd take at ${minConf}%+ confiden
 async function askClaude(
   setups: EMASetup[], regime: MarketRegime,
   equity: number, held: string[], learning: string, minConf: number, broker: string,
-  newsContext: string
-): Promise<Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number }>> {
+  newsContext: string, learnedRules: string
+): Promise<Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }>> {
   try {
     const msg = await claude.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 1500,
-      messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude', newsContext) }],
+      messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude', newsContext, learnedRules) }],
     })
     let text = (msg.content[0] as { type: string; text: string }).text.trim()
     if (text.includes('```')) text = text.split('```')[1].replace(/^json/, '').trim()
@@ -128,7 +135,7 @@ async function askClaude(
 async function askOpenAI(
   setups: EMASetup[], regime: MarketRegime,
   equity: number, held: string[], learning: string, minConf: number, broker: string,
-  newsContext: string
+  newsContext: string, learnedRules: string
 ): Promise<Array<{ symbol: string; confidence: number }>> {
   if (!OAI_KEY) return []
   try {
@@ -139,7 +146,7 @@ async function askOpenAI(
         model: 'gpt-4o-mini',
         temperature: 0.15,
         max_tokens: 512,
-        messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext) }],
+        messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules) }],
       }),
     })
     if (!res.ok) return []
@@ -322,9 +329,18 @@ export async function getRecommendations(
     }
   }
 
-  // 3. Learning context (Supabase read, cheap)
+  // 3. Learning context + synthesized rules (both cheap Supabase reads)
   let learning = 'No history yet'
-  try { const ctx = await buildLearningContext(); learning = ctx.summary } catch { /* ignore */ }
+  let learnedRules = ''
+  try {
+    const [ctx, rulesRow] = await Promise.all([
+      buildLearningContext(),
+      (await import('./supabase-server')).createServiceClient()
+        .from('tb_settings').select('value').eq('key', 'learned_rules').single(),
+    ])
+    learning     = ctx.summary
+    learnedRules = rulesRow.data?.value ?? ''
+  } catch { /* ignore — non-fatal */ }
 
   // 4. Dynamic gate: widen in good markets, tighten in caution.
   const baseConf = profile.min_confidence
@@ -365,10 +381,10 @@ export async function getRecommendations(
   const aiLimit  = isPaper ? 12 : 6
   const aiSetups = setups.slice(0, aiLimit)
 
-  // 6. Claude + OpenAI IN PARALLEL — one call each, enriched with news context
+  // 6. Claude + OpenAI IN PARALLEL — enriched with news + learned rules from our own history
   const [claudePicks, openaiPicks] = await Promise.all([
-    askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext),
-    askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext),
+    askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules),
+    askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules),
   ])
 
   console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Raw:${rawSetups.length} NewsFiltered:${aiSetups.length} | Claude:${claudePicks.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)

@@ -37,6 +37,10 @@
       "schedule": "0 0 * * 1"
     },
     {
+      "path": "/api/cron/synthesis",
+      "schedule": "0 11 * * 0"
+    },
+    {
       "path": "/api/cron/hotlist",
       "schedule": "0,30 13-20 * * 1-5"
     }
