@@ -135,7 +135,7 @@ async function askClaude(
 ): Promise<Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }>> {
   try {
     const msg = await claude.messages.create({
-      model: 'claude-sonnet-4-6', max_tokens: 1500,
+      model: 'claude-sonnet-4-6', max_tokens: 4000,
       messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'claude', newsContext, learnedRules, signalMap) }],
     })
     let text = (msg.content[0] as { type: string; text: string }).text.trim()
@@ -163,7 +163,7 @@ async function askOpenAI(
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         temperature: 0.15,
-        max_tokens: 512,
+        max_tokens: 2000,
         messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap) }],
       }),
     })
