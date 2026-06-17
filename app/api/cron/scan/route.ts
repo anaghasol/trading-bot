@@ -26,7 +26,7 @@ import { getActiveIntentions, markActed } from '@/lib/tg-intentions'
 import { batchResearch, applyResearchBoost } from '@/lib/research-score'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
+export const maxDuration = 300
 
 function authorized(req: Request) {
   const s = process.env.CRON_SECRET
