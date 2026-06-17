@@ -169,7 +169,7 @@ async function runScan(
   // in one scan run don't collectively bypass the cap.
   // Paper: 80% max deployed — keeps 20% dry powder for high-score setups.
   // Live (Schwab): 70% max — real money stays conservative.
-  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.80
+  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.90  // paper: deploy up to 90% — it's fake money, use it
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
   if (totalMarketValue / equity > MAX_EXPOSURE) {
     // Before hard-blocking: cut the worst open loser (pnl_pct most negative) if a
@@ -369,8 +369,15 @@ async function runScan(
     }
   }
 
+  // Paper bypass: if EMA score ≥ 7 and confidence ≥ 40%, enter it regardless of gate.
+  // A 7/10 mechanical score means the chart IS setting up — Claude's conservatism shouldn't block it.
+  // Live: strict gate applies always.
   const ranked = rankedPre
-    .filter((x) => x.rec.confidence >= dynamicMinConf)
+    .filter((x) => {
+      if (x.rec.confidence >= dynamicMinConf) return true
+      if (!isSchwab && (x.rec.ema_score ?? 0) >= 7 && x.rec.confidence >= 40) return true  // paper bypass
+      return false
+    })
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
   let tradesMade = 0
@@ -582,6 +589,21 @@ async function runScan(
         ema_score: rec.ema_score, reason: rec.reason,
         stop: initialStop, target,
       })
+    }
+  }
+
+  // Diagnostic: if AI scored setups but all came back below confidence gate, say so
+  if (tradesMade === 0 && ranked.length === 0 && candidates > 0) {
+    const BOT = process.env.TELEGRAM_BOT_TOKEN
+    const GID = process.env.TELEGRAM_ALLOWED_CHAT_ID
+    const brokerLabel = isSchwab ? '🔴 Schwab' : '🔵 Paper'
+    if (BOT && GID) {
+      const text = `🤖 *${brokerLabel} — AI too conservative*\n${candidates} setup${candidates > 1 ? 's' : ''} found by scanner, but ALL rated below ${dynamicMinConf}% gate by AI\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\nGate: ${dynamicMinConf}% · Scanned: ${scanned} symbols`
+      fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: GID, text, parse_mode: 'Markdown' }),
+      }).catch(() => {})
     }
   }
 
