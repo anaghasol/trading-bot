@@ -146,9 +146,9 @@ Thread-context rules:
 - If the channel mentions a stock positively across multiple messages, mark actionable:true
 
 Per-message classification rules:
-- type:trade = explicit entry with ticker + price (e.g. "Buy SPIR at 20.5 SL 18.5")
+- type:trade = explicit entry with ticker + price (e.g. "Buy SPIR at 20.5 SL 18.5") OR crypto signal (e.g. "POLUSDT LONG entry 0.077 SL 0.073") — use symbol=POL, action=BUY, stop_loss from message, entry_price=null
 - type:exit = explicit instruction to close NOW
-- type:learn = insight, watch zone, position update, macro commentary
+- type:learn = insight, watch zone, position update, macro commentary, "first TP secured" updates
 - type:ignore = noise, greetings, links, admin
 
 Return ONLY a JSON array with exactly ${messages.length} objects (one per message, in order):
@@ -189,6 +189,12 @@ STEP 1 — Is this about OPTIONS (spreads, calls, puts, strike prices like 2935/
 
 STEP 2 — Is this about INDICES (RUT, RTY, SPX, NDX, VIX, ES, NQ)?
 → Index mentions alone = type:learn. We trade ETF proxies (IWM, SPY, QQQ) only on explicit actionable buy signals, not options commentary.
+
+STEP 2b — Is this a CRYPTO signal (BTC, ETH, SOL, POL, MATIC, XRP, ADA, BNB, etc.)?
+→ Treat as a TRADE signal! Extract the direction (LONG=BUY, SHORT=SELL) and set the symbol to the crypto ticker (e.g. "POL" from "POLUSDT LONG").
+→ The system will map crypto → equity proxies (POL→COIN, BTC→MSTR, etc.) — your job is just to classify accurately.
+→ Use the stop loss price from the message if given. Set entry_price to null (live price will be fetched).
+→ If no stop loss given, return type:learn instead.
 
 STEP 3 — Classify:
 

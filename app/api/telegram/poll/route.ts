@@ -52,6 +52,21 @@ const INDEX_MAP: Record<string, string> = {
   BTC: 'MSTR', BTCUSD: 'MSTR', BITCOIN: 'MSTR',
   ETH: 'COIN', ETHUSD: 'COIN', ETHEREUM: 'COIN',
   NG: 'UNG', NATGAS: 'UNG',
+  // Altcoins → COIN (Coinbase) as tradeable crypto proxy
+  POL: 'COIN', POLUSDT: 'COIN', MATIC: 'COIN', MATICUSDT: 'COIN', POLYGON: 'COIN',
+  SOL: 'COIN', SOLUSDT: 'COIN', SOLANA: 'COIN',
+  BNB: 'COIN', BNBUSDT: 'COIN',
+  XRP: 'COIN', XRPUSDT: 'COIN', RIPPLE: 'COIN',
+  ADA: 'COIN', ADAUSDT: 'COIN', CARDANO: 'COIN',
+  DOT: 'COIN', DOTUSDT: 'COIN',
+  DOGE: 'MSTR', DOGEUSDT: 'MSTR',
+  LINK: 'COIN', LINKUSDT: 'COIN',
+  AVAX: 'COIN', AVAXUSDT: 'COIN',
+  TON: 'COIN', TONUSDT: 'COIN',
+  SUI: 'COIN', SUIUSDT: 'COIN',
+  APT: 'COIN', APTUSDT: 'COIN',
+  // Crypto mining stocks (already equities)
+  RIOT: 'RIOT', MARA: 'MARA', CLSK: 'CLSK',
 }
 
 // Pre-AI spam filter — promo/affiliate/prop-firm noise that wastes API tokens
@@ -79,6 +94,13 @@ const CHANNELS: ChannelCfg[] = [
     watermarkKey: 'tg_last_msg_id_us_equities',
     source:       'us_equities',
     tradeEnabled: true,
+  },
+  {
+    id:           '@JimmyLeshTrades',
+    name:         "Jimmy Trader's Life",
+    watermarkKey: 'tg_last_msg_id_jimmy_trades',
+    source:       'jimmy_trades',
+    tradeEnabled: true,   // crypto signals → equity proxies via INDEX_MAP (POL→COIN, BTC→MSTR, etc.)
   },
 ]
 
@@ -179,8 +201,11 @@ export async function GET(req: Request) {
 
       // Closed-trade result (e.g. "XAUUSD TP hit +$4,769") — extract commodity insight
       // without burning a full AI classify call. Map to equity proxy and store as learning.
-      const tpMatch = text.match(/\b(XAUUSD|XAGUSD|BTC\w*|ETH\w*|OIL|CRUDE|CL|NG|GOLD|SILVER)\b.*\bTP\s*hit\b/i)
-                   ?? text.match(/\bTP\s*hit\b.*\b(XAUUSD|XAGUSD|BTC\w*|ETH\w*|OIL|CRUDE|CL|NG|GOLD|SILVER)\b/i)
+      const CRYPTO_PATTERN = 'XAUUSD|XAGUSD|BTC\\w*|ETH\\w*|OIL|CRUDE|CL|NG|GOLD|SILVER|POL\\w*|MATIC\\w*|SOL\\w*|XRP\\w*|ADA\\w*|BNB\\w*|DOGE\\w*|LINK\\w*|AVAX\\w*'
+      const tpMatch = text.match(new RegExp(`\\b(${CRYPTO_PATTERN})\\b.*\\bTP\\s*(hit|secured|done)\\b`, 'i'))
+                   ?? text.match(new RegExp(`\\bTP\\s*(hit|secured|done|\\d)\\b.*\\b(${CRYPTO_PATTERN})\\b`, 'i'))
+                   ?? text.match(/\bfirst\s+tp\s+secured\b.*\b([A-Z]{2,8}USDT?)\b/i)
+                   ?? text.match(/\b([A-Z]{2,8}USDT?)\b.*\bfirst\s+tp\s+secured\b/i)
       if (tpMatch) {
         const raw = tpMatch[1].toUpperCase()
         const etf = resolveSymbol(raw)
