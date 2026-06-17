@@ -92,7 +92,13 @@ ${newsContext ? `REAL-TIME MARKET DATA (▲bullish news ▼bearish news — fact
 ${newsContext}
 IMPORTANT: ▼bearish news = strong negative catalyst, reduce confidence -10 to -20. ▲bullish news = positive catalyst, boost confidence +5 to +10.
 ` : ''}
-${isPaper ? `PAPER MODE: Rate EVERY setup >= ${minConf}% with any positive momentum. Be generous — we need data.` : `LIVE MODE: Only high-conviction setups >= ${minConf}%.`}
+${isPaper
+  ? `PAPER MODE — AGGRESSIVE LAB: This is fake money. Your job is to FIND TRADES, not protect capital.
+Rate ANY setup with positive momentum and a valid chart at ${minConf}%+.
+If RSI > 45, price above EMA20 or breaking out, volume decent — rate it ${minConf}% minimum.
+Do NOT be conservative. Rate setups at 50-65% freely. Only skip setups with CLEAR red flags (earnings gap, broken chart, strongly bearish news).
+We want 5-12 positions active at all times. Empty slots = wasted opportunity.`
+  : `LIVE MODE: Only high-conviction setups >= ${minConf}%. Real money — be selective but not paralyzed. A setup with EMA score ≥7 and no red flags deserves ≥${minConf}%.`}
 
 SIGNAL LEGEND — "signals" field on each setup, factor into confidence rating:
   TG✓       = advisor channel bullish on this ticker in last 4h → +6-10pts
@@ -341,7 +347,9 @@ export async function getRecommendations(
     if (!seenSyms.has(s.symbol)) { seenSyms.add(s.symbol); mergedSetups.push(s) }
   }
 
-  const rawLimit = isPaper ? 20 : 6
+  // Paper gets 50 setups to Claude — aggressive lab needs wide coverage.
+  // Live gets 8 — real money only rates the very best mechanical setups.
+  const rawLimit = isPaper ? 50 : 8
   const rawSetups = mergedSetups
     .filter((s) => !heldSymbols.includes(s.symbol))
     .slice(0, rawLimit)

@@ -26,34 +26,34 @@ export interface StrategyProfile {
 }
 
 export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
-  // ── REAL money: protect first, compound steadily toward $25K ──
+  // ── REAL money: grow $2K toward $25K — need to be IN trades to compound ──
   schwab: {
     key: 'schwab',
     label: 'Schwab · Real (Protected)',
     vibe: 'protected',
-    risk_pct: 0.015,            // 1.5% per trade  (reviewer's floor)
-    max_positions: 3,
-    min_confidence: 74,         // 74%: boosts (TG+8, SC+10, HotList+6) already applied before this gate
+    risk_pct: 0.02,             // 2% per trade — slightly more assertive (was 1.5%)
+    max_positions: 4,           // 4 concurrent (was 3 — room for one more swing)
+    min_confidence: 72,         // 72% gate (was 74) — BREAKOUT with ema≥8 now bypasses anyway
     allow_day_trades: false,    // PDT-safe swing (1–5 day holds)
-    initial_stop_pct: 0.04,     // widened 2.5%→4%: 2.5% was too tight, noise-stopped winners
+    initial_stop_pct: 0.04,     // 4% initial stop
     trail_pct: 0.05,
     daily_loss_stop_pct: 0.05,  // −5% halts the day
     max_hold_days: 5,
     scan_universe: 'core',
   },
 
-  // ── PAPER money: tuned after June 4 -10% day — still aggressive but survivable ──
+  // ── PAPER money: aggressive lab — use ALL the fake money to find edge ──
   alpaca_paper: {
     key: 'alpaca_paper',
     label: 'Alpaca · Paper (Aggressive Lab)',
     vibe: 'aggressive',
-    risk_pct: 0.055,            // 5.5% per trade (down from 7% — survived June 4 review)
-    max_positions: 10,          // 10 concurrent (down from 15 — reduces coordinated-drop exposure)
-    min_confidence: 55,         // 55% gate (up from 50%)
+    risk_pct: 0.06,             // 6% per trade — push sizing hard on fake money
+    max_positions: 12,          // 12 concurrent
+    min_confidence: 45,         // 45% gate — paper is for discovery, not precision
     allow_day_trades: true,
-    initial_stop_pct: 0.035,    // 3.5% initial stop (tighter — was 5%)
-    trail_pct: 0.06,            // 6% trailing (was 10%)
-    daily_loss_stop_pct: 0.15,  // −15% daily breaker (was −20%)
+    initial_stop_pct: 0.04,     // 4% initial stop
+    trail_pct: 0.06,            // 6% trailing
+    daily_loss_stop_pct: 0.15,  // −15% daily breaker
     max_hold_days: 5,
     scan_universe: 'wide',
   },

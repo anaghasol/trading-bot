@@ -487,8 +487,9 @@ async function runScan(
         skipReasons.push(`${rec.symbol}: BREAKOUT needs TG or (ema≥8+conf≥75%)`)
         continue
       }
-      // All other strategies need either TG confirmation OR acceptable mechanical score
-      if (!tg_confirmed && (rec.ema_score ?? 0) < 5) {
+      // All other strategies: need TG confirmation OR decent mechanical score
+      // Lowered from 5 → 4: a score of 4/10 still shows some setup quality, don't waste the slot
+      if (!tg_confirmed && (rec.ema_score ?? 0) < 4) {
         const msg = `[schwab] SKIPPED ${rec.symbol} — no TG confirm and low EMA score ${rec.ema_score}/10`
         console.log(msg)
         void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
