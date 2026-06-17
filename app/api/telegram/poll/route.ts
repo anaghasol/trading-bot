@@ -250,6 +250,51 @@ export async function GET(req: Request) {
         // Personal account updates, options P/L summaries, and "X trades closed" messages
         // have no directional info and should never flip the scanner's macro gate.
         const hasMacroKeyword = /\b(SPX|SPY|QQQ|IWM|RUT|NDX|DJI|market|indices|index|gap.?down|gap.?up|broad.?market|macro|regime|risk.?off|risk.?on|sell.?off|rally|correction)\b/i.test(signal.summary)
+
+        // ── Economic event detection ───────────────────────────────────────────
+        // FOMC, CPI, NFP, or any "big move expected" language → pause new live entries
+        // for a 2-hour window around the event time mentioned in the message.
+        // "huge moves on both sides from 1pm CST" / "FOMC at 2pm ET" → pause 1:30–3:30 ET
+        const EVENT_KW = /\b(FOMC|CPI|NFP|payroll|fed.?(meeting|decision|rate)|rate.?decision|rate.?hike|rate.?cut|jobs.?report|inflation.?report|powell)\b/i
+        const BIG_MOVE_KW = /\b(huge.?move|big.?move|both.?side|volatile|whipsaw|choppy)\b/i
+        const rawText = msg.text ?? ''
+        if ((EVENT_KW.test(rawText) || BIG_MOVE_KW.test(rawText))) {
+          // Extract time mention — "1pm CST", "2pm ET", "13:00", "14:00 UTC"
+          const timeMatch = rawText.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(CST|CDT|EST|ET|EDT|CT|UTC)?/i)
+          let pauseUntil: Date | null = null
+          if (timeMatch) {
+            let hour = parseInt(timeMatch[1], 10)
+            const meridiem = (timeMatch[3] ?? '').toLowerCase()
+            const tz = (timeMatch[4] ?? 'ET').toUpperCase()
+            if (meridiem === 'pm' && hour < 12) hour += 12
+            if (meridiem === 'am' && hour === 12) hour = 0
+            // Convert to ET (our operating timezone)
+            const tzOffset: Record<string, number> = { CST: 1, CDT: 1, CT: 1, EST: 0, EDT: 0, ET: 0, UTC: -5 }
+            const etHour = hour + (tzOffset[tz] ?? 0)
+            const now = new Date()
+            const eventET = new Date(now)
+            eventET.setUTCHours(etHour + 5, 0, 0, 0)  // ET = UTC-5 (rough)
+            // Pause: 30 min before event through 90 min after
+            const pauseStart = new Date(eventET.getTime() - 30 * 60_000)
+            pauseUntil = new Date(eventET.getTime() + 90 * 60_000)
+            if (Date.now() < pauseUntil.getTime()) {
+              await db.from('tb_settings').upsert({
+                key: 'event_pause_until',
+                value: JSON.stringify({ until: pauseUntil.toISOString(), reason: rawText.slice(0, 120), set_at: new Date().toISOString() }),
+              })
+              await tgSend(`⏸️ *Event pause set* — no new live entries from ${pauseStart.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET until ${pauseUntil.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET\nReason: ${rawText.slice(0, 80)}`)
+            }
+          } else if (EVENT_KW.test(rawText)) {
+            // Event mentioned but no time — pause for next 3 hours as safety
+            pauseUntil = new Date(Date.now() + 3 * 3600_000)
+            await db.from('tb_settings').upsert({
+              key: 'event_pause_until',
+              value: JSON.stringify({ until: pauseUntil.toISOString(), reason: rawText.slice(0, 120), set_at: new Date().toISOString() }),
+            })
+            await tgSend(`⏸️ *Event pause set (3h)* — FOMC/CPI/NFP detected, pausing live entries\n${rawText.slice(0, 80)}`)
+          }
+        }
+
         if (isMacroSignal) {
           await db.from('tb_learning').insert({
             symbol: null, source: ch.source, sentiment: signal.sentiment,

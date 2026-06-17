@@ -146,6 +146,21 @@ async function runScan(
     }
   } catch { /* non-fatal — if this fails, scan continues */ }
 
+  // Economic event pause (FOMC, CPI, NFP): TG channel warned of big moves around specific time.
+  // Only applies to live Schwab — paper lab keeps running to collect data through events.
+  if (isSchwab) {
+    try {
+      const { data: pauseRow } = await db.from('tb_settings').select('value').eq('key', 'event_pause_until').single()
+      if (pauseRow?.value) {
+        const pause = JSON.parse(pauseRow.value) as { until: string; reason: string }
+        if (new Date(pause.until) > new Date()) {
+          const minLeft = Math.round((new Date(pause.until).getTime() - Date.now()) / 60_000)
+          return { trades_made: 0, message: `[schwab] EVENT PAUSE — ${minLeft}m left | ${pause.reason.slice(0, 60)}` }
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
   // (position cap enforced after regime check using dynamicMaxPos below)
 
   // Total exposure cap: don't open new positions if already > 75% equity deployed.
