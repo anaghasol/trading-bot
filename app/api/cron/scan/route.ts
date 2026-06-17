@@ -470,21 +470,24 @@ async function runScan(
     }
 
     // LIVE SCHWAB QUALITY GATE — real money only enters on high-conviction setups.
-    // EMA20_BOUNCE and BREAKOUT have shown 0-19% live win rates; block them unless
-    // a Telegram channel independently confirms the same symbol (human + AI consensus).
-    // Non-TG picks also need strong mechanical confirmation (EMA score ≥ 7/10).
+    // EMA20_BOUNCE needs TG OR very strong EMA (≥9) — historically low win rate without signal.
+    // BREAKOUT: allowed if AI conf ≥75% AND EMA score ≥8 (strong mechanical signal = skip TG req).
     if (isSchwab) {
-      const weakStrategies = ['EMA20_BOUNCE', 'BREAKOUT']
-      if (weakStrategies.includes(rec.setup ?? '')) {
-        if (!tg_confirmed) {
-          const msg = `[schwab] BLOCKED ${rec.symbol} — ${rec.setup} has poor live win rate and no TG confirmation`
-          console.log(msg)
-          void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
-          skipReasons.push(`${rec.symbol}: ${rec.setup} needs TG (live gate)`)
-          continue
-        }
+      if (rec.setup === 'EMA20_BOUNCE' && !tg_confirmed && (rec.ema_score ?? 0) < 9) {
+        const msg = `[schwab] BLOCKED ${rec.symbol} — EMA20_BOUNCE without TG needs ema≥9 (has ${rec.ema_score}/10)`
+        console.log(msg)
+        void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
+        skipReasons.push(`${rec.symbol}: EMA20_BOUNCE needs TG or ema≥9`)
+        continue
       }
-      // Even allowed strategies need either TG confirmation OR acceptable mechanical score
+      if (rec.setup === 'BREAKOUT' && !tg_confirmed && ((rec.ema_score ?? 0) < 8 || rec.confidence < 75)) {
+        const msg = `[schwab] BLOCKED ${rec.symbol} — BREAKOUT without TG needs ema≥8 AND conf≥75% (has ${rec.ema_score}/10, ${rec.confidence}%)`
+        console.log(msg)
+        void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
+        skipReasons.push(`${rec.symbol}: BREAKOUT needs TG or (ema≥8+conf≥75%)`)
+        continue
+      }
+      // All other strategies need either TG confirmation OR acceptable mechanical score
       if (!tg_confirmed && (rec.ema_score ?? 0) < 5) {
         const msg = `[schwab] SKIPPED ${rec.symbol} — no TG confirm and low EMA score ${rec.ema_score}/10`
         console.log(msg)
@@ -669,6 +672,16 @@ export async function GET(req: Request) {
     )
   } else {
     results.alpaca_paper = { skipped: 'engine_stopped' }
+    // Alert so it's visible — paper engine being stopped silently kills all lab trading
+    const BOT = process.env.TELEGRAM_BOT_TOKEN
+    const GID = process.env.TELEGRAM_ALLOWED_CHAT_ID
+    if (BOT && GID) {
+      fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: GID, text: '⚠️ *Alpaca Paper engine is STOPPED*\nGo to Settings → toggle Paper engine ON to resume lab trading.', parse_mode: 'Markdown' }),
+      }).catch(() => {})
+    }
   }
 
   await Promise.allSettled(tasks)
