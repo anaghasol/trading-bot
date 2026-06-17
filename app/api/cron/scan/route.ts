@@ -369,13 +369,17 @@ async function runScan(
     }
   }
 
-  // Paper bypass: if EMA score ≥ 7 and confidence ≥ 40%, enter it regardless of gate.
-  // A 7/10 mechanical score means the chart IS setting up — Claude's conservatism shouldn't block it.
-  // Live: strict gate applies always.
+  // Paper mode: EMA score IS the quality gate. Claude ranks/sizes, doesn't veto.
+  // If the mechanical scanner gives ≥6/10, that stock has a real setup — trade it.
+  // Bypassed setups get confidence floored at 50 so sizing math works correctly.
+  // Live: strict AI gate applies — Claude's confidence must clear dynamicMinConf.
   const ranked = rankedPre
     .filter((x) => {
       if (x.rec.confidence >= dynamicMinConf) return true
-      if (!isSchwab && (x.rec.ema_score ?? 0) >= 7 && x.rec.confidence >= 40) return true  // paper bypass
+      if (!isSchwab && (x.rec.ema_score ?? 0) >= 6) {
+        x.rec.confidence = Math.max(x.rec.confidence, 50)  // floor for sizing
+        return true
+      }
       return false
     })
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
@@ -593,12 +597,14 @@ async function runScan(
   }
 
   // Diagnostic: if AI scored setups but all came back below confidence gate, say so
+  // (After bypass logic this should not happen for paper — ema≥6 bypasses automatically)
   if (tradesMade === 0 && ranked.length === 0 && candidates > 0) {
     const BOT = process.env.TELEGRAM_BOT_TOKEN
     const GID = process.env.TELEGRAM_ALLOWED_CHAT_ID
     const brokerLabel = isSchwab ? '🔴 Schwab' : '🔵 Paper'
+    const topEma = rankedPre.slice(0, 3).map(x => `${x.rec.symbol}(ema=${x.rec.ema_score} conf=${x.rec.confidence}%)`).join(', ')
     if (BOT && GID) {
-      const text = `🤖 *${brokerLabel} — AI too conservative*\n${candidates} setup${candidates > 1 ? 's' : ''} found by scanner, but ALL rated below ${dynamicMinConf}% gate by AI\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\nGate: ${dynamicMinConf}% · Scanned: ${scanned} symbols`
+      const text = `🤖 *${brokerLabel} — 0 ranked after bypass*\n${candidates} setup${candidates > 1 ? 's' : ''} found, all below gate AND ema<6\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\nTop candidates: ${topEma}`
       fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
