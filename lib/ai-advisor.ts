@@ -122,7 +122,9 @@ ${JSON.stringify(setups.map((s) => ({
 Rate HOLISTICALLY — chart data + signals + news + learned rules + regime all together.
 hold_mode: "day"=exit by EOD, "swing"=1-5 days default, "trend"=weeks/months for Stage 2 uptrenders near 52w high with RS>70.
 
-Return ONLY a JSON array. Include ALL setups you'd take at ${minConf}%+ confidence:
+${isPaper
+  ? `IMPORTANT FOR PAPER: Return ALL setups in the JSON — even ones you rate at 20-30%. The system uses EMA score (not your confidence) as the final gate. Your job is to assign accurate confidence values so the system can SIZE positions correctly. Do NOT omit setups. If a setup has any positive momentum at all, include it.`
+  : `Return ONLY setups you'd take at ${minConf}%+ confidence.`}
 [{"symbol":"X","action":"BUY","confidence":72,"setup":"EMA20_BOUNCE","reason":"brief reason","target_pct":8,"hold_days":3,"stop_pct":-5,"hold_mode":"swing"}]`
 }
 
@@ -242,16 +244,12 @@ function mergeResults(
       }
     })
     .filter((p) => {
-      // Paper mode: Claude alone is enough — we're here to collect data aggressively.
-      // If OpenAI IS online, require it to agree within 10pts (not 5) so a 55% Claude
-      // pick isn't killed by a 44% OpenAI rating on an admittedly noisy paper setup.
-      if (isPaper) {
-        if (oaiOnline && p.openai_conf > 0) {
-          return p.claude_conf >= minConf && p.openai_conf >= minConf - 10
-        }
-        return p.claude_conf >= minConf  // Claude alone runs the paper lab
-      }
-      // Live (Schwab): both must agree — real money needs consensus.
+      // Paper mode: NO confidence filter here — EMA bypass in scan/route.ts is the gate.
+      // Claude returns ALL setups; scan/route.ts only enters ones with ema_score ≥ 5.
+      // This prevents CAUTION/TOUGH regime from silently blocking all paper candidates.
+      if (isPaper) return true
+
+      // Live (Schwab): both AIs must agree — real money needs consensus.
       if (p.openai_conf > 0) {
         return p.claude_conf >= minConf && p.openai_conf >= minConf - 5
       }
@@ -408,16 +406,13 @@ export async function getRecommendations(
     signalMap.set(s.symbol, flags.join(' ') || 'none')
   }
 
-  // 4. Dynamic gate: widen in good markets, tighten in caution.
-  // NOTE: Paper gate intentionally low (32%) — EMA bypass in scan/route.ts handles further
-  // filtering. Do NOT floor paper gate at 45 — that defeats the purpose of a low gate.
+  // 4. Dynamic gate.
+  // Paper: gate NEVER raises regardless of regime — EMA bypass in scan/route.ts is the real
+  // quality filter. CAUTION/TOUGH markets are where paper most needs to collect data.
+  // Live: tighten in good markets (avoid chasing), loosen slightly when cheap.
   const baseConf = profile.min_confidence
   const minConf = isPaper
-    ? (regime.vix < 20 && regime.spy_above_200sma
-        ? Math.max(baseConf - 5, 22)  // GOOD market: lower gate (e.g. 32-5=27, floor 22)
-        : regime.regime === 'CAUTION'
-          ? Math.min(baseConf + 5, 45) // CAUTION: raise gate but cap at 45
-          : baseConf)
+    ? 20   // Paper: flat 20% floor — ask Claude to rate everything, EMA bypass handles quality
     : (regime.vix < 20 && regime.spy_above_200sma
         ? Math.max(baseConf - 3, 73)
         : baseConf)
