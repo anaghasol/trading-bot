@@ -326,11 +326,11 @@ async function runScan(
       } else if (intent?.type === 'watch_only') {
         intentBoost = 5
       } else if (tgSymbols.has(r.symbol)) {
-        intentBoost = 4   // was 8 — Claude already got +6-10 from TG✓ in prompt
+        intentBoost = 10  // TG channel confirmed: strong post-Claude safety-net boost
       }
-      const supercycleBoost = supercycleSymbols.has(r.symbol) ? 5 : 0   // was 10
-      const hotlistBoost    = hotlistSymbols.has(r.symbol)    ? 3 : 0   // was 6
-      const reentryBoost    = recentStopSymbols.has(r.symbol) ? 3 : 0   // was 5
+      const supercycleBoost = supercycleSymbols.has(r.symbol) ? 12 : 0  // strong: weekly RS+200MA confirmed
+      const hotlistBoost    = hotlistSymbols.has(r.symbol)    ? 12 : 0  // strong: today's hot mover by volume
+      const reentryBoost    = recentStopSymbols.has(r.symbol) ? 5 : 0   // re-entry bump
 
       const totalBoost = intentBoost + supercycleBoost + hotlistBoost + reentryBoost
       const finalConf  = Math.min(100, r.confidence + totalBoost)
@@ -370,13 +370,13 @@ async function runScan(
   }
 
   // Paper mode: EMA score IS the quality gate. Claude ranks/sizes, doesn't veto.
-  // If the mechanical scanner gives ≥6/10, that stock has a real setup — trade it.
+  // If the mechanical scanner gives ≥5/10, that stock has a real setup — trade it.
   // Bypassed setups get confidence floored at 50 so sizing math works correctly.
   // Live: strict AI gate applies — Claude's confidence must clear dynamicMinConf.
   const ranked = rankedPre
     .filter((x) => {
       if (x.rec.confidence >= dynamicMinConf) return true
-      if (!isSchwab && (x.rec.ema_score ?? 0) >= 6) {
+      if (!isSchwab && (x.rec.ema_score ?? 0) >= 5) {
         x.rec.confidence = Math.max(x.rec.confidence, 50)  // floor for sizing
         return true
       }
@@ -386,7 +386,7 @@ async function runScan(
 
   let tradesMade = 0
   const openSlots = dynamicMaxPos - positions.length
-  const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 25)
+  const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 60)  // paper: review up to 60 ranked
 
   const skipReasons: string[] = []  // collected per scan tick, sent as one TG if no trades made
 
@@ -604,7 +604,7 @@ async function runScan(
     const brokerLabel = isSchwab ? '🔴 Schwab' : '🔵 Paper'
     const topEma = rankedPre.slice(0, 3).map(x => `${x.rec.symbol}(ema=${x.rec.ema_score} conf=${x.rec.confidence}%)`).join(', ')
     if (BOT && GID) {
-      const text = `🤖 *${brokerLabel} — 0 ranked after bypass*\n${candidates} setup${candidates > 1 ? 's' : ''} found, all below gate AND ema<6\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\nTop candidates: ${topEma}`
+      const text = `🤖 *${brokerLabel} — 0 ranked after bypass*\n${candidates} setup${candidates > 1 ? 's' : ''} found, all below gate AND ema<5\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\nTop candidates: ${topEma}`
       fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -347,9 +347,9 @@ export async function getRecommendations(
     if (!seenSyms.has(s.symbol)) { seenSyms.add(s.symbol); mergedSetups.push(s) }
   }
 
-  // Paper gets 50 setups to Claude — aggressive lab needs wide coverage.
+  // Paper gets 80 setups to the mechanical scanner — aggressive lab needs wide coverage.
   // Live gets 8 — real money only rates the very best mechanical setups.
-  const rawLimit = isPaper ? 50 : 8
+  const rawLimit = isPaper ? 80 : 8
   const rawSetups = mergedSetups
     .filter((s) => !heldSymbols.includes(s.symbol))
     .slice(0, rawLimit)
@@ -409,12 +409,14 @@ export async function getRecommendations(
   }
 
   // 4. Dynamic gate: widen in good markets, tighten in caution.
+  // NOTE: Paper gate intentionally low (32%) — EMA bypass in scan/route.ts handles further
+  // filtering. Do NOT floor paper gate at 45 — that defeats the purpose of a low gate.
   const baseConf = profile.min_confidence
   const minConf = isPaper
     ? (regime.vix < 20 && regime.spy_above_200sma
-        ? Math.max(baseConf - 5, 45)
+        ? Math.max(baseConf - 5, 22)  // GOOD market: lower gate (e.g. 32-5=27, floor 22)
         : regime.regime === 'CAUTION'
-          ? baseConf + 5
+          ? Math.min(baseConf + 5, 45) // CAUTION: raise gate but cap at 45
           : baseConf)
     : (regime.vix < 20 && regime.spy_above_200sma
         ? Math.max(baseConf - 3, 73)
@@ -444,7 +446,10 @@ export async function getRecommendations(
     }
     return true
   })
-  const aiLimit  = isPaper ? 12 : 6
+  // Send ALL news-filtered setups to Claude — no artificial cap for paper.
+  // 50+ setups fit comfortably in one Claude call (each is ~200 chars JSON).
+  // Live gets 6 — real money only rates the best.
+  const aiLimit  = isPaper ? 80 : 6
   const aiSetups = setups.slice(0, aiLimit)
 
   // 6. Claude + OpenAI IN PARALLEL — each sees chart data + all signals in one prompt

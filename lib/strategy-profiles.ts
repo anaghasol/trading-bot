@@ -49,7 +49,7 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     vibe: 'aggressive',
     risk_pct: 0.06,             // 6% per trade — push sizing hard on fake money
     max_positions: 12,          // 12 concurrent
-    min_confidence: 38,         // 38% gate — paper is for discovery, not precision (+ bypass for ema≥7)
+    min_confidence: 32,         // 32% gate — paper is for discovery, not precision (+ bypass for ema≥5)
     allow_day_trades: true,
     initial_stop_pct: 0.04,     // 4% initial stop
     trail_pct: 0.06,            // 6% trailing
