@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "prepare": "bash scripts/install-hooks.sh 2>/dev/null || true"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.1",

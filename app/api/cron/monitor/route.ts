@@ -181,6 +181,20 @@ async function monitorBroker(
     }
   }
 
+  // ── Orphan naked short cleanup (paper only) ───────────────────────────────
+  // If any options position has qty < 0 with NO journal entry, close it immediately.
+  // This catches accidental shorts created by TG race conditions or bad order routing.
+  if (broker === 'alpaca_paper') {
+    for (const pos of positions) {
+      if (pos.asset_type === 'OPTION' && pos.quantity < 0 && !tradeMap.has(pos.symbol)) {
+        const order = await AlpacaBroker.closePosition(pos.symbol)
+        const msg = `[AUTO] Orphan naked short ${pos.symbol} qty=${pos.quantity} — closed${order.status === 'PLACED' ? ' OK' : ' FAILED'}`
+        void db.from('tb_alerts').insert({ type: 'STOP_LOSS', symbol: pos.symbol, broker, message: msg })
+        console.log(msg)
+      }
+    }
+  }
+
   let closed = 0, partial = 0, runningPnl = dailyPnl
   const statuses: string[] = []
 
