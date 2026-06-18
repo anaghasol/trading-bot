@@ -233,26 +233,28 @@ export async function getAccountHash(): Promise<string | null> {
   return stored?.account_hash || null
 }
 
-export async function getAccountBalance(): Promise<number | null> {
+// In-process 12s cache for the raw account response — prevents duplicate Schwab
+// round-trips when getAccountBalance() + getPositions() are called in the same tick.
+let _acctCache: { data: Record<string, unknown>; ts: number } | null = null
+
+async function getRawAccountData(): Promise<Record<string, unknown> | null> {
+  if (_acctCache && Date.now() - _acctCache.ts < 12_000) return _acctCache.data
   const hash = await getAccountHash()
   if (!hash) return null
+  const data = await apiGet<Record<string, unknown>>(`${API_BASE}/accounts/${hash}?fields=positions`)
+  if (data) _acctCache = { data, ts: Date.now() }
+  return data
+}
 
-  const data = await apiGet<Record<string, unknown>>(
-    `${API_BASE}/accounts/${hash}?fields=positions`
-  )
+export async function getAccountBalance(): Promise<number | null> {
+  const data = await getRawAccountData()
   if (!data) return null
-
   const balances = (data.securitiesAccount as Record<string, unknown>)?.currentBalances as Record<string, number>
   return balances?.liquidationValue ?? null
 }
 
 export async function getPositions(): Promise<Position[]> {
-  const hash = await getAccountHash()
-  if (!hash) return []
-
-  const data = await apiGet<Record<string, unknown>>(
-    `${API_BASE}/accounts/${hash}?fields=positions`
-  )
+  const data = await getRawAccountData()
   if (!data) return []
 
   const rawPositions =

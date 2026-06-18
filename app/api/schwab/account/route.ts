@@ -4,9 +4,6 @@ import { getAccountSummary, getSchwabAuthStatus } from '@/lib/schwab'
 
 const CACHE_KEY = 'schwab_account_cache'
 
-// GET /api/schwab/account → full live balances for the dashboard rail.
-// When Schwab token is mid-refresh (30-min cycle), returns last cached summary
-// instead of zeros — dashboard never goes blank due to transient token expiry.
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -14,26 +11,30 @@ export async function GET() {
 
   const db = createServiceClient()
 
+  // Read cache once — used for both the TTL fast-path and the failure fallback
+  const { data: cacheRow } = await db.from('tb_settings').select('value').eq('key', CACHE_KEY).single()
+  let cached: Record<string, unknown> | null = null
+  if (cacheRow?.value) {
+    try { cached = JSON.parse(cacheRow.value) } catch { /* ignore */ }
+  }
+
+  // Fast path: serve cache if < 12s old — avoids hitting Schwab on every poll
+  if (cached?.cached_at) {
+    const ageMs = Date.now() - new Date(String(cached.cached_at)).getTime()
+    if (ageMs < 12_000) return NextResponse.json({ ...cached, from_cache: true })
+  }
+
   const [summary, authStatus] = await Promise.all([getAccountSummary(), getSchwabAuthStatus()])
 
   if (summary) {
-    // Live data succeeded — cache it and return
     const cachePayload = { ...summary, auth_status: authStatus, cached_at: new Date().toISOString() }
     void db.from('tb_settings').upsert({ key: CACHE_KEY, value: JSON.stringify(cachePayload) })
     return NextResponse.json(cachePayload)
   }
 
-  // Live call failed (transient token expiry or Schwab outage) — return cached data
-  const { data: cacheRow } = await db.from('tb_settings').select('value').eq('key', CACHE_KEY).single()
-  if (cacheRow?.value) {
-    try {
-      const cached = JSON.parse(cacheRow.value)
-      // Mark as stale so dashboard can show a subtle indicator
-      return NextResponse.json({ ...cached, stale: true, auth_status: authStatus })
-    } catch { /* fall through to error */ }
-  }
+  // Live call failed — return last known good data (marked stale)
+  if (cached) return NextResponse.json({ ...cached, stale: true, auth_status: authStatus })
 
-  // No cache either — true auth failure (refresh token expired)
   return NextResponse.json({
     error: 'schwab_auth_expired',
     auth_status: authStatus,
