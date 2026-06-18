@@ -921,6 +921,24 @@ export default function DashboardPage() {
                 {isPaper && (
                   <button
                     className="iconbtn"
+                    style={{ fontSize: '0.65rem', color: 'var(--red)', fontWeight: 700 }}
+                    title="Force-close all paper positions past the 2% stop right now — bypasses monitor wait"
+                    onClick={async () => {
+                      if (!window.confirm('Force-close all paper losers past 2% stop right now?')) return
+                      const res = await fetch('/api/admin/close-losers', { method: 'POST' })
+                      const d = await res.json()
+                      if (d.ok) {
+                        alert(`✓ Force close done\n\nClosed: ${d.closed.join(', ') || 'none'}\nHeld: ${d.held.join(', ') || 'none'}\nThreshold: ${d.threshold}`)
+                        load(broker)
+                      } else {
+                        alert(`Error: ${d.error}`)
+                      }
+                    }}
+                  >🔴 Cut Losers</button>
+                )}
+                {isPaper && (
+                  <button
+                    className="iconbtn"
                     style={{ fontSize: '0.65rem', color: 'var(--amber)' }}
                     title="Fix a wrong entry price using Yahoo Finance historical data at actual buy time"
                     onClick={async () => {
