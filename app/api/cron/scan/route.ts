@@ -372,33 +372,37 @@ async function runScan(
     }
   }
 
-  // Dip Runner boost (paper only): Stage 2 uptrenders pulling back on volume = ideal entry.
-  // Logic: supercycle-confirmed stock (SNDK-pattern) + strong RS score + AI hesitant (conf<60)
-  // = AI is seeing short-term risk on a long-term winner. Boost it into trend hold.
-  // This is the SNDK pattern: stock that compounded 3-5x runs in weeks, buy every dip.
+  // Dip Runner boost (paper only): strong RS stocks pulling back = best entries.
+  // Any stock with research RS score ≥ 5 (outperforming SPY) + AI hesitant (conf<65)
+  // = AI is seeing short-term risk on a market leader. Boost it — buy the dip.
+  // Supercycle confirmed = even stronger signal (SNDK-pattern weekly screener found it).
   if (!isSchwab) {
+    let dipRunnerCount = 0
     for (const item of rankedPre) {
       const rs = research.get(item.rec.symbol)
-      const isStage2Runner = item.supercycle || (rs && rs.score >= 7.5)
-      const aiHesitant    = item.rec.confidence < 60   // AI sees risk = likely dipping
-      const hasStructure  = (item.rec.ema_score ?? 0) >= 4
-      if (isStage2Runner && aiHesitant && hasStructure) {
+      const rsScore = rs?.score ?? 0
+      const isRunner      = item.supercycle || rsScore >= 5  // strong RS vs SPY
+      const aiHesitant    = item.rec.confidence < 65         // AI uncertain = likely dipping
+      const hasStructure  = (item.rec.ema_score ?? 0) >= 3   // any mechanical structure
+      const boost         = item.supercycle ? 20 : 15        // supercycle = bigger boost
+      if (isRunner && aiHesitant && hasStructure && dipRunnerCount < 4) {
         const oldConf = item.rec.confidence
-        item.rec.confidence = Math.min(80, item.rec.confidence + 18)
-        item.rec.hold_mode  = 'trend'  // hold through dip, don't day-trade out
-        console.log(`[DIP_RUNNER][paper] ${item.rec.symbol}: SC=${item.supercycle} RS=${rs?.score?.toFixed(1)} ema=${item.rec.ema_score} conf ${oldConf}→${item.rec.confidence}% → TREND`)
+        item.rec.confidence = Math.min(82, item.rec.confidence + boost)
+        item.rec.hold_mode  = 'trend'
+        dipRunnerCount++
+        console.log(`[DIP_RUNNER][paper] ${item.rec.symbol}: SC=${item.supercycle} RS=${rsScore.toFixed(1)} ema=${item.rec.ema_score} +${boost} → conf ${oldConf}→${item.rec.confidence}% TREND`)
       }
     }
   }
 
   // Paper mode: EMA score IS the quality gate. Claude ranks/sizes, doesn't veto.
-  // If the mechanical scanner gives ≥5/10, that stock has a real setup — trade it.
+  // ema≥3 = any mechanical structure = enter paper. Pro systems act, not deliberate.
   // Bypassed setups get confidence floored at 50 so sizing math works correctly.
   // Live: strict AI gate applies — Claude's confidence must clear dynamicMinConf.
   const ranked = rankedPre
     .filter((x) => {
       if (x.rec.confidence >= dynamicMinConf) return true
-      if (!isSchwab && (x.rec.ema_score ?? 0) >= 5) {
+      if (!isSchwab && (x.rec.ema_score ?? 0) >= 3) {
         x.rec.confidence = Math.max(x.rec.confidence, 50)  // floor for sizing
         return true
       }
@@ -631,7 +635,7 @@ async function runScan(
     const brokerLabel = isSchwab ? '🔴 Schwab' : '🔵 Paper'
     const topEma = rankedPre.slice(0, 3).map(x => `${x.rec.symbol}(ema=${x.rec.ema_score} conf=${x.rec.confidence}%)`).join(', ')
     if (BOT && GID) {
-      const text = `🤖 *${brokerLabel} — 0 ranked after bypass*\n${candidates} setup${candidates > 1 ? 's' : ''} found, all below gate AND ema<5\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\nTop candidates: ${topEma}`
+      const text = `🤖 *${brokerLabel} — 0 ranked after bypass*\n${candidates} setup${candidates > 1 ? 's' : ''} found, all below gate AND ema<3\nRegime: ${regime.regime} · VIX ${regime.vix.toFixed(0)}\nTop candidates: ${topEma}`
       fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

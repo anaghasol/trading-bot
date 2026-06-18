@@ -447,12 +447,33 @@ export async function getRecommendations(
   const aiSetups = setups.slice(0, aiLimit)
 
   // 6. Claude + OpenAI IN PARALLEL — each sees chart data + all signals in one prompt
-  const [claudePicks, openaiPicks] = await Promise.all([
+  const [claudePicksRaw, openaiPicks] = await Promise.all([
     askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
     askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
   ])
 
-  console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Raw:${rawSetups.length} NewsFiltered:${aiSetups.length} | Claude:${claudePicks.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)
+  console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Raw:${rawSetups.length} NewsFiltered:${aiSetups.length} | Claude:${claudePicksRaw.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)
+
+  // Paper mechanical fallback: if Claude returned nothing, build picks from EMA scores directly.
+  // A pro system never sits idle. EMA score ≥ 4/10 = real mechanical structure = enter.
+  // Claude is preferred for sizing/reasoning but is NOT the gatekeeper for paper entries.
+  const claudePicks = [...claudePicksRaw]
+  if (isPaper && claudePicks.length === 0 && aiSetups.length > 0) {
+    const mechPicks = aiSetups
+      .filter((s) => s.pullback_score >= 4)
+      .map((s) => ({
+        symbol:     s.symbol,
+        confidence: Math.min(72, 30 + s.pullback_score * 6),  // 4→54%, 6→66%, 8→78%
+        setup:      s.setup_type,
+        reason:     `Mechanical EMA${s.pullback_score}/10: ${s.reason.slice(0, 80)}`,
+        target_pct: 8,
+        hold_days:  3,
+        stop_pct:  -4,
+        hold_mode:  'swing' as const,
+      }))
+    claudePicks.push(...mechPicks)
+    console.log(`[ai-advisor][FALLBACK] Claude returned 0 → mechanical fallback: ${mechPicks.length} picks from ema≥4`)
+  }
 
   // 7. Merge: require both agree, average confidence
   const recommendations = mergeResults(claudePicks, openaiPicks, aiSetups, heldSymbols, minConf, broker)
