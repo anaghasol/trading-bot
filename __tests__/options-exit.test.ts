@@ -26,8 +26,8 @@ describe('evaluateOptionsExit', () => {
     expect(result.reason).toBe('SHORT_OPT_CLEANUP')
   })
 
-  // ── Stop loss ─────────────────────────────────────────────────────────────
-  it('triggers OPT_STOP at exactly -25%', () => {
+  // ── Stop loss (default -25%) ──────────────────────────────────────────────
+  it('triggers OPT_STOP at exactly -25% (default live stop)', () => {
     const result = evaluateOptionsExit(
       { symbol: 'AMD260724P00485000', quantity: 3, pnl_pct: -25, option_expiry: future30d },
       false, NOW
@@ -45,10 +45,37 @@ describe('evaluateOptionsExit', () => {
     expect(result.reason).toBe('OPT_STOP')
   })
 
-  it('holds at -24.9% (not yet at stop)', () => {
+  it('holds at -24.9% with default -25% stop', () => {
     const result = evaluateOptionsExit(
       { symbol: 'AMD260724P00485000', quantity: 3, pnl_pct: -24.9, option_expiry: future30d },
       false, NOW
+    )
+    expect(result.action).toBe('HOLD')
+  })
+
+  // ── Aggressive paper stop (-10%) ──────────────────────────────────────────
+  it('triggers OPT_STOP at -10% when paper stop passed (AMD scenario)', () => {
+    const result = evaluateOptionsExit(
+      { symbol: 'AMD260710P00495000', quantity: 7, pnl_pct: -10.22, option_expiry: future30d },
+      false, NOW, -10  // aggressive paper stop
+    )
+    expect(result.action).toBe('FULL_CLOSE')
+    expect(result.reason).toBe('OPT_STOP')
+  })
+
+  it('triggers OPT_STOP exactly at -10%', () => {
+    const result = evaluateOptionsExit(
+      { symbol: 'AMD260710P00495000', quantity: 7, pnl_pct: -10, option_expiry: future30d },
+      false, NOW, -10
+    )
+    expect(result.action).toBe('FULL_CLOSE')
+    expect(result.reason).toBe('OPT_STOP')
+  })
+
+  it('holds at -9.9% with -10% paper stop', () => {
+    const result = evaluateOptionsExit(
+      { symbol: 'AMD260710P00495000', quantity: 7, pnl_pct: -9.9, option_expiry: future30d },
+      false, NOW, -10
     )
     expect(result.action).toBe('HOLD')
   })

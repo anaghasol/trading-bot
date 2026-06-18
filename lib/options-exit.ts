@@ -27,11 +27,13 @@ export interface OptionsExitDecision {
 /**
  * Determine what to do with an options position this monitor cycle.
  * Returns FULL_CLOSE, PARTIAL_CLOSE, or HOLD.
+ * @param stopLossPct  Max allowed premium loss (negative). Default -25%; pass -10 for aggressive paper.
  */
 export function evaluateOptionsExit(
   pos: OptionsPosition,
   partialAlreadyDone: boolean,
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  stopLossPct = -25
 ): OptionsExitDecision {
   const premPct = pos.pnl_pct
   const expiry = pos.option_expiry
@@ -49,8 +51,8 @@ export function evaluateOptionsExit(
     return { action: 'FULL_CLOSE', reason: 'EXPIRY_PROTECTION' }
   }
 
-  // Stop loss: premium down ≥25%
-  if (premPct <= -25) {
+  // Stop loss: premium down past stopLossPct (-10% paper, -25% live)
+  if (premPct <= stopLossPct) {
     return { action: 'FULL_CLOSE', reason: 'OPT_STOP' }
   }
 

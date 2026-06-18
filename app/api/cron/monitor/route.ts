@@ -200,25 +200,29 @@ async function monitorBroker(
 
   for (const pos of positions) {
     const meta = tradeMap.get(pos.symbol)
-    if (!meta || !meta.entry_price) { statuses.push(`${pos.symbol}: no journal`); continue }
 
-    // ── OPTIONS: separate exit logic ──────────────────────────────────────────
+    // ── OPTIONS: always evaluate — even without a journal entry ───────────────
+    // MUST come before the "no journal" guard so unjournaled options aren't skipped.
     if (pos.asset_type === 'OPTION') {
       // Only trade options on paper — never touch live Schwab account with options
       if (broker !== 'alpaca_paper') { statuses.push(`${pos.symbol}: options skipped on live account`); continue }
 
-      // Recover raw OCC symbol from reason (needed for Alpaca order)
-      const rawMatch  = (meta.reason ?? '').match(/raw_symbol=([^\s|]+)/)
-      const rawSymbol = rawMatch ? rawMatch[1] : pos.symbol
-      const expiryMatch = (meta.reason ?? '').match(/option_expiry=(\d{4}-\d{2}-\d{2})/)
+      // Recover raw OCC symbol: prefer journal reason, fall back to pos.raw_symbol, then display label
+      const rawMatch  = (meta?.reason ?? '').match(/raw_symbol=([^\s|]+)/)
+      const rawSymbol = rawMatch ? rawMatch[1] : (pos.raw_symbol ?? pos.symbol)
+      const expiryMatch = (meta?.reason ?? '').match(/option_expiry=(\d{4}-\d{2}-\d{2})/)
       const expiry    = expiryMatch ? expiryMatch[1] : pos.option_expiry
       const premPct   = pos.pnl_pct
       const pnlStr    = `${pos.unrealized_pnl >= 0 ? '+' : ''}$${pos.unrealized_pnl.toFixed(0)}`
       const dteDays   = expiry ? (new Date(expiry).getTime() - Date.now()) / 86_400_000 : 999
 
+      // Aggressive paper: -10% premium stop (live keeps -25% to allow normal options movement)
+      const optStopPct = broker === 'alpaca_paper' ? -10 : -25
       const exitDecision = evaluateOptionsExit(
         { symbol: pos.symbol, quantity: pos.quantity, pnl_pct: premPct, option_expiry: expiry ?? undefined },
-        !!meta.partial_done
+        !!meta?.partial_done,
+        Date.now(),
+        optStopPct
       )
 
       if (exitDecision.action === 'PARTIAL_CLOSE') {
@@ -226,7 +230,7 @@ async function monitorBroker(
         const sellOrder  = await AlpacaBroker.closePosition(rawSymbol)
         if (sellOrder.status === 'PLACED') {
           partial++
-          if (meta.id) await db.from('tb_settings').upsert({ key: `p1done_${meta.id}`, value: new Date().toISOString() })
+          if (meta?.id) await db.from('tb_settings').upsert({ key: `p1done_${meta.id}`, value: new Date().toISOString() })
           await db.from('tb_alerts').insert({ type: 'SELL', symbol: pos.symbol, broker, message: `[paper] OPT PARTIAL-1 ${partialQty}x ${pos.symbol} +${premPct.toFixed(0)}% | ${pnlStr}` })
           statuses.push(`${pos.symbol}: OPT PARTIAL-1 +${premPct.toFixed(0)}% ${pnlStr}`)
         }
@@ -239,7 +243,7 @@ async function monitorBroker(
         if (sellOrder.status === 'PLACED') {
           closed++
           runningPnl += pos.unrealized_pnl
-          if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl, pnl_pct: premPct, closed_at: new Date().toISOString() }).eq('id', meta.id)
+          if (meta?.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl, pnl_pct: premPct, closed_at: new Date().toISOString() }).eq('id', meta.id)
           await db.from('tb_alerts').insert({ type: premPct >= 0 ? 'SELL' : 'STOP_LOSS', symbol: pos.symbol, broker, message: `[paper] ${optExitReason} ${pos.symbol} | ${pnlStr}` })
           const tgBot = process.env.TELEGRAM_BOT_TOKEN, tgChat = process.env.TELEGRAM_ALLOWED_CHAT_ID
           if (tgBot && tgChat) {
@@ -254,6 +258,9 @@ async function monitorBroker(
       statuses.push(`${pos.symbol}: OPT holding ${premPct.toFixed(1)}% | ${Math.floor(dteDays)}d left`)
       continue
     }
+
+    // EQUITY from here — must have a journal entry
+    if (!meta || !meta.entry_price) { statuses.push(`${pos.symbol}: no journal`); continue }
 
     const isSameDay   = meta.entry_date === todayStr
     const holdDays    = Math.round((Date.now() - new Date(meta.entry_date + 'T00:00:00Z').getTime()) / 86_400_000)
