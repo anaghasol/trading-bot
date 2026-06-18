@@ -8,7 +8,7 @@ import { PROFILES } from '@/lib/strategy-profiles'
 const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/learning', 'Learning'], ['/settings', 'Settings']]
 
 type Broker = 'schwab' | 'alpaca_paper'
-interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string }
+interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string; raw_symbol?: string }
 interface StrategyStats { trades: number; wins: number; win_rate: number; total_pnl: number; avg_pnl: number; profit_factor: number }
 interface AuthStatus { ok: boolean; refresh_expires_at: string | null; hours_left: number | null }
 interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number; fetched_at?: string; auth_status?: AuthStatus; error?: string; reauth_url?: string }
