@@ -440,9 +440,22 @@ export async function GET(req: Request) {
           return { id: msg.id, type: 'skip', reason: 'options_expiry_too_close' }
         }
 
-        // Size by premium risk: risk 3% of equity on premium paid
+        // Options exposure cap: total premium at risk must stay ≤ 15% of account
+        const { data: openOpts } = await db.from('tb_trades')
+          .select('quantity, entry_price')
+          .eq('broker', 'alpaca_paper')
+          .eq('strategy', 'OPTION')
+          .eq('status', 'OPEN')
+        const currentOptExp = (openOpts ?? []).reduce((s, t) => s + (t.quantity ?? 0) * (t.entry_price ?? 0) * 100, 0)
+        const optExpPct = currentOptExp / equity
+        if (optExpPct >= 0.15) {
+          await tgSend(`⚠️ *Options skipped* — ${displayLabel}\nOptions exposure ${(optExpPct * 100).toFixed(1)}% ≥ 15% cap. Close existing options first.`)
+          return { id: msg.id, type: 'skip', reason: 'options_exposure_cap' }
+        }
+
+        // Size by premium risk: risk 2% of equity on premium paid (tighter than equity trades)
         const premiumPerShare = signal.entry_price ?? 5  // fallback estimate
-        const maxRiskDollars  = equity * 0.03
+        const maxRiskDollars  = equity * 0.02            // was 0.03 — tighter options sizing
         const contracts       = Math.max(1, Math.floor(maxRiskDollars / (premiumPerShare * 100)))
 
         const order = await Alpaca.placeOrder(signal.symbol, contracts, signal.action, 'MARKET')
@@ -458,9 +471,9 @@ export async function GET(req: Request) {
             quantity: contracts, entry_price: premiumPerShare,
             status: 'OPEN', order_id: order.order_id ?? null,
             confidence: signal.confidence, strategy: 'OPTION',
-            reason: `raw_symbol=${signal.symbol} | option_expiry=${expiry} | stop=50%prem | TG: ${ch.name}`,
+            reason: `raw_symbol=${signal.symbol} | option_expiry=${expiry} | stop=25%prem | TG: ${ch.name}`,
           })
-          await tgSend(`📈 *Options BUY* (${ch.name})\n${displayLabel} · ${contracts} contract${contracts > 1 ? 's' : ''} @ est $${premiumPerShare}/sh\nExpiry: ${expiry} · DTE: ${Math.floor(dteDays)}d\nStop: -50% premium | Target: +80%/+150%`)
+          await tgSend(`📈 *Options BUY* (${ch.name})\n${displayLabel} · ${contracts} contract${contracts > 1 ? 's' : ''} @ est $${premiumPerShare}/sh\nExpiry: ${expiry} · DTE: ${Math.floor(dteDays)}d\nStop: -25% premium | Target: +80%/+100%`)
         }
         return { id: msg.id, type: 'options_trade', symbol: displayLabel }
       }

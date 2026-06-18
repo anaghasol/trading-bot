@@ -203,8 +203,8 @@ async function monitorBroker(
 
       let optExitReason = ''
       if (dteDays <= 2)        optExitReason = `EXPIRY_PROTECTION (${Math.floor(dteDays)}d left)`
-      else if (premPct <= -50) optExitReason = `OPT_STOP (-50% premium)`
-      else if (premPct >= 150) optExitReason = `OPT_TARGET (+150% premium)`
+      else if (premPct <= -25) optExitReason = `OPT_STOP (-25% premium)`   // was -50%, tightened to protect capital
+      else if (premPct >= 100) optExitReason = `OPT_TARGET (+100% premium)` // was +150%
 
       // Partial profit at +80%: sell half, let rest run
       if (!optExitReason && premPct >= 80 && !meta.partial_done) {
