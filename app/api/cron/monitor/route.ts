@@ -362,10 +362,49 @@ async function monitorBroker(
       }
     }
 
+    // ── Winner scaling (paper only): pyramid into positions that are working ──────
+    // At +5%: add 30% more shares (scale-1, once only)
+    // At +10%: add another 20% more shares (scale-2, once only)
+    // Scaling into winners amplifies gains on the positions that are proving themselves.
+    // Only paper — real money pyramiding requires more capital discipline.
+    if (broker === 'alpaca_paper' && gainPct >= 5 && !meta.partial_done && meta.id) {
+      const scaleKey1 = `scale1done_${meta.id}`
+      const scaleKey2 = `scale2done_${meta.id}`
+      const { data: scaleFlags } = await db.from('tb_settings')
+        .select('key, value').in('key', [scaleKey1, scaleKey2])
+      const scale1Done = scaleFlags?.some((r) => r.key === scaleKey1 && r.value)
+      const scale2Done = scaleFlags?.some((r) => r.key === scaleKey2 && r.value)
+
+      if (gainPct >= 10 && scale1Done && !scale2Done) {
+        // Scale-2: add 20% more at +10%
+        const addQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.20))
+        await AlpacaBroker.cancelOpenOrdersFor(pos.symbol)
+        const order = await AlpacaBroker.placeOrder(pos.symbol, addQty, 'BUY')
+        if (order.status === 'PLACED') {
+          await db.from('tb_settings').upsert({ key: scaleKey2, value: new Date().toISOString() })
+          void db.from('tb_alerts').insert({ type: 'BUY', symbol: pos.symbol, broker,
+            message: `[SCALE-2] Added ${addQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}%` })
+          statuses.push(`${pos.symbol}: SCALE-2 +20% at +${gainPct.toFixed(1)}%`)
+        }
+      } else if (gainPct >= 5 && !scale1Done) {
+        // Scale-1: add 30% more at +5%
+        const addQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.30))
+        await AlpacaBroker.cancelOpenOrdersFor(pos.symbol)
+        const order = await AlpacaBroker.placeOrder(pos.symbol, addQty, 'BUY')
+        if (order.status === 'PLACED') {
+          await db.from('tb_settings').upsert({ key: scaleKey1, value: new Date().toISOString() })
+          void db.from('tb_alerts').insert({ type: 'BUY', symbol: pos.symbol, broker,
+            message: `[SCALE-1] Added ${addQty} ${pos.symbol} @ $${pos.current_price.toFixed(2)} +${gainPct.toFixed(1)}%` })
+          statuses.push(`${pos.symbol}: SCALE-1 +30% at +${gainPct.toFixed(1)}%`)
+        }
+      }
+      // Fall through — still check trailing stop / partials below
+    }
+
     // Full exit check — hold_mode determines trail width and calendar limit
     //   trend: starts at 8% trail, tightens to 4% once up 30%, floor at breakeven once up 8%
     //   day:   tight 3% trail, must exit by EOD (handled by close cron)
-    //   swing: profile default (5% trail, max_hold_days cap)
+    //   swing: profile default (4% trail, max_hold_days cap)
     const profile = profileFor(broker)
     const isTrend = meta.hold_mode === 'trend'
     const isDay   = meta.hold_mode === 'day'

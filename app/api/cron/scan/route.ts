@@ -169,19 +169,20 @@ async function runScan(
   // in one scan run don't collectively bypass the cap.
   // Paper: 80% max deployed — keeps 20% dry powder for high-score setups.
   // Live (Schwab): 70% max — real money stays conservative.
-  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.90  // paper: deploy up to 90% — it's fake money, use it
+  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.95  // paper: deploy up to 95% — use ALL capital
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
   if (totalMarketValue / equity > MAX_EXPOSURE) {
     // Before hard-blocking: cut the worst open loser (pnl_pct most negative) if a
-    // high-score setup is queued. This auto-rotates capital without user involvement.
+    // high-score setup is queued. Paper: rotate anything > -0.5% loss — fast recycling.
+    const rotateThreshold = isSchwab ? -1.5 : -0.5
     const worstLoser = positions
-      .filter((p) => p.pnl_pct < -1.5 && p.asset_type !== 'OPTION')
+      .filter((p) => p.pnl_pct < rotateThreshold && p.asset_type !== 'OPTION')
       .sort((a, b) => a.pnl_pct - b.pnl_pct)[0]
     if (worstLoser) {
       console.log(`[${broker}] Exposure at ${(totalMarketValue/equity*100).toFixed(0)}% — auto-rotating out of ${worstLoser.symbol} (${worstLoser.pnl_pct.toFixed(1)}%) to free capital`)
       const rotateResult = isSchwab
         ? await SchwabBroker.placeOrder(worstLoser.symbol, Math.abs(worstLoser.quantity), 'SELL', 'MARKET')
-        : await AlpacaBroker.placeOrder(worstLoser.symbol, Math.abs(worstLoser.quantity), 'SELL', 'MARKET')
+        : await AlpacaBroker.closePosition(worstLoser.symbol)
       if (rotateResult.status === 'PLACED') {
         await db.from('tb_alerts').insert({ type: 'SELL', symbol: worstLoser.symbol, broker,
           message: `[ROTATE] Sold ${worstLoser.symbol} (${worstLoser.pnl_pct.toFixed(1)}%) to free capacity for new high-score entry` })
@@ -240,7 +241,7 @@ async function runScan(
     marketTier    = 'BAD'
     // Paper: still trade in bad markets — that's the lab. Half the live penalty.
     dynamicMinConf = isSchwab ? Math.max(profile.min_confidence + 12, 65) : profile.min_confidence + 6
-    dynamicMaxPos  = isSchwab ? Math.min(profile.max_positions, 6) : Math.min(profile.max_positions, 8)
+    dynamicMaxPos  = isSchwab ? Math.min(profile.max_positions, 6) : Math.min(profile.max_positions, 16)
   } else if (vix > 22) {
     marketTier    = 'TOUGH'
     dynamicMinConf = isSchwab ? profile.min_confidence + 5 : profile.min_confidence + 2
@@ -248,8 +249,7 @@ async function runScan(
   } else {
     marketTier    = 'GOOD'
     dynamicMinConf = profile.min_confidence
-    // Paper in a good market: expand to 18 positions (max aggressive lab)
-    dynamicMaxPos  = !isSchwab ? 18 : profile.max_positions
+    dynamicMaxPos  = profile.max_positions  // paper GOOD market: full 40 positions
   }
 
   // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).

@@ -76,6 +76,26 @@ export async function closePosition(symbol: string): Promise<OrderResult> {
   return { symbol, quantity: 0, action: 'SELL', status: 'PLACED' }
 }
 
+export interface StockSnapshot {
+  dailyBar:     { o: number; h: number; l: number; c: number; v: number; vw: number }
+  prevDailyBar: { o: number; h: number; l: number; c: number; v: number; vw: number }
+  latestTrade:  { p: number; s: number }
+}
+
+/** Batch fetch snapshots for volume surge detection.
+ *  Returns { SYMBOL: snapshot } map — empty entries mean no data for that symbol. */
+export async function getSnapshots(symbols: string[]): Promise<Record<string, StockSnapshot>> {
+  if (symbols.length === 0) return {}
+  try {
+    const qs = symbols.map(encodeURIComponent).join(',')
+    const res = await fetch(`${DATA_URL}/stocks/snapshots?symbols=${qs}&feed=iex`, {
+      headers: headers(), cache: 'no-store',
+    })
+    if (!res.ok) return {}
+    return (await res.json()) as Record<string, StockSnapshot>
+  } catch { return {} }
+}
+
 /** Cancel all open orders for a specific symbol before placing a partial sell.
  *  Required because Alpaca rejects partial sells when a conflicting stop order is active. */
 export async function cancelOpenOrdersFor(symbol: string): Promise<void> {

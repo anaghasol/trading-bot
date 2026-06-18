@@ -31,30 +31,30 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     key: 'schwab',
     label: 'Schwab · Real (Protected)',
     vibe: 'protected',
-    risk_pct: 0.02,             // 2% per trade — slightly more assertive (was 1.5%)
-    max_positions: 4,           // 4 concurrent (was 3 — room for one more swing)
-    min_confidence: 72,         // 72% gate (was 74) — BREAKOUT with ema≥8 now bypasses anyway
+    risk_pct: 0.02,             // 2% per trade
+    max_positions: 4,           // 4 concurrent PDT-safe swings
+    min_confidence: 72,         // 72% gate — BREAKOUT with ema≥8 now bypasses anyway
     allow_day_trades: false,    // PDT-safe swing (1–5 day holds)
-    initial_stop_pct: 0.04,     // 4% initial stop
+    initial_stop_pct: 0.04,     // 4% initial stop — real money needs room
     trail_pct: 0.05,
     daily_loss_stop_pct: 0.05,  // −5% halts the day
     max_hold_days: 5,
     scan_universe: 'core',
   },
 
-  // ── PAPER money: aggressive lab — use ALL the fake money to find edge ──
+  // ── PAPER money: maximum aggression — deploy ALL capital, 40 positions, fast cuts ──
   alpaca_paper: {
     key: 'alpaca_paper',
-    label: 'Alpaca · Paper (Aggressive Lab)',
+    label: 'Alpaca · Paper (Max Aggressive)',
     vibe: 'aggressive',
-    risk_pct: 0.075,            // 7.5% per trade — push sizing hard on fake money
-    max_positions: 18,          // 18 concurrent — fill the lab
-    min_confidence: 28,         // 28% gate — paper is for discovery (EMA bypass handles quality)
+    risk_pct: 0.025,            // 2.5% per trade — smaller per-trade so 40 positions fit
+    max_positions: 40,          // 40 concurrent — fill every slot, diversify the P&L
+    min_confidence: 28,         // 28% gate — EMA bypass handles quality control
     allow_day_trades: true,
-    initial_stop_pct: 0.04,     // 4% initial stop
-    trail_pct: 0.06,            // 6% trailing
-    daily_loss_stop_pct: 0.22,  // −22% daily breaker — wider for aggressive lab
-    max_hold_days: 5,
+    initial_stop_pct: 0.02,     // 2% initial stop — CUT FAST, recycle capital immediately
+    trail_pct: 0.04,            // 4% trailing — tighter → lock gains sooner
+    daily_loss_stop_pct: 0.15,  // −15% daily breaker (tighter than before — protect capital)
+    max_hold_days: 3,           // 3-day max — if it hasn't moved, move on
     scan_universe: 'wide',
   },
 }
