@@ -411,6 +411,7 @@ async function runScan(
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
 
   let tradesMade = 0
+  const enteredSymbols = new Set<string>()   // track entries to build fast-scan queue
   const openSlots = dynamicMaxPos - positions.length
   const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 80)  // paper: review up to 80 ranked
 
@@ -583,6 +584,7 @@ async function runScan(
 
     if (buy.status === 'PLACED') {
       runningExposure += tradeCost  // keep cap accurate within this scan run
+      enteredSymbols.add(rec.symbol)
       tradesMade++
 
       const initialStop = quote.price * (1 - sizing.stop_pct)
@@ -625,6 +627,23 @@ async function runScan(
         stop: initialStop, target,
       })
     }
+  }
+
+  // Cache unentered AI picks for the 1-min fast-entry scan (no Claude cost).
+  // Fast scan reads this queue, checks live quotes, enters mechanically within 60s.
+  if (!isSchwab) {
+    const fastQueue = ranked
+      .filter((item) => !enteredSymbols.has(item.rec.symbol) && (item.rec.ema_score ?? 0) >= 3)
+      .slice(0, 20)
+      .map((item) => ({
+        symbol:     item.rec.symbol,
+        confidence: item.rec.confidence,
+        ema_score:  item.rec.ema_score ?? 0,
+        hold_mode:  item.rec.hold_mode ?? 'swing',
+        setup:      item.rec.setup ?? 'EMA_PULLBACK',
+        cached_at:  Date.now(),
+      }))
+    void db.from('tb_settings').upsert({ key: 'fast_entry_queue', value: JSON.stringify(fastQueue) })
   }
 
   // Diagnostic: if AI scored setups but all came back below confidence gate, say so
