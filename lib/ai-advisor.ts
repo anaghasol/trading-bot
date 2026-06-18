@@ -345,9 +345,9 @@ export async function getRecommendations(
     if (!seenSyms.has(s.symbol)) { seenSyms.add(s.symbol); mergedSetups.push(s) }
   }
 
-  // Paper gets 80 setups to the mechanical scanner — aggressive lab needs wide coverage.
+  // Paper gets 100 setups to the mechanical scanner — aggressive lab needs wide coverage.
   // Live gets 8 — real money only rates the very best mechanical setups.
-  const rawLimit = isPaper ? 80 : 8
+  const rawLimit = isPaper ? 100 : 8
   const rawSetups = mergedSetups
     .filter((s) => !heldSymbols.includes(s.symbol))
     .slice(0, rawLimit)
@@ -442,9 +442,8 @@ export async function getRecommendations(
     return true
   })
   // Send ALL news-filtered setups to Claude — no artificial cap for paper.
-  // 50+ setups fit comfortably in one Claude call (each is ~200 chars JSON).
   // Live gets 6 — real money only rates the best.
-  const aiLimit  = isPaper ? 80 : 6
+  const aiLimit  = isPaper ? 100 : 6
   const aiSetups = setups.slice(0, aiLimit)
 
   // 6. Claude + OpenAI IN PARALLEL — each sees chart data + all signals in one prompt

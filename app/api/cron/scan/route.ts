@@ -248,8 +248,8 @@ async function runScan(
   } else {
     marketTier    = 'GOOD'
     dynamicMinConf = profile.min_confidence
-    // Paper in a good market: expand to 15 positions (max aggressive lab)
-    dynamicMaxPos  = !isSchwab ? 15 : profile.max_positions
+    // Paper in a good market: expand to 18 positions (max aggressive lab)
+    dynamicMaxPos  = !isSchwab ? 18 : profile.max_positions
   }
 
   // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).
@@ -372,6 +372,25 @@ async function runScan(
     }
   }
 
+  // Dip Runner boost (paper only): Stage 2 uptrenders pulling back on volume = ideal entry.
+  // Logic: supercycle-confirmed stock (SNDK-pattern) + strong RS score + AI hesitant (conf<60)
+  // = AI is seeing short-term risk on a long-term winner. Boost it into trend hold.
+  // This is the SNDK pattern: stock that compounded 3-5x runs in weeks, buy every dip.
+  if (!isSchwab) {
+    for (const item of rankedPre) {
+      const rs = research.get(item.rec.symbol)
+      const isStage2Runner = item.supercycle || (rs && rs.score >= 7.5)
+      const aiHesitant    = item.rec.confidence < 60   // AI sees risk = likely dipping
+      const hasStructure  = (item.rec.ema_score ?? 0) >= 4
+      if (isStage2Runner && aiHesitant && hasStructure) {
+        const oldConf = item.rec.confidence
+        item.rec.confidence = Math.min(80, item.rec.confidence + 18)
+        item.rec.hold_mode  = 'trend'  // hold through dip, don't day-trade out
+        console.log(`[DIP_RUNNER][paper] ${item.rec.symbol}: SC=${item.supercycle} RS=${rs?.score?.toFixed(1)} ema=${item.rec.ema_score} conf ${oldConf}→${item.rec.confidence}% → TREND`)
+      }
+    }
+  }
+
   // Paper mode: EMA score IS the quality gate. Claude ranks/sizes, doesn't veto.
   // If the mechanical scanner gives ≥5/10, that stock has a real setup — trade it.
   // Bypassed setups get confidence floored at 50 so sizing math works correctly.
@@ -389,7 +408,7 @@ async function runScan(
 
   let tradesMade = 0
   const openSlots = dynamicMaxPos - positions.length
-  const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 60)  // paper: review up to 60 ranked
+  const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 80)  // paper: review up to 80 ranked
 
   const skipReasons: string[] = []  // collected per scan tick, sent as one TG if no trades made
 
@@ -408,12 +427,14 @@ async function runScan(
     if (!isSchwab) {
       try {
         const yhRes = await fetch(
-          `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${rec.symbol}&fields=regularMarketPrice`,
+          `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${rec.symbol}&fields=regularMarketPrice,regularMarketChangePercent`,
           { headers: { 'User-Agent': 'Mozilla/5.0' } }
         )
         if (yhRes.ok) {
           const yhData = await yhRes.json()
-          const yhPrice: number = yhData?.quoteResponse?.result?.[0]?.regularMarketPrice ?? 0
+          const yhResult = yhData?.quoteResponse?.result?.[0] ?? {}
+          const yhPrice: number = yhResult.regularMarketPrice ?? 0
+          const yhChangePct: number = yhResult.regularMarketChangePercent ?? 0
           if (yhPrice > 0 && Math.abs(quote.price - yhPrice) / yhPrice > 0.30) {
             const msg = `[alpaca] Stale IEX price ${rec.symbol}: IEX=$${quote.price.toFixed(2)} vs Yahoo=$${yhPrice.toFixed(2)} (${(Math.abs(quote.price - yhPrice)/yhPrice*100).toFixed(0)}% diff) — skipping trade`
             console.warn(msg)
@@ -421,8 +442,11 @@ async function runScan(
             skipReasons.push(`${rec.symbol}: stale IEX $${quote.price.toFixed(0)} vs Yahoo $${yhPrice.toFixed(0)}`)
             continue
           }
-          // If Yahoo agrees within 30%, use Yahoo price for entry — it's fresher
           if (yhPrice > 0) quote.price = yhPrice
+          // Log dip entry for monitoring — dip runners are best entered on red days
+          if (rec.hold_mode === 'trend' && yhChangePct < -2) {
+            console.log(`[DIP_ENTRY][paper] ${rec.symbol}: buying dip ${yhChangePct.toFixed(1)}% today @ $${yhPrice.toFixed(2)} — TREND hold`)
+          }
         }
       } catch { /* if Yahoo check fails, proceed with broker quote */ }
     }
