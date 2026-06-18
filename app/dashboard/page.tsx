@@ -485,10 +485,27 @@ export default function DashboardPage() {
   // market-hours-aware polling: fast when open, slow when closed
   useEffect(() => {
     load(broker)
-    const ms = market.open ? 7000 : 60000
+    const ms = market.open ? 5000 : 60000
     const iv = setInterval(() => load(broker), ms)
     return () => clearInterval(iv)
   }, [broker, market.open, load])
+
+  // Fast balance-only poll every 3s — updates account value + P&L without waiting for full load.
+  // Keeps the number feeling live even between full 7s refreshes.
+  useEffect(() => {
+    if (!market.open) return
+    const fastPoll = async () => {
+      try {
+        const paper = broker === 'alpaca_paper'
+        const res = await fetch(paper ? '/api/alpaca/account' : '/api/schwab/account')
+        if (!res.ok) return
+        const data = await res.json()
+        if (data && !data.error) setSummaryData((prev) => prev?.broker === broker ? { broker, data } : prev)
+      } catch { /* silent — full 7s load is the source of truth */ }
+    }
+    const iv = setInterval(fastPoll, 3000)
+    return () => clearInterval(iv)
+  }, [broker, market.open])
 
   // Hot list + scan status auto-refresh every 30s
   useEffect(() => {
