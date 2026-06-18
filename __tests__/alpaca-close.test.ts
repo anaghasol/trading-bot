@@ -114,6 +114,58 @@ describe('placeOrder OCC side detection', () => {
   })
 })
 
+// ── cancelOpenOrdersFor ───────────────────────────────────────────────────────
+describe('cancelOpenOrdersFor', () => {
+  beforeEach(() => {
+    jest.resetModules()
+    mockFetch.mockReset()
+  })
+
+  it('cancels only orders matching the target symbol', async () => {
+    // First call: GET /orders?status=open → 3 orders, 2 for COIN, 1 for AMD
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([
+        { id: 'order-coin-1', symbol: 'COIN', status: 'accepted' },
+        { id: 'order-coin-2', symbol: 'COIN', status: 'accepted' },
+        { id: 'order-amd-1',  symbol: 'AMD',  status: 'accepted' },
+      ]),
+    })
+    // Two DELETE calls for the two COIN orders
+    mockFetch.mockResolvedValue({ ok: true })
+
+    const { cancelOpenOrdersFor } = await import('../lib/alpaca')
+    await cancelOpenOrdersFor('COIN')
+
+    const deleteCalls = mockFetch.mock.calls.filter(
+      (c: unknown[]) => (c[1] as RequestInit)?.method === 'DELETE'
+    )
+    expect(deleteCalls).toHaveLength(2)
+    const deletedUrls = deleteCalls.map((c: unknown[]) => c[0] as string)
+    expect(deletedUrls).toContain(`${ALPACA_BASE}/orders/order-coin-1`)
+    expect(deletedUrls).toContain(`${ALPACA_BASE}/orders/order-coin-2`)
+    // AMD order must NOT be cancelled
+    expect(deletedUrls).not.toContain(`${ALPACA_BASE}/orders/order-amd-1`)
+  })
+
+  it('does nothing when there are no open orders', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) })
+    const { cancelOpenOrdersFor } = await import('../lib/alpaca')
+    await cancelOpenOrdersFor('COIN')
+    const deleteCalls = mockFetch.mock.calls.filter(
+      (c: unknown[]) => (c[1] as RequestInit)?.method === 'DELETE'
+    )
+    expect(deleteCalls).toHaveLength(0)
+  })
+
+  it('is non-fatal when the orders endpoint fails', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false })
+    const { cancelOpenOrdersFor } = await import('../lib/alpaca')
+    // Should not throw
+    await expect(cancelOpenOrdersFor('COIN')).resolves.toBeUndefined()
+  })
+})
+
 // Spot-check OCC regex via the shared utility (same regex used in alpaca.ts)
 describe('OCC symbol regex (shared with lib/options-exit)', () => {
   const validSymbols = [

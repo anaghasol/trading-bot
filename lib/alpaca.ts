@@ -66,12 +66,29 @@ async function del(path: string): Promise<boolean> {
   return res.ok
 }
 
-/** Close an entire position by symbol (works for stocks AND options). */
+/** Close an entire position by symbol (works for stocks AND options).
+ *  Uses DELETE /positions/{symbol} which atomically cancels any open bracket/stop
+ *  orders AND closes the position in one call — no conflicting order errors. */
 export async function closePosition(symbol: string): Promise<OrderResult> {
   const encoded = encodeURIComponent(symbol)
   const ok = await del(`/positions/${encoded}`)
   if (!ok) return { symbol, quantity: 0, action: 'SELL', status: 'FAILED', error: 'Alpaca close position failed' }
   return { symbol, quantity: 0, action: 'SELL', status: 'PLACED' }
+}
+
+/** Cancel all open orders for a specific symbol before placing a partial sell.
+ *  Required because Alpaca rejects partial sells when a conflicting stop order is active. */
+export async function cancelOpenOrdersFor(symbol: string): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}/orders?status=open`, {
+      method: 'GET', headers: headers(), cache: 'no-store',
+    }).then(async (r) => {
+      if (!r.ok) return
+      const orders = await r.json() as Array<{ id: string; symbol: string; status: string }>
+      const toCancel = orders.filter(o => o.symbol === symbol)
+      await Promise.all(toCancel.map(o => del(`/orders/${o.id}`)))
+    })
+  } catch { /* non-fatal — proceed with the sell anyway */ }
 }
 
 // ── Account ───────────────────────────────────────────────────────────────────

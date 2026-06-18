@@ -289,8 +289,9 @@ async function monitorBroker(
     if (!meta.partial_done && gainPct >= P1_PCT && canExit) {
       const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * partialFrac))
       const pct_label  = `${Math.round(partialFrac * 100)}%`
-      const stopId = extractStopOrderId(meta.reason)
-      if (stopId) await api.cancelOrder(stopId)
+      // Cancel any open bracket/stop orders before selling — Alpaca rejects partial sells with conflicting orders
+      if (broker === 'alpaca_paper') await AlpacaBroker.cancelOpenOrdersFor(pos.symbol)
+      else { const stopId = extractStopOrderId(meta.reason); if (stopId) await api.cancelOrder(stopId) }
 
       const sellOrder = await api.placeOrder(pos.symbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
       if (sellOrder.status === 'PLACED') {
@@ -316,6 +317,7 @@ async function monitorBroker(
     // Tier 2 — second partial (33% of what's left — preserve most for trailing stop)
     if (meta.partial_done && !meta.p2_done && gainPct >= P2_PCT && canExit && noHold) {
       const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.33))
+      if (broker === 'alpaca_paper') await AlpacaBroker.cancelOpenOrdersFor(pos.symbol)
       const sellOrder = await api.placeOrder(pos.symbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
       if (sellOrder.status === 'PLACED') {
         partial++
@@ -413,7 +415,12 @@ async function monitorBroker(
       continue
     }
 
-    const order = await api.placeOrder(pos.symbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
+    // For Alpaca paper: use DELETE /positions endpoint — atomically cancels any open
+    // bracket/stop orders AND closes the position. Avoids "conflicting order" rejection
+    // that causes stops to silently fail when a bracket order is already active.
+    const order = broker === 'alpaca_paper'
+      ? await AlpacaBroker.closePosition(pos.symbol)
+      : await api.placeOrder(pos.symbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
     if (order.status === 'PLACED') {
       closed++
       const pnl = pos.unrealized_pnl
