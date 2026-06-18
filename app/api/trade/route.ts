@@ -31,8 +31,11 @@ export async function POST(req: Request) {
   let order
   if (broker === 'schwab') {
     order = await Schwab.placeOrder(sym, qty, action, orderType, limitPrice)
+  } else if (action === 'SELL') {
+    // Use Alpaca's close-position endpoint — works for stocks AND options without
+    // needing to specify side (sell / sell_to_close) per asset class.
+    order = await Alpaca.closePosition(sym)
   } else {
-    // alpaca_paper or alpaca_live
     order = await Alpaca.placeOrder(sym, qty, action, orderType, limitPrice)
   }
 

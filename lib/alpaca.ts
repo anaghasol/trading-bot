@@ -66,6 +66,14 @@ async function del(path: string): Promise<boolean> {
   return res.ok
 }
 
+/** Close an entire position by symbol (works for stocks AND options). */
+export async function closePosition(symbol: string): Promise<OrderResult> {
+  const encoded = encodeURIComponent(symbol)
+  const ok = await del(`/positions/${encoded}`)
+  if (!ok) return { symbol, quantity: 0, action: 'SELL', status: 'FAILED', error: 'Alpaca close position failed' }
+  return { symbol, quantity: 0, action: 'SELL', status: 'PLACED' }
+}
+
 // ── Account ───────────────────────────────────────────────────────────────────
 
 export async function getAccountBalance(): Promise<number | null> {

@@ -482,16 +482,15 @@ export default function DashboardPage() {
     setPdt(null)
   }, [broker])
 
-  // market-hours-aware polling: fast when open, slow when closed
+  // market-hours-aware polling: full data refresh
   useEffect(() => {
     load(broker)
-    const ms = market.open ? 5000 : 60000
+    const ms = market.open ? 10000 : 60000   // 10s open, 60s closed (was 5s — caused shake)
     const iv = setInterval(() => load(broker), ms)
     return () => clearInterval(iv)
   }, [broker, market.open, load])
 
-  // Fast balance-only poll every 3s — updates account value + P&L without waiting for full load.
-  // Keeps the number feeling live even between full 7s refreshes.
+  // Balance-only fast poll every 8s (was 3s — too aggressive, caused layout jitter)
   useEffect(() => {
     if (!market.open) return
     const fastPoll = async () => {
@@ -501,9 +500,9 @@ export default function DashboardPage() {
         if (!res.ok) return
         const data = await res.json()
         if (data && !data.error) setSummaryData((prev) => prev?.broker === broker ? { broker, data } : prev)
-      } catch { /* silent — full 7s load is the source of truth */ }
+      } catch { /* silent */ }
     }
-    const iv = setInterval(fastPoll, 3000)
+    const iv = setInterval(fastPoll, 8000)
     return () => clearInterval(iv)
   }, [broker, market.open])
 
