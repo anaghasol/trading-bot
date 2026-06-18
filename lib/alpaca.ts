@@ -122,6 +122,8 @@ export async function getPositions(): Promise<Position[]> {
 
 // ── Orders ────────────────────────────────────────────────────────────────────
 
+const OCC_RE = /^[A-Z]{1,6}\d{6}[CP]\d{8}$/
+
 export async function placeOrder(
   symbol: string,
   quantity: number,
@@ -129,10 +131,11 @@ export async function placeOrder(
   orderType: 'MARKET' | 'LIMIT' = 'MARKET',
   limitPrice?: number
 ): Promise<OrderResult> {
+  const isOption = OCC_RE.test(symbol)
   const body: Record<string, unknown> = {
     symbol,
     qty:            quantity,
-    side:           action.toLowerCase(),
+    side:           isOption ? (action === 'BUY' ? 'buy_to_open' : 'sell_to_close') : action.toLowerCase(),
     type:           orderType.toLowerCase(),
     time_in_force:  'day',
   }

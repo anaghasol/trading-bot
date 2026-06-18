@@ -1045,7 +1045,7 @@ export default function DashboardPage() {
                             <td style={{ textAlign: 'right' }}>{money(p.market_value)}</td>
                             <td style={{ textAlign: 'right' }}>
                               <button className="closex" onClick={() => {
-                                fetch('/api/trade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: p.symbol, quantity: Math.abs(p.quantity), action: 'SELL', broker }) }).then(() => setTimeout(() => load(broker), 1500))
+                                fetch('/api/trade', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol: p.raw_symbol ?? p.symbol, quantity: Math.abs(p.quantity), action: 'SELL', broker }) }).then(() => setTimeout(() => load(broker), 1500))
                               }}>Close</button>
                             </td>
                           </tr>
