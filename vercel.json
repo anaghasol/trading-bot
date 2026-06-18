@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/monitor",
-      "schedule": "*/5 13-20 * * 1-5"
+      "schedule": "*/2 13-20 * * 1-5"
     },
     {
       "path": "/api/cron/close",

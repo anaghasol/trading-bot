@@ -331,6 +331,20 @@ async function monitorBroker(
       }
     }
 
+    // Flat recycling (paper only): if a position has been stuck within ±2% for 2+ calendar days,
+    // close it and free the slot for a fresh setup. Winners and trend holds are exempt.
+    if (broker === 'alpaca_paper' && holdDays >= 2 && Math.abs(gainPct) < 2 && meta.hold_mode !== 'trend') {
+      const order = await AlpacaBroker.closePosition(pos.symbol)
+      if (order.status === 'PLACED') {
+        closed++
+        runningPnl += pos.unrealized_pnl
+        if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl, pnl_pct: pos.pnl_pct, days_held: holdDays, closed_at: new Date().toISOString() }).eq('id', meta.id)
+        void db.from('tb_alerts').insert({ type: 'SELL', symbol: pos.symbol, broker, message: `[FLAT_RECYCLE] ${pos.symbol} closed: ${holdDays}d held, ${gainPct.toFixed(1)}% — slot freed for new setup` })
+        statuses.push(`${pos.symbol}: FLAT_RECYCLE — ${holdDays}d, ${gainPct.toFixed(1)}%`)
+        continue
+      }
+    }
+
     // Full exit check — hold_mode determines trail width and calendar limit
     //   trend: starts at 8% trail, tightens to 4% once up 30%, floor at breakeven once up 8%
     //   day:   tight 3% trail, must exit by EOD (handled by close cron)
