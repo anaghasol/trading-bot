@@ -24,6 +24,7 @@ import { getCategoryMomentum, biasForSymbol, categoryLabel, type RotationResult 
 import { getSleeveAllocation, sleeveForSetup, sleeveSizing } from '@/lib/sleeves'
 import { getActiveIntentions, markActed } from '@/lib/tg-intentions'
 import { batchResearch, applyResearchBoost } from '@/lib/research-score'
+import { getRuntimeConfig } from '@/lib/runtime-config'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -72,6 +73,9 @@ async function runScan(
   const isSchwab = broker === 'schwab'
   const api      = isSchwab ? SchwabBroker : AlpacaBroker
   const profile  = profileFor(broker)
+  // Runtime config overrides profile — EOD auto-tuner writes here so adjustments
+  // take effect next scan cycle without a code deploy
+  const runtimeCfg = await getRuntimeConfig(broker)
 
   // Strategy boost: Growth page can temporarily boost one strategy for 48h.
   // Reads tb_settings 'strategy_boost' → { name, mult, expires_at }
@@ -237,19 +241,22 @@ async function runScan(
   let dynamicMinConf: number
   let dynamicMaxPos: number
 
+  // Base gate + max positions from runtime config (EOD tuner adjusts these daily)
+  const baseConf = runtimeCfg.min_confidence
+  const baseMax  = runtimeCfg.max_positions
+
   if (!aboveSma || vix > 28) {
     marketTier    = 'BAD'
-    // Paper: still trade in bad markets — that's the lab. Half the live penalty.
-    dynamicMinConf = isSchwab ? Math.max(profile.min_confidence + 12, 65) : profile.min_confidence + 6
-    dynamicMaxPos  = isSchwab ? Math.min(profile.max_positions, 6) : Math.min(profile.max_positions, 16)
+    dynamicMinConf = isSchwab ? Math.max(baseConf + 12, 65) : baseConf + 6
+    dynamicMaxPos  = isSchwab ? Math.min(baseMax, 6) : Math.min(baseMax, 16)
   } else if (vix > 22) {
     marketTier    = 'TOUGH'
-    dynamicMinConf = isSchwab ? profile.min_confidence + 5 : profile.min_confidence + 2
-    dynamicMaxPos  = profile.max_positions
+    dynamicMinConf = isSchwab ? baseConf + 5 : baseConf + 2
+    dynamicMaxPos  = baseMax
   } else {
     marketTier    = 'GOOD'
-    dynamicMinConf = profile.min_confidence
-    dynamicMaxPos  = profile.max_positions  // paper GOOD market: full 40 positions
+    dynamicMinConf = baseConf
+    dynamicMaxPos  = baseMax
   }
 
   // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).
