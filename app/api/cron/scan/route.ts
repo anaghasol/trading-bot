@@ -384,7 +384,7 @@ async function runScan(
       const isRunner      = item.supercycle || rsScore >= 5  // strong RS vs SPY
       const aiHesitant    = item.rec.confidence < 65         // AI uncertain = likely dipping
       const hasStructure  = (item.rec.ema_score ?? 0) >= 3   // any mechanical structure
-      const boost         = item.supercycle ? 20 : 15        // supercycle = bigger boost
+      const boost         = item.supercycle ? 25 : 20        // supercycle = bigger boost
       if (isRunner && aiHesitant && hasStructure && dipRunnerCount < 4) {
         const oldConf = item.rec.confidence
         item.rec.confidence = Math.min(82, item.rec.confidence + boost)
