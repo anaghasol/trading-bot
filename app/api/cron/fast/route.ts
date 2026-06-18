@@ -20,22 +20,27 @@ export const maxDuration = 30
 // Wide momentum universe — scanned every minute for volume surges
 const SURGE_UNIVERSE = [
   // Mega-cap momentum
-  'NVDA', 'AMD', 'TSLA', 'META', 'AMZN', 'MSFT', 'GOOGL', 'AAPL', 'NFLX',
+  'NVDA', 'AMD', 'TSLA', 'META', 'AMZN', 'MSFT', 'GOOGL', 'AAPL', 'NFLX', 'ORCL',
   // High-beta tech
   'CRM', 'SNOW', 'PLTR', 'ARM', 'SMCI', 'CRWD', 'PANW', 'ZS', 'DDOG', 'NET',
-  'APP', 'RDDT', 'RKLB', 'SOUN', 'MELI', 'SHOP', 'SQ', 'PYPL',
+  'APP', 'RDDT', 'RKLB', 'SOUN', 'MELI', 'SHOP', 'SQ', 'PYPL', 'UBER', 'LYFT',
+  'ABNB', 'DASH', 'SNAP', 'PINS', 'TTD', 'ROKU', 'SPOT',
   // Crypto proxy
-  'COIN', 'HOOD', 'MSTR', 'RIOT', 'MARA', 'CLSK', 'IREN', 'CIFR',
+  'COIN', 'HOOD', 'MSTR', 'RIOT', 'MARA', 'CLSK', 'IREN', 'CIFR', 'HUT', 'BTBT',
   // Biotech momentum
-  'MRNA', 'BNTX', 'NVAX', 'SAVA', 'RXRX',
+  'MRNA', 'BNTX', 'NVAX', 'SAVA', 'RXRX', 'SRPT', 'RARE', 'BEAM', 'EDIT',
   // EV / clean energy
-  'RIVN', 'LCID', 'NIO', 'CHPT', 'PLUG', 'BE',
+  'RIVN', 'LCID', 'NIO', 'CHPT', 'PLUG', 'BE', 'BLNK', 'EVGO', 'FSR',
   // Finance / fintech
-  'SOFI', 'UPST', 'AFRM', 'NU', 'ALLY',
+  'SOFI', 'UPST', 'AFRM', 'NU', 'ALLY', 'LC', 'OPEN', 'NRDS',
   // Semiconductors
-  'AVGO', 'QCOM', 'MRVL', 'AMAT', 'LRCX', 'KLAC', 'ENTG',
-  // Momentum wildcards
-  'GME', 'BBAI', 'JOBY', 'ACHR', 'LUNR',
+  'AVGO', 'QCOM', 'MRVL', 'AMAT', 'LRCX', 'KLAC', 'ENTG', 'ON', 'WOLF', 'AXTI',
+  // ETFs with options (leveraged = fast moves)
+  'TQQQ', 'SOXL', 'LABU', 'FNGU', 'TECL',
+  // Momentum wildcards + meme potential
+  'GME', 'BBAI', 'JOBY', 'ACHR', 'LUNR', 'RCAT', 'OKLO', 'SMR', 'VSST',
+  // Large-cap RS leaders (often dip-buyable)
+  'GS', 'JPM', 'MS', 'V', 'MA', 'PYPL', 'IBKR',
 ]
 
 interface QueueItem {
@@ -92,15 +97,16 @@ async function getVolumeSurgeCandidates(
       const todayLast = snap.dailyBar.c ?? snap.latestTrade?.p ?? 0
       const changePct = prevClose > 0 ? ((todayLast - prevClose) / prevClose) * 100 : 0
 
-      // 2× volume surge + positive day = momentum entry
-      if (surgeMult >= 2.0 && changePct > 0.3) {
+      // 1.5× volume surge + any positive move = momentum entry (was 2×/0.3%)
+      // Lower threshold = catches more early-stage surges before they get crowded
+      if (surgeMult >= 1.5 && changePct > 0.1) {
         results.push({ symbol: sym, surgeMult, changePct })
       }
     }
   }
 
-  // Best surges first
-  return results.sort((a, b) => b.surgeMult - a.surgeMult).slice(0, 8)
+  // Best surges first — return up to 15 (was 8) so fast scan fills more slots per cycle
+  return results.sort((a, b) => b.surgeMult - a.surgeMult).slice(0, 15)
 }
 
 export async function GET(req: Request) {

@@ -388,13 +388,14 @@ async function runScan(
     for (const item of rankedPre) {
       const rs = research.get(item.rec.symbol)
       const rsScore = rs?.score ?? 0
-      const isRunner      = item.supercycle || rsScore >= 5  // strong RS vs SPY
-      const aiHesitant    = item.rec.confidence < 65         // AI uncertain = likely dipping
-      const hasStructure  = (item.rec.ema_score ?? 0) >= 3   // any mechanical structure
-      const boost         = item.supercycle ? 25 : 20        // supercycle = bigger boost
-      if (isRunner && aiHesitant && hasStructure && dipRunnerCount < 4) {
+      // Widened: RS ≥ 4 (was 5), aiHesitant < 70 (was 65), ema ≥ 2 (was 3), cap 8 (was 4)
+      const isRunner      = item.supercycle || rsScore >= 4  // outperforming SPY
+      const aiHesitant    = item.rec.confidence < 70         // AI uncertain = likely dipping
+      const hasStructure  = (item.rec.ema_score ?? 0) >= 2   // minimal mechanical structure
+      const boost         = item.supercycle ? 28 : 22        // slightly bigger boost too
+      if (isRunner && aiHesitant && hasStructure && dipRunnerCount < 8) {
         const oldConf = item.rec.confidence
-        item.rec.confidence = Math.min(82, item.rec.confidence + boost)
+        item.rec.confidence = Math.min(85, item.rec.confidence + boost)
         item.rec.hold_mode  = 'trend'
         dipRunnerCount++
         console.log(`[DIP_RUNNER][paper] ${item.rec.symbol}: SC=${item.supercycle} RS=${rsScore.toFixed(1)} ema=${item.rec.ema_score} +${boost} → conf ${oldConf}→${item.rec.confidence}% TREND`)
