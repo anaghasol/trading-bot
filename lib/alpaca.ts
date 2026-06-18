@@ -62,8 +62,17 @@ async function post<T>(path: string, body: object): Promise<{ data: T } | { erro
 }
 
 async function del(path: string): Promise<boolean> {
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'DELETE', headers: headers() })
-  return res.ok
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, { method: 'DELETE', headers: headers() })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      console.error(`[alpaca] DELETE ${path} → ${res.status}: ${text}`)
+    }
+    return res.ok
+  } catch (e) {
+    console.error(`[alpaca] DELETE ${path} network error:`, e)
+    return false
+  }
 }
 
 /** Close an entire position by symbol (works for stocks AND options).

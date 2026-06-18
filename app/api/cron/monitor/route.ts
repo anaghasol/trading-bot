@@ -417,11 +417,19 @@ async function monitorBroker(
       : isDay ? 0.03 : profile.trail_pct
     const effectiveMaxHold = isTrend ? 999  : profile.max_hold_days  // trend: never force-close on calendar
 
+    // For paper: always use the profile's initial_stop_pct — never let the sleeve's wider stop
+    // (5-8%) override it. Sleeve stops exist for sizing, not exit decisions. With 2% profile stop,
+    // a position at -4.99% should have been cut at -2% — not held to -5% by the sleeve record.
+    const profileInitialStop = meta.entry_price * (1 - profile.initial_stop_pct)
+    const recordedStop       = meta.initial_stop
+    const baseInitialStop    = broker === 'alpaca_paper'
+      ? Math.max(profileInitialStop, recordedStop)  // use TIGHTER of profile vs recorded
+      : recordedStop
+
     // Trend breakeven floor: once up 6%, floor the initial stop at entry price.
-    // Many strong trends pull back 6-10% before continuing — protect early.
     const effectiveInitialStop = isTrend && gainPct >= 6
-      ? Math.max(meta.initial_stop, meta.entry_price)
-      : meta.initial_stop
+      ? Math.max(baseInitialStop, meta.entry_price)
+      : baseInitialStop
 
     const exit = checkExitCondition(
       pos.current_price, meta.entry_price, meta.peak_price, effectiveInitialStop,

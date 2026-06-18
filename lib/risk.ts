@@ -90,8 +90,9 @@ export function checkExitCondition(
   const in_profit = pnl_pct >= 1.0  // 1%+ up = in profit territory
 
   // ── Hard loss cap ─────────────────────────────────────────────────────────
-  // Paper: 10% max loss. Live: 5% max loss. Never let it go past this.
-  const hard_stop_pct = is_paper ? -10 : -5
+  // Paper: 5% max loss (was -10%, tightened for aggressive recycling).
+  // Live: 5% max loss. Belt-and-suspenders — catches anything that slips past initial stop.
+  const hard_stop_pct = is_paper ? -5 : -5
   if (pnl_pct <= hard_stop_pct) {
     return {
       should_exit: true,
