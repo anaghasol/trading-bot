@@ -12,11 +12,8 @@ import { profileFor } from '@/lib/strategy-profiles'
 export const runtime = 'nodejs'
 export const maxDuration = 30
 
-export async function POST(req: Request) {
-  const s = process.env.CRON_SECRET
-  if (s && req.headers.get('authorization') !== `Bearer ${s}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+export async function POST(_req: Request) {
+  // Personal dashboard endpoint — no external auth needed (cron jobs use /api/cron/* instead)
 
   const broker  = 'alpaca_paper'
   const profile = profileFor(broker)

@@ -30,6 +30,12 @@ function mockAlpacaFail() {
   mockFetch.mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) } as Response)
 }
 
+// closePosition now calls cancelOpenOrdersFor first (GET /orders), then DELETE /positions.
+// Each test must mock the GET (returns []) before the DELETE mock.
+function mockOrdersEmpty() {
+  mockFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve([]) } as Response)
+}
+
 describe('closePosition via DELETE endpoint', () => {
   beforeEach(() => {
     jest.resetModules()
@@ -37,7 +43,8 @@ describe('closePosition via DELETE endpoint', () => {
   })
 
   it('calls DELETE /positions/{symbol} for a stock', async () => {
-    mockAlpacaOk({ id: 'order-1', status: 'accepted' })
+    mockOrdersEmpty()                              // cancelOpenOrdersFor GET
+    mockAlpacaOk({ id: 'order-1', status: 'accepted' })  // DELETE /positions/COIN
     const { closePosition } = await import('../lib/alpaca')
     const result = await closePosition('COIN')
     expect(mockFetch).toHaveBeenCalledWith(
@@ -48,17 +55,23 @@ describe('closePosition via DELETE endpoint', () => {
   })
 
   it('URL-encodes the OCC symbol (slashes would break URL)', async () => {
-    mockAlpacaOk({ id: 'order-2', status: 'accepted' })
+    mockOrdersEmpty()                              // cancelOpenOrdersFor GET
+    mockAlpacaOk({ id: 'order-2', status: 'accepted' })  // DELETE /positions/...
     const { closePosition } = await import('../lib/alpaca')
     await closePosition('AMD260724P00485000')
-    const calledUrl = (mockFetch.mock.calls[0] as string[])[0]
-    // OCC symbols have no special chars, but encoding must not corrupt it
+    // DELETE call is the second fetch call (index 1, after the GET orders call)
+    const deleteCalls = mockFetch.mock.calls.filter(
+      (c: unknown[]) => (c[1] as RequestInit)?.method === 'DELETE'
+    )
+    expect(deleteCalls.length).toBeGreaterThan(0)
+    const calledUrl = deleteCalls[0][0] as string
     expect(calledUrl).toContain('AMD260724P00485000')
     expect(calledUrl).not.toContain(' ')
   })
 
   it('returns FAILED if Alpaca responds with non-ok', async () => {
-    mockAlpacaFail()
+    mockOrdersEmpty()  // cancelOpenOrdersFor GET
+    mockAlpacaFail()   // DELETE fails
     const { closePosition } = await import('../lib/alpaca')
     const result = await closePosition('COIN')
     expect(result.status).toBe('FAILED')
@@ -66,7 +79,8 @@ describe('closePosition via DELETE endpoint', () => {
   })
 
   it('returns PLACED with action SELL', async () => {
-    mockAlpacaOk({ id: 'order-3', status: 'accepted' })
+    mockOrdersEmpty()                              // cancelOpenOrdersFor GET
+    mockAlpacaOk({ id: 'order-3', status: 'accepted' })  // DELETE ok
     const { closePosition } = await import('../lib/alpaca')
     const result = await closePosition('NVDA')
     expect(result.action).toBe('SELL')

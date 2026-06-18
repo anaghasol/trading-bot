@@ -76,9 +76,12 @@ async function del(path: string): Promise<boolean> {
 }
 
 /** Close an entire position by symbol (works for stocks AND options).
- *  Uses DELETE /positions/{symbol} which atomically cancels any open bracket/stop
- *  orders AND closes the position in one call — no conflicting order errors. */
+ *  Cancels all open GTC stop/trailing orders first — Alpaca's DELETE endpoint
+ *  says it handles this atomically, but in practice GTC orders from prior sessions
+ *  can block the fill. Explicit cancel + brief settle = reliable. */
 export async function closePosition(symbol: string): Promise<OrderResult> {
+  await cancelOpenOrdersFor(symbol)
+  await new Promise((r) => setTimeout(r, 250))
   const encoded = encodeURIComponent(symbol)
   const ok = await del(`/positions/${encoded}`)
   if (!ok) return { symbol, quantity: 0, action: 'SELL', status: 'FAILED', error: 'Alpaca close position failed' }
