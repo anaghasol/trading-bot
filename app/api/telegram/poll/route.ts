@@ -104,6 +104,64 @@ const CHANNELS: ChannelCfg[] = [
   },
 ]
 
+/**
+ * Extract a trade signal from an image attached to a Telegram message.
+ * Uses Claude Haiku vision — ~$0.0013/image (10 images/day ≈ $0.40/month).
+ * Returns a compact signal string like "TICKER: INTC | ACTION: BUY | PRICE: 28"
+ * or null if the image contains no actionable trade signal.
+ */
+async function extractImageOCR(
+  client: TelegramClient,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  msg: any,
+  caption: string,
+): Promise<string | null> {
+  if (!msg?.media) return null
+
+  const media = msg.media as Record<string, unknown>
+  const isPhoto    = media.className === 'MessageMediaPhoto'
+  const docMime    = String((media.document as Record<string, unknown>)?.mimeType ?? '')
+  const isImageDoc = media.className === 'MessageMediaDocument' && docMime.startsWith('image/')
+  if (!isPhoto && !isImageDoc) return null
+
+  try {
+    const buffer = await client.downloadMedia(msg, {}) as Buffer | undefined
+    if (!buffer || buffer.length < 500) return null
+    if (buffer.length > 4_000_000) return null   // skip > 4 MB
+
+    const mimeType = isPhoto ? 'image/jpeg' : (docMime || 'image/jpeg')
+    const base64   = buffer.toString('base64')
+
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key':         process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+        'content-type':      'application/json',
+      },
+      body: JSON.stringify({
+        model:      'claude-haiku-4-5-20251001',
+        max_tokens: 120,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
+            { type: 'text',  text: `Caption: "${caption}"\nLook at this trading signal image. If it contains a trade setup, respond ONLY with:\nTICKER: XYZ | ACTION: BUY or SELL or TRIM | PRICE: 0 | TARGET: 0\nIf no clear ticker + trade action visible, respond: NONE` },
+          ],
+        }],
+      }),
+    })
+
+    if (!resp.ok) return null
+    const data = await resp.json() as { content?: { type: string; text: string }[] }
+    const out = data.content?.find((c) => c.type === 'text')?.text?.trim() ?? 'NONE'
+    return out === 'NONE' || !out.includes('TICKER') ? null : out
+  } catch (e) {
+    console.error('[IMG_OCR]', String(e).slice(0, 80))
+    return null
+  }
+}
+
 async function tgSend(text: string) {
   if (!GROUP_ID) return
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -177,7 +235,7 @@ export async function GET(req: Request) {
     }
 
     const newMsgs = messages
-      .filter((m) => m.id > lastId && m.text?.length > 5)
+      .filter((m) => m.id > lastId && (m.text?.length > 5 || m.media != null))
       .sort((a, b) => b.id - a.id)
       .slice(0, 5)
 
@@ -190,7 +248,17 @@ export async function GET(req: Request) {
     await db.from('tb_settings').upsert({ key: ch.watermarkKey, value: String(maxId) })
 
     const chResults = await Promise.all(newMsgs.map(async (msg) => {
-      const text = msg.text ?? ''
+      let text = msg.text ?? ''
+
+      // Image OCR: run before isWorthClassifying so image-only messages get classified
+      if (msg.media && ch.tradeEnabled) {
+        const ocrResult = await extractImageOCR(client, msg, text)
+        if (ocrResult) {
+          text = text ? `${text} | [IMG]: ${ocrResult}` : ocrResult
+          console.log(`[IMG_OCR][${ch.name}] msg#${msg.id}: ${ocrResult}`)
+        }
+      }
+
       if (!isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
 
       // Spam gate — prop firm promos, affiliate links, subscription ads → skip before AI call
