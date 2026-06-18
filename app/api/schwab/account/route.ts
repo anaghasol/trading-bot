@@ -21,7 +21,7 @@ export async function GET() {
   // Fast path: serve cache if < 12s old — avoids hitting Schwab on every poll
   if (cached?.cached_at) {
     const ageMs = Date.now() - new Date(String(cached.cached_at)).getTime()
-    if (ageMs < 12_000) return NextResponse.json({ ...cached, from_cache: true })
+    if (ageMs < 25_000) return NextResponse.json({ ...cached, from_cache: true })
   }
 
   const [summary, authStatus] = await Promise.all([getAccountSummary(), getSchwabAuthStatus()])

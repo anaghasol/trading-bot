@@ -238,7 +238,7 @@ export async function getAccountHash(): Promise<string | null> {
 let _acctCache: { data: Record<string, unknown>; ts: number } | null = null
 
 async function getRawAccountData(): Promise<Record<string, unknown> | null> {
-  if (_acctCache && Date.now() - _acctCache.ts < 12_000) return _acctCache.data
+  if (_acctCache && Date.now() - _acctCache.ts < 25_000) return _acctCache.data
   const hash = await getAccountHash()
   if (!hash) return null
   const data = await apiGet<Record<string, unknown>>(`${API_BASE}/accounts/${hash}?fields=positions`)

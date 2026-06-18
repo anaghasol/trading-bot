@@ -16,7 +16,7 @@ export async function GET() {
   if (cacheRow?.value) {
     try {
       const { positions, cached_at } = JSON.parse(cacheRow.value)
-      if (Date.now() - new Date(cached_at).getTime() < 12_000) {
+      if (Date.now() - new Date(cached_at).getTime() < 25_000) {
         return NextResponse.json({ positions, from_cache: true })
       }
     } catch { /* fall through to live */ }
