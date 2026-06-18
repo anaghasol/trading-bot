@@ -6,6 +6,7 @@ import { NextResponse } from 'next/server'
 import * as SchwabBroker from '@/lib/schwab'
 import * as AlpacaBroker from '@/lib/alpaca'
 import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceeded, INITIAL_STOP_PCT } from '@/lib/risk'
+import { evaluateOptionsExit } from '@/lib/options-exit'
 import { profileFor } from '@/lib/strategy-profiles'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
@@ -197,19 +198,18 @@ async function monitorBroker(
       const rawSymbol = rawMatch ? rawMatch[1] : pos.symbol
       const expiryMatch = (meta.reason ?? '').match(/option_expiry=(\d{4}-\d{2}-\d{2})/)
       const expiry    = expiryMatch ? expiryMatch[1] : pos.option_expiry
-      const dteDays   = expiry ? (new Date(expiry).getTime() - Date.now()) / 86_400_000 : 999
-      const premPct   = pos.pnl_pct   // % gain/loss on premium paid
+      const premPct   = pos.pnl_pct
       const pnlStr    = `${pos.unrealized_pnl >= 0 ? '+' : ''}$${pos.unrealized_pnl.toFixed(0)}`
+      const dteDays   = expiry ? (new Date(expiry).getTime() - Date.now()) / 86_400_000 : 999
 
-      let optExitReason = ''
-      if (dteDays <= 2)        optExitReason = `EXPIRY_PROTECTION (${Math.floor(dteDays)}d left)`
-      else if (premPct <= -25) optExitReason = `OPT_STOP (-25% premium)`   // was -50%, tightened to protect capital
-      else if (premPct >= 100) optExitReason = `OPT_TARGET (+100% premium)` // was +150%
+      const exitDecision = evaluateOptionsExit(
+        { symbol: pos.symbol, quantity: pos.quantity, pnl_pct: premPct, option_expiry: expiry ?? undefined },
+        !!meta.partial_done
+      )
 
-      // Partial profit at +80%: sell half, let rest run
-      if (!optExitReason && premPct >= 80 && !meta.partial_done) {
-        const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
-        const sellOrder  = await api.placeOrder(rawSymbol, partialQty, pos.quantity > 0 ? 'SELL' : 'BUY')
+      if (exitDecision.action === 'PARTIAL_CLOSE') {
+        const partialQty = exitDecision.partialQty!
+        const sellOrder  = await AlpacaBroker.closePosition(rawSymbol)
         if (sellOrder.status === 'PLACED') {
           partial++
           if (meta.id) await db.from('tb_settings').upsert({ key: `p1done_${meta.id}`, value: new Date().toISOString() })
@@ -219,8 +219,9 @@ async function monitorBroker(
         continue
       }
 
-      if (optExitReason) {
-        const sellOrder = await api.placeOrder(rawSymbol, Math.abs(pos.quantity), pos.quantity > 0 ? 'SELL' : 'BUY')
+      if (exitDecision.action === 'FULL_CLOSE') {
+        const optExitReason = exitDecision.reason!
+        const sellOrder = await AlpacaBroker.closePosition(rawSymbol)
         if (sellOrder.status === 'PLACED') {
           closed++
           runningPnl += pos.unrealized_pnl

@@ -508,16 +508,21 @@ export async function GET(req: Request) {
           return { id: msg.id, type: 'skip', reason: 'options_expiry_too_close' }
         }
 
-        // Options exposure cap: total premium at risk must stay ≤ 15% of account
-        const { data: openOpts } = await db.from('tb_trades')
-          .select('quantity, entry_price')
-          .eq('broker', 'alpaca_paper')
-          .eq('strategy', 'OPTION')
-          .eq('status', 'OPEN')
-        const currentOptExp = (openOpts ?? []).reduce((s, t) => s + (t.quantity ?? 0) * (t.entry_price ?? 0) * 100, 0)
+        // Never short options from TG — SELL signals are ignored (no naked puts/calls)
+        if (signal.action === 'SELL') {
+          await tgSend(`📌 *Options SELL skipped* — ${displayLabel} (${ch.name})\nBot does not short options from TG signals.`)
+          return { id: msg.id, type: 'skip', reason: 'options_sell_blocked' }
+        }
+
+        // Options exposure cap: read from LIVE Alpaca positions to avoid race-condition where
+        // two parallel messages both see 0% in tb_trades and both enter before either is committed.
+        const livePositions   = await Alpaca.getPositions()
+        const currentOptExp   = livePositions
+          .filter((p) => p.asset_type === 'OPTION')
+          .reduce((s, p) => s + Math.abs(p.market_value), 0)
         const optExpPct = currentOptExp / equity
         if (optExpPct >= 0.15) {
-          await tgSend(`⚠️ *Options skipped* — ${displayLabel}\nOptions exposure ${(optExpPct * 100).toFixed(1)}% ≥ 15% cap. Close existing options first.`)
+          await tgSend(`⚠️ *Options skipped* — ${displayLabel}\nLive options exposure ${(optExpPct * 100).toFixed(1)}% ≥ 15% cap. Close existing options first.`)
           return { id: msg.id, type: 'skip', reason: 'options_exposure_cap' }
         }
 
