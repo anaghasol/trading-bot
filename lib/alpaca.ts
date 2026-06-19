@@ -130,6 +130,12 @@ export async function getAccountBalance(): Promise<number | null> {
   return acct ? parseFloat(acct.portfolio_value || acct.equity) : null
 }
 
+export async function getBuyingPower(): Promise<number> {
+  const acct = await get<{ buying_power: string; cash: string }>('/account')
+  if (!acct) return 0
+  return parseFloat(acct.buying_power || acct.cash || '0')
+}
+
 // ── Positions ─────────────────────────────────────────────────────────────────
 
 /** Parse OCC option symbol → display label + ISO expiry date.

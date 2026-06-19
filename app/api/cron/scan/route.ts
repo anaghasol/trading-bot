@@ -80,18 +80,33 @@ async function runScan(
   // if the setup is still valid. GTC trailing stops are sell-side and unaffected.
   if (!isSchwab) {
     try {
-      const openOrders = await AlpacaBroker.getOrders(1)
+      // getOpenOrders() returns pending/working orders (not filled). Cancel all DAY buy orders
+      // older than 4 min — market buys that haven't filled are stale and consuming buying power.
+      // GTC trailing stop sells are unaffected (instruction === 'SELL').
+      const openOrders = await AlpacaBroker.getOpenOrders()
       const staleBuys = openOrders.filter((o) =>
         o.instruction === 'BUY' &&
-        o.status === 'WORKING' &&
-        (Date.now() - new Date(o.entered_time).getTime()) > 4 * 60 * 1000  // > 4 min old
+        (Date.now() - new Date(o.entered_time).getTime()) > 4 * 60 * 1000
       )
       if (staleBuys.length > 0) {
         console.log(`[alpaca] Cancelling ${staleBuys.length} stale buy orders: ${staleBuys.map(o => o.symbol).join(', ')}`)
         await Promise.all(staleBuys.map((o) => AlpacaBroker.cancelOrder(o.order_id)))
-        await new Promise((r) => setTimeout(r, 500))  // let Alpaca process cancellations
+        await new Promise((r) => setTimeout(r, 800))  // let Alpaca release the buying power
       }
     } catch { /* non-fatal — proceed with scan */ }
+
+    // Hard gate: check Alpaca's actual buying_power (includes pending order reservations).
+    // Our position-based exposure calc misses working orders that are reserving cash.
+    // If BP < $2000, no trade can be sized safely — skip entire scan and report clearly.
+    try {
+      const bp = await AlpacaBroker.getBuyingPower()
+      if (bp < 2000) {
+        const msg = `[alpaca_paper] Skipped — buying power $${bp.toFixed(0)} < $2000 (account fully deployed or orders pending)`
+        console.log(msg)
+        void db.from('tb_alerts').insert({ type: 'INFO', message: msg, broker: 'alpaca_paper' })
+        return { trades_made: 0, message: msg }
+      }
+    } catch { /* non-fatal */ }
   }
   // Runtime config overrides profile — EOD auto-tuner writes here so adjustments
   // take effect next scan cycle without a code deploy
