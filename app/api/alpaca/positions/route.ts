@@ -29,10 +29,10 @@ export async function GET() {
     const symbols = raw.map((p) => String(p.symbol))
     const overrideKeys = symbols.map((s) => `entry_override_${s}`)
     const db = createServiceClient()
-    const { data: overrideRows } = await db
-      .from('tb_settings')
-      .select('key, value')
-      .in('key', overrideKeys)
+    const [{ data: overrideRows }, { data: tradeRows }] = await Promise.all([
+      db.from('tb_settings').select('key, value').in('key', overrideKeys),
+      db.from('tb_trades').select('symbol, reason').eq('status', 'OPEN').eq('broker', 'alpaca_paper').in('symbol', symbols),
+    ])
 
     const overrides: Record<string, number> = {}
     for (const row of overrideRows ?? []) {
@@ -41,6 +41,12 @@ export async function GET() {
         const val = JSON.parse(row.value) as { price: number }
         if (val.price > 0) overrides[sym] = val.price
       } catch { /* ignore */ }
+    }
+
+    const holdModes: Record<string, string> = {}
+    for (const row of tradeRows ?? []) {
+      const m = (row.reason as string | null)?.match(/hold_mode=(\w+)/)
+      if (m) holdModes[row.symbol] = m[1]
     }
 
     const positions = raw.map((p) => {
@@ -89,6 +95,7 @@ export async function GET() {
         asset_type:         isOption ? 'OPTION' as const : 'EQUITY' as const,
         option_expiry,
         entry_corrected:    hasOverride,
+        hold_mode:          holdModes[symbol] ?? 'swing',
       }
     })
 

@@ -120,6 +120,9 @@ async function runClose(
 
     if (!shouldExit) {
       const modeLabel = isTrend ? ' [TREND — no time limit]' : isDay ? ' [DAY]' : ''
+      if (isTrend) {
+        console.log(`[${broker}][close] Skipped trend position ${pos.symbol} (hold_mode=trend, pnl=${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}%, days=${holdDays})`)
+      }
       actions.push(`${pos.symbol}: ${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% hold (${holdDays}d${isTrend ? '' : `/${profile.max_hold_days}d max`})${modeLabel}`)
       continue
     }

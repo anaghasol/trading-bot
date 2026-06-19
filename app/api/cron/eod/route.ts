@@ -422,6 +422,24 @@ export async function GET(req: Request) {
         const ltExposure  = ltPositions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
         const ltPct       = ltExposure / equity
 
+        // Score decay check — flag trend positions with SNDK score < 35 regardless of sleeve size.
+        // Degraded thesis (RS weakened, narrative stale) should trigger a review alert even if
+        // we don't trim (only trim when sleeve > 28%).
+        const { data: allScores } = await db
+          .from('tb_discoveries')
+          .select('symbol, sndk_score, highlights')
+          .in('symbol', ltPositions.map((p) => p.symbol))
+        const decayed = (allScores ?? []).filter((r: { symbol: string; sndk_score: number }) => (r.sndk_score ?? 50) < 35)
+        if (decayed.length > 0) {
+          const decayMsg = decayed.map((r: { symbol: string; sndk_score: number }) => `${r.symbol} score=${r.sndk_score}`).join(', ')
+          console.warn(`[eod][${broker}] Trend score decay detected: ${decayMsg}`)
+          await db.from('tb_alerts').insert({
+            type: 'WARN', broker,
+            message: `[SNDK DECAY] Trend positions with weakened thesis (score<35): ${decayMsg} — review for trim`,
+          })
+          rebalanceResults.push(`[${broker}] ⚠ Score decay: ${decayMsg}`)
+        }
+
         if (ltPct <= 0.28 || ltPositions.length === 0) {
           rebalanceResults.push(`[${broker}] LT ${(ltPct*100).toFixed(0)}% — no rebalance needed`)
           continue
