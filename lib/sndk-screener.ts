@@ -491,7 +491,7 @@ Boost guide: 10=clear narrative catalyst (spinoff, AI pivot, contract win, new p
         for (const c of results) {
           const b = boosts[c.symbol]
           if (!b) continue
-          const clampedBoost = Math.max(-5, Math.min(10, b.boost ?? 0))
+          const clampedBoost = Math.max(-5, Math.min(8, b.boost ?? 0))  // cap at +8 during calibration
           c.sndkScore = Math.max(0, Math.min(100, c.sndkScore + clampedBoost))
           if (b.narrative && b.reason) {
             c.highlights.unshift(`🧠 ${b.reason}`)  // prepend — most important signal

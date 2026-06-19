@@ -14,6 +14,8 @@ interface Candidate {
   stage_score:       number
   rsi_score:         number
   volume_score:      number
+  rs_score:          number
+  rs_spy:            number
   gross_margin_pct:  number
   op_margin_pct:     number
   revenue_growth_pct:number
@@ -238,29 +240,63 @@ export default function DiscoveryPage() {
                 {/* Expanded detail */}
                 {isOpen && (
                   <div style={{ padding: '0 0.8rem 0.8rem', borderTop: '1px solid #2a3347' }}>
+                    {/* Score breakdown bar */}
+                    <div style={{ marginTop: '0.6rem', marginBottom: '0.4rem' }}>
+                      <div style={{ color: '#8892a4', fontSize: '0.58rem', marginBottom: '0.3rem' }}>SCORE BREAKDOWN — {c.sndk_score}/100</div>
+                      <div style={{ display: 'flex', gap: '3px', height: 18, borderRadius: 4, overflow: 'hidden' }}>
+                        {[
+                          { label: 'Fund', val: c.fundamental_score, max: 40, color: '#13c98e' },
+                          { label: 'Stage', val: c.stage_score,       max: 30, color: '#60a5fa' },
+                          { label: 'RSI',   val: Math.max(0, c.rsi_score), max: 20, color: '#a78bfa' },
+                          { label: 'Vol',   val: c.volume_score,      max: 10, color: '#fbbf24' },
+                          { label: 'RS',    val: Math.max(0, c.rs_score ?? 0), max: 15, color: '#f97316' },
+                        ].map(({ label, val, max, color }) => (
+                          <div key={label} title={`${label}: ${val}/${max}`} style={{
+                            flex: Math.max(0, val),
+                            background: color,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: '0.52rem', color: '#0b0f17', fontWeight: 700, minWidth: val > 0 ? 22 : 0,
+                          }}>
+                            {val > 0 ? `${label} ${val}` : ''}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Highlights (narrative 🧠 first) */}
                     {highlights.length > 0 && (
-                      <div style={{ marginTop: '0.5rem' }}>
+                      <div style={{ marginTop: '0.4rem' }}>
                         {highlights.map((h, i) => (
-                          <div key={i} style={{ color: '#a0aec0', fontSize: '0.68rem', padding: '0.15rem 0' }}>
-                            ✦ {h}
+                          <div key={i} style={{
+                            color: h.startsWith('🧠') ? '#13c98e' : '#a0aec0',
+                            fontSize: '0.68rem', padding: '0.15rem 0',
+                            fontWeight: h.startsWith('🧠') ? 600 : 400,
+                          }}>
+                            {h.startsWith('🧠') ? h : `✦ ${h}`}
                           </div>
                         ))}
                       </div>
                     )}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', marginTop: '0.6rem' }}>
+
+                    {/* Detail grid */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.4rem', marginTop: '0.6rem' }}>
                       {[
-                        ['Fundamental', `${c.fundamental_score}/40`],
-                        ['Stage',       `${c.stage_score}/30`],
-                        ['RSI',         `${c.rsi_score}/20`],
-                        ['Volume',      `${c.volume_score}/10`],
-                        ['Revenue growth', `+${c.revenue_growth_pct.toFixed(0)}% YoY`],
-                        ['Op margin',    `${c.op_margin_pct.toFixed(0)}%`],
-                        ['RSI direction', c.rsi_direction.replace('_', ' ')],
-                        ['Screened',    new Date(c.screened_at).toLocaleDateString()],
-                      ].map(([k, v]) => (
+                        ['Fundamental',   `${c.fundamental_score}/40`,                  c.fundamental_score >= 25 ? '#13c98e' : '#e2e8f0'],
+                        ['Stage',         `${c.stage_score}/30`,                        c.stage === 1 ? '#13c98e' : '#e2e8f0'],
+                        ['RSI',           `${c.rsi_score}/20`,                          c.rsi_score >= 15 ? '#13c98e' : '#e2e8f0'],
+                        ['Volume',        `${c.volume_score}/10`,                       c.volume_score >= 7 ? '#13c98e' : '#e2e8f0'],
+                        ['RS vs SPY',     `${(c.rs_spy ?? 1).toFixed(1)}× (${(c.rs_score ?? 0) > 0 ? '+' : ''}${c.rs_score ?? 0}pts)`, (c.rs_score ?? 0) >= 8 ? '#13c98e' : (c.rs_score ?? 0) < 0 ? '#f87171' : '#e2e8f0'],
+                        ['200DMA dev',    `${c.deviation_pct > 0 ? '+' : ''}${c.deviation_pct.toFixed(0)}%`, '#e2e8f0'],
+                        ['Revenue YoY',   `+${c.revenue_growth_pct.toFixed(0)}%`,       c.revenue_growth_pct >= 20 ? '#13c98e' : '#e2e8f0'],
+                        ['Op margin',     `${c.op_margin_pct.toFixed(0)}%`,             c.op_margin_pct > 0 ? '#13c98e' : '#f87171'],
+                        ['Gross margin',  `${c.gross_margin_pct.toFixed(0)}%`,          c.gross_margin_pct >= 40 ? '#13c98e' : '#e2e8f0'],
+                        ['EPS rev 30d',   `${c.eps_revision_30d >= 0 ? '+' : ''}${c.eps_revision_30d.toFixed(0)}%`, c.eps_revision_30d >= 10 ? '#13c98e' : c.eps_revision_30d < 0 ? '#f87171' : '#e2e8f0'],
+                        ['RSI direction', c.rsi_direction.replace(/_/g, ' '),           c.rsi_direction === 'rising_early' ? '#13c98e' : '#e2e8f0'],
+                        ['Screened',      new Date(c.screened_at).toLocaleDateString(), '#8892a4'],
+                      ].map(([k, v, color]) => (
                         <div key={k} style={{ background: '#161c27', borderRadius: 4, padding: '0.3rem 0.5rem' }}>
-                          <div style={{ color: '#8892a4', fontSize: '0.58rem' }}>{k}</div>
-                          <div style={{ color: '#e2e8f0', fontSize: '0.7rem', fontWeight: 600 }}>{v}</div>
+                          <div style={{ color: '#8892a4', fontSize: '0.56rem' }}>{k}</div>
+                          <div style={{ color: color as string, fontSize: '0.68rem', fontWeight: 600 }}>{v}</div>
                         </div>
                       ))}
                     </div>

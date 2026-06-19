@@ -439,24 +439,31 @@ export async function GET(req: Request) {
           (scoreMap.get(a.symbol) ?? 0) - (scoreMap.get(b.symbol) ?? 0)
         )
 
-        // Trim up to 2 weakest, only if score < 35 (stale/degraded thesis)
+        // Trim weakest positions until exposure drops below 28%.
+        // First pass: prefer score < 35 (degraded thesis). If all score ≥ 35 but
+        // sleeve is still overweight, trim the single weakest anyway — exposure cap
+        // takes priority over letting every individual position run.
+        let runningExposure = ltExposure
         let trimmed = 0
-        for (const pos of sorted.slice(0, 2)) {
+        for (const pos of sorted) {
+          if (runningExposure / equity <= 0.28) break  // exposure now under cap
+          if (trimmed >= 2) break                       // never trim more than 2 per week
           const score = scoreMap.get(pos.symbol) ?? 50
-          if (score >= 35) break  // still a valid pick — don't trim
+          const posValue = Math.abs(pos.market_value ?? pos.current_price * pos.quantity)
           const result = broker === 'alpaca_paper'
             ? await AlpacaBroker.closePosition(pos.symbol).catch(() => null)
             : await SchwabBroker.placeOrder(pos.symbol, Math.abs(pos.quantity), 'SELL', 'MARKET').catch(() => null)
           if (result?.status === 'PLACED') {
+            runningExposure -= posValue
             await db.from('tb_alerts').insert({
               type: 'SELL', symbol: pos.symbol, broker,
-              message: `[REBALANCE] Trimmed LT ${pos.symbol} (score=${score}) — LT sleeve was ${(ltPct*100).toFixed(0)}%, freeing capital`,
+              message: `[REBALANCE] Trimmed LT ${pos.symbol} (score=${score}) — sleeve ${(ltPct*100).toFixed(0)}%→${(runningExposure/equity*100).toFixed(0)}%`,
             })
-            rebalanceResults.push(`[${broker}] Trimmed ${pos.symbol} score=${score}`)
+            rebalanceResults.push(`[${broker}] Trimmed ${pos.symbol} score=${score} → sleeve now ${(runningExposure/equity*100).toFixed(0)}%`)
             trimmed++
           }
         }
-        if (trimmed === 0) rebalanceResults.push(`[${broker}] LT ${(ltPct*100).toFixed(0)}% but all positions still strong (score≥35)`)
+        if (trimmed === 0) rebalanceResults.push(`[${broker}] LT ${(ltPct*100).toFixed(0)}% — no trim (${ltPositions.length} pos)`)
       } catch (e) {
         console.error('[eod] rebalance error:', e)
       }
