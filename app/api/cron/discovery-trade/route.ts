@@ -14,9 +14,10 @@ import * as AlpacaBroker from '@/lib/alpaca'
 import * as SchwabBroker from '@/lib/schwab'
 import { createServiceClient } from '@/lib/supabase-server'
 import { isMarketOpen } from '@/lib/risk'
+import { runSNDKScreener } from '@/lib/sndk-screener'
 
 export const runtime     = 'nodejs'
-export const maxDuration = 120
+export const maxDuration = 300
 
 function authorized(req: Request) {
   const s = process.env.CRON_SECRET
@@ -161,12 +162,61 @@ async function runLTSleeve(
   }
 }
 
+async function ensureFreshCandidates(db: ReturnType<typeof createServiceClient>): Promise<string> {
+  // Check if we have candidates screened within the last 20 hours
+  const { data: latest } = await db
+    .from('tb_discoveries')
+    .select('screened_at')
+    .order('screened_at', { ascending: false })
+    .limit(1)
+
+  const lastRun   = latest?.[0]?.screened_at ? new Date(latest[0].screened_at) : null
+  const staleMs   = 20 * 60 * 60 * 1000 // 20 hours
+  const isStale   = !lastRun || (Date.now() - lastRun.getTime()) > staleMs
+
+  if (!isStale) return `candidates fresh (last run: ${lastRun?.toISOString()})`
+
+  // Stale or empty — run screener inline so we never need a manual trigger
+  console.log('[discovery-trade] tb_discoveries stale/empty — running screener inline…')
+  const candidates = await runSNDKScreener()
+  if (candidates.length === 0) return 'screener returned 0 candidates'
+
+  const rows = candidates.map((c) => ({
+    symbol:             c.symbol,
+    sector:             c.sector,
+    sndk_score:         c.sndkScore,
+    stage:              c.stage,
+    deviation_pct:      Math.round(c.deviationPct * 10) / 10,
+    rsi_current:        Math.round(c.rsiCurrent * 10) / 10,
+    rsi_direction:      c.rsiDirection,
+    fundamental_score:  c.fundamentalScore,
+    stage_score:        c.stageScore,
+    rsi_score:          c.rsiScore,
+    volume_score:       c.volumeScore,
+    gross_margin_pct:   c.grossMarginPct,
+    op_margin_pct:      c.operatingMarginPct,
+    revenue_growth_pct: c.revenueGrowthPct,
+    eps_revision_30d:   c.epsRevision30d,
+    highlights:         JSON.stringify(c.highlights),
+    price_target:       c.priceTarget,
+    current_price:      c.currentPrice,
+    screened_at:        c.screened_at,
+  }))
+  await db.from('tb_discoveries').upsert(rows, { onConflict: 'symbol' })
+  return `self-seeded: ${candidates.length} candidates (${candidates.filter(c => c.stage === 1).length} Stage 1)`
+}
+
 export async function GET(req: Request) {
   if (!authorized(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (!isMarketOpen()) return NextResponse.json({ ok: true, message: 'Market closed — skipping' })
 
   const db    = createServiceClient()
   const start = Date.now()
+
+  // Self-seeding: if tb_discoveries is empty or stale, run screener inline before buying.
+  // This means the system never needs a manual "Run Screener" trigger — it bootstraps itself.
+  const seedMsg = await ensureFreshCandidates(db)
+  console.log(`[discovery-trade] seed check: ${seedMsg}`)
 
   const [paper, live] = await Promise.all([
     runLTSleeve('alpaca_paper', db),
