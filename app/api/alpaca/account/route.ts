@@ -17,7 +17,7 @@ export async function GET() {
   try {
     const res = await fetch(`${BASE}/account`, {
       headers: { 'APCA-API-KEY-ID': KEY_ID, 'APCA-API-SECRET-KEY': SECRET },
-      cache: 'no-store',
+      next: { revalidate: 4 },  // 4s cache — deduplicates overlapping polls
     })
     if (!res.ok) return NextResponse.json({ error: 'Alpaca API error' }, { status: 200 })
 

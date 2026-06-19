@@ -397,10 +397,12 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
 export default function DashboardPage() {
   const [broker, setBroker] = useState<Broker>('schwab')
   const [dash, setDash] = useState<Record<Broker, Dash | null>>({ schwab: null, alpaca_paper: null })
-  const [posData, setPosData] = useState<{ broker: Broker; items: Position[] }>({ broker: 'schwab', items: [] })
-  const [summaryData, setSummaryData] = useState<{ broker: Broker; data: Summary | null }>({ broker: 'schwab', data: null })
-  const pos     = posData.broker     === broker ? posData.items    : []
-  const summary = summaryData.broker === broker ? summaryData.data : null
+  // Per-broker cache — keeps last good data per broker so switching tabs never shows blank
+  const [posCache,     setPosCache]     = useState<Record<Broker, Position[]>>({ schwab: [], alpaca_paper: [] })
+  const [summaryCache, setSummaryCache] = useState<Record<Broker, Summary | null>>({ schwab: null, alpaca_paper: null })
+  const [isFetching,   setIsFetching]   = useState(false)
+  const pos     = posCache[broker]
+  const summary = summaryCache[broker]
   const [qmap, setQmap] = useState<Record<string, Quote>>({})
   const [pdt, setPdt] = useState<Pdt | null>(null)
   const [orders, setOrders] = useState<SchwabOrder[]>([])
@@ -444,10 +446,16 @@ export default function DashboardPage() {
       fetch('/api/rotation').then((r) => r.json()),
     ])
     if (d.status === 'fulfilled') setDash((prev) => ({ ...prev, [b]: d.value }))
-    if (p.status === 'fulfilled') setPosData({ broker: b, items: Array.isArray(p.value) ? p.value : (p.value?.positions ?? []) })
+    if (p.status === 'fulfilled') {
+      const items = Array.isArray(p.value) ? p.value : (p.value?.positions ?? [])
+      setPosCache((prev) => ({ ...prev, [b]: items }))
+    }
     // Accept response even with auth_status warning — only reject hard errors
-    if (s.status === 'fulfilled' && s.value && s.value.error !== 'schwab_auth_expired') setSummaryData({ broker: b, data: s.value })
-    else if (s.status === 'fulfilled' && s.value?.error === 'schwab_auth_expired') setSummaryData({ broker: b, data: s.value as unknown as Summary })
+    if (s.status === 'fulfilled' && s.value && s.value.error !== 'schwab_auth_expired') {
+      setSummaryCache((prev) => ({ ...prev, [b]: s.value }))
+    } else if (s.status === 'fulfilled' && s.value?.error === 'schwab_auth_expired') {
+      setSummaryCache((prev) => ({ ...prev, [b]: s.value as unknown as Summary }))
+    }
     if (q.status === 'fulfilled') { const m: Record<string, Quote> = {}; for (const x of (q.value?.quotes ?? [])) m[x.symbol] = x; setQmap(m) }
     if (h.status === 'fulfilled' && h.value?.pdt) setPdt(h.value.pdt)
     if (o.status === 'fulfilled' && o.value?.orders) setOrders(o.value.orders)
@@ -474,37 +482,23 @@ export default function DashboardPage() {
     fetch('/api/scan-status').then(r => r.json()).then(d => { setScanStatus(d ?? {}) }).catch(() => {})
   }, [])
 
-  // Clear stale data instantly when broker tab switches — no cross-contamination
+  // Single poller — 10s market hours, 60s off-hours.
+  // No separate balance poller; they overlapped and caused shake.
+  // Stale-while-revalidate: keeps last good data per broker visible while
+  // fetching new data — no blank flash on tab switch or refresh.
   useEffect(() => {
-    setPosData({ broker, items: [] })
-    setSummaryData({ broker, data: null })
-    setOrders([])
-    setPdt(null)
-  }, [broker])
-
-  // market-hours-aware polling: full data refresh
-  useEffect(() => {
-    load(broker)
-    const ms = market.open ? 10000 : 60000   // 10s open, 60s closed (was 5s — caused shake)
-    const iv = setInterval(() => load(broker), ms)
-    return () => clearInterval(iv)
-  }, [broker, market.open, load])
-
-  // Balance-only fast poll every 8s (was 3s — too aggressive, caused layout jitter)
-  useEffect(() => {
-    if (!market.open) return
-    const fastPoll = async () => {
-      try {
-        const paper = broker === 'alpaca_paper'
-        const res = await fetch(paper ? '/api/alpaca/account' : '/api/schwab/account')
-        if (!res.ok) return
-        const data = await res.json()
-        if (data && !data.error) setSummaryData((prev) => prev?.broker === broker ? { broker, data } : prev)
-      } catch { /* silent */ }
+    let cancelled = false
+    const run = async (b: Broker) => {
+      if (cancelled) return
+      setIsFetching(true)
+      await load(b)
+      if (!cancelled) setIsFetching(false)
     }
-    const iv = setInterval(fastPoll, 8000)
-    return () => clearInterval(iv)
-  }, [broker, market.open])
+    run(broker)
+    const ms = market.open ? 10000 : 60000
+    const iv = setInterval(() => run(broker), ms)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [broker, market.open, load])
 
   // Hot list + scan status auto-refresh every 30s
   useEffect(() => {
@@ -916,7 +910,7 @@ export default function DashboardPage() {
           {/* Positions */}
           <div className="card">
             <div className="card-head plain">
-              <h3 className="card-title neutral">📊 Positions <span className="chip mut" style={{ fontSize: '0.6rem' }}>{pos.length} open</span></h3>
+              <h3 className="card-title neutral">📊 Positions <span className="chip mut" style={{ fontSize: '0.6rem' }}>{pos.length} open</span>{isFetching && <span style={{ marginLeft: 6, fontSize: '0.55rem', color: 'var(--fg-3)', opacity: 0.7 }}>↻</span>}</h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 {isPaper && (
                   <button
@@ -963,7 +957,7 @@ export default function DashboardPage() {
                 <span className="tabular" style={{ fontWeight: 700 }}>{money(netLiq)}</span>
               </div>
             </div>
-            <div style={{ overflowX: 'auto' }}>
+            <div style={{ overflowX: 'auto', minHeight: 80 }}>
               <table className="ptbl" style={{ minWidth: 760 }}>
                 <colgroup>
                   <col style={{ minWidth: 110 }} />{/* Symbol */}
