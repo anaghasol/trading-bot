@@ -593,10 +593,11 @@ async function runScan(
       : await AlpacaBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
 
     if (buy.status !== 'PLACED') {
-      const msg = `[${broker}] Order FAILED ${rec.symbol} ${sizing.qty}sh @ $${quote.price.toFixed(2)} — status: ${buy.status}`
+      const reason = buy.error ?? buy.status
+      const msg = `[${broker}] Order FAILED ${rec.symbol} ${sizing.qty}sh @ $${quote.price.toFixed(2)} — ${reason}`
       console.error(msg)
       void db.from('tb_alerts').insert({ type: 'WARN', symbol: rec.symbol, broker, message: msg })
-      skipReasons.push(`${rec.symbol}: order rejected (${buy.status})`)
+      skipReasons.push(`${rec.symbol}: ${reason}`)
     }
 
     if (buy.status === 'PLACED') {

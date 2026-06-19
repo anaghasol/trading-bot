@@ -279,8 +279,7 @@ export async function getOrders(daysBack = 10): Promise<SchwabOrder[]> {
 
 export async function getQuote(symbol: string): Promise<{ symbol: string; price: number; change_pct: number; volume: number } | null> {
   try {
-    // PRIMARY: latest trade price — reflects actual market activity, not a stale bar close.
-    // bars/latest on IEX can be hours or days behind for thin/new stocks (caused SPCX $27 vs $163 bug).
+    // PRIMARY: latest trade via IEX feed
     const tradeRes = await fetch(
       `${DATA_URL}/stocks/${symbol}/trades/latest?feed=iex`,
       { headers: headers(), cache: 'no-store' }
@@ -288,33 +287,53 @@ export async function getQuote(symbol: string): Promise<{ symbol: string; price:
     if (tradeRes.ok) {
       const td = await tradeRes.json() as { trade?: { p: number; s: number; t: string } }
       if (td.trade?.p && td.trade.p > 0) {
-        const ageMs  = Date.now() - new Date(td.trade.t).getTime()
-        const utcH   = new Date().getUTCHours() + new Date().getUTCMinutes() / 60
+        const ageMs   = Date.now() - new Date(td.trade.t).getTime()
+        const utcH    = new Date().getUTCHours() + new Date().getUTCMinutes() / 60
         const mktOpen = utcH >= 13.5 && utcH <= 20
-        // Accept trade price if: market closed (use whatever we have) OR trade < 2h old
         if (!mktOpen || ageMs < 7_200_000) {
           return { symbol, price: td.trade.p, change_pct: 0, volume: td.trade.s }
         }
-        // Trade is >2h stale during market hours — fall through to bar fallback but log it
-        console.warn(`[alpaca] getQuote ${symbol}: latest trade is ${Math.floor(ageMs / 60000)}m old — falling back to bar`)
+        console.warn(`[alpaca] getQuote ${symbol}: IEX trade ${Math.floor(ageMs / 60000)}m old`)
       }
     }
 
-    // FALLBACK: bar close (more stale, but better than nothing)
+    // SECONDARY: bar close from IEX
     const barRes = await fetch(
       `${DATA_URL}/stocks/${symbol}/bars/latest?feed=iex`,
       { headers: headers(), cache: 'no-store' }
     )
-    if (!barRes.ok) return null
-    const data = await barRes.json() as { bar?: { c: number; o: number; v: number } }
-    if (!data.bar) return null
-
-    return {
-      symbol,
-      price:      data.bar.c,
-      change_pct: data.bar.o > 0 ? ((data.bar.c - data.bar.o) / data.bar.o) * 100 : 0,
-      volume:     data.bar.v,
+    if (barRes.ok) {
+      const data = await barRes.json() as { bar?: { c: number; o: number; v: number } }
+      if (data.bar?.c && data.bar.c > 0) {
+        return {
+          symbol,
+          price:      data.bar.c,
+          change_pct: data.bar.o > 0 ? ((data.bar.c - data.bar.o) / data.bar.o) * 100 : 0,
+          volume:     data.bar.v,
+        }
+      }
     }
+
+    // FALLBACK: Yahoo Finance — IEX often gaps on liquid names at open (AMD, SOXL, ARM etc.)
+    const yfRes = await fetch(
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}&fields=regularMarketPrice,regularMarketVolume,regularMarketChangePercent`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, cache: 'no-store' }
+    )
+    if (yfRes.ok) {
+      const yfData = await yfRes.json() as { quoteResponse?: { result?: { regularMarketPrice?: number; regularMarketVolume?: number; regularMarketChangePercent?: number }[] } }
+      const q = yfData.quoteResponse?.result?.[0]
+      if (q?.regularMarketPrice && q.regularMarketPrice > 0) {
+        console.log(`[alpaca] getQuote ${symbol}: IEX gap — used Yahoo fallback $${q.regularMarketPrice}`)
+        return {
+          symbol,
+          price:      q.regularMarketPrice,
+          change_pct: q.regularMarketChangePercent ?? 0,
+          volume:     q.regularMarketVolume ?? 0,
+        }
+      }
+    }
+
+    return null
   } catch {
     return null
   }
