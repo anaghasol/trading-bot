@@ -73,6 +73,26 @@ async function runScan(
   const isSchwab = broker === 'schwab'
   const api      = isSchwab ? SchwabBroker : AlpacaBroker
   const profile  = profileFor(broker)
+
+  // Cancel stale open BUY orders from previous scan runs (Alpaca paper only).
+  // Market orders that haven't filled after 10+ minutes are consuming buying power
+  // and blocking new entries. Safe to cancel — scan will re-issue fresh orders
+  // if the setup is still valid. GTC trailing stops are sell-side and unaffected.
+  if (!isSchwab) {
+    try {
+      const openOrders = await AlpacaBroker.getOrders(1)
+      const staleBuys = openOrders.filter((o) =>
+        o.instruction === 'BUY' &&
+        o.status === 'WORKING' &&
+        (Date.now() - new Date(o.entered_time).getTime()) > 4 * 60 * 1000  // > 4 min old
+      )
+      if (staleBuys.length > 0) {
+        console.log(`[alpaca] Cancelling ${staleBuys.length} stale buy orders: ${staleBuys.map(o => o.symbol).join(', ')}`)
+        await Promise.all(staleBuys.map((o) => AlpacaBroker.cancelOrder(o.order_id)))
+        await new Promise((r) => setTimeout(r, 500))  // let Alpaca process cancellations
+      }
+    } catch { /* non-fatal — proceed with scan */ }
+  }
   // Runtime config overrides profile — EOD auto-tuner writes here so adjustments
   // take effect next scan cycle without a code deploy
   const runtimeCfg = await getRuntimeConfig(broker)
