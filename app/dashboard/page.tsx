@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { money, signed, pnlColor } from '@/components/ui/kit'
 import { PROFILES } from '@/lib/strategy-profiles'
 
-const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/learning', 'Learning'], ['/fix', '🔧 Fix'], ['/settings', 'Settings']]
+const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/learning', 'Learning'], ['/discovery', '🔭 Discovery'], ['/fix', '🔧 Fix'], ['/settings', 'Settings']]
 
 type Broker = 'schwab' | 'alpaca_paper'
 interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string; raw_symbol?: string }
