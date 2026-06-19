@@ -50,6 +50,8 @@ export async function GET(req: Request) {
       revenue_growth_pct: c.revenueGrowthPct,
       eps_revision_30d:   c.epsRevision30d,
       highlights:         JSON.stringify(c.highlights),
+      rs_score:           c.rsScore,
+      rs_spy:             c.rsSpy,
       price_target:       c.priceTarget,
       current_price:      c.currentPrice,
       screened_at:        c.screened_at,

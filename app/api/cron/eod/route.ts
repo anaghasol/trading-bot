@@ -82,6 +82,12 @@ async function analyzeBroker(
   const avgLoss   = losses.length > 0 ? losses.reduce((s, t) => s + ((t.pnl as number) ?? 0), 0) / losses.length : 0
   const winRate   = trades.length > 0 ? wins.length / trades.length : 0
 
+  // Profit factor: total gross wins / total gross losses — better signal than win rate alone.
+  // PF > 1.5 = healthy, 1.0-1.5 = marginal, < 1.0 = net loser regardless of win rate.
+  const grossWins   = wins.reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
+  const grossLosses = Math.abs(losses.reduce((s, t) => s + ((t.pnl as number) ?? 0), 0))
+  const profitFactor = grossLosses > 0 ? grossWins / grossLosses : (grossWins > 0 ? 999 : 1)
+
   const sortedByPnl   = [...trades].sort((a, b) => ((b.pnl as number) ?? 0) - ((a.pnl as number) ?? 0))
   const biggestWinner = sortedByPnl[0]  ? `${sortedByPnl[0].symbol} +$${(sortedByPnl[0].pnl as number)?.toFixed(0)}` : 'none'
   const biggestLoser  = sortedByPnl[sortedByPnl.length - 1]
@@ -163,12 +169,22 @@ async function analyzeBroker(
     })
   }
 
+  // Profit factor too low — net loser even with a decent win rate
+  if (trades.length >= 5 && profitFactor < 1.0) {
+    issues.push({
+      code: 'LOW_PROFIT_FACTOR',
+      severity: 'critical',
+      message: `Profit factor ${profitFactor.toFixed(2)} < 1.0 — gross losses exceed gross wins. Raise gate and tighten stops.`,
+      fix: 'Raise min_confidence + tighten stop_pct',
+    })
+  }
+
   // Good performance — can be more aggressive
-  if (winRate >= 0.6 && totalPnl > 0 && trades.length >= 5) {
+  if (profitFactor >= 1.5 && totalPnl > 0 && trades.length >= 5) {
     issues.push({
       code: 'STRONG_DAY',
       severity: 'warn',
-      message: `Strong day: ${(winRate * 100).toFixed(0)}% win rate, +$${totalPnl.toFixed(0)} P&L. Strategy working.`,
+      message: `Strong day: PF=${profitFactor.toFixed(2)}, ${(winRate * 100).toFixed(0)}% WR, +$${totalPnl.toFixed(0)} P&L.`,
       fix: 'Can add more positions or increase risk_pct slightly',
     })
   }
@@ -228,6 +244,20 @@ async function analyzeBroker(
       if (newTrail !== config.trail_pct) {
         patch.trail_pct = newTrail
         changes.push(`trail_pct ${(config.trail_pct * 100).toFixed(1)}% → ${(newTrail * 100).toFixed(1)}% (let winners run further)`)
+      }
+    }
+
+    if (issue.code === 'LOW_PROFIT_FACTOR') {
+      // Double correction: raise gate AND tighten stop — PF<1 means losses dominate
+      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 0.05))
+      const newStop = Math.max(0.01, Math.min(0.05, config.stop_pct - 0.005))
+      if (newConf !== config.min_confidence) {
+        patch.min_confidence = newConf
+        changes.push(`min_confidence ${(config.min_confidence * 100).toFixed(0)}% → ${(newConf * 100).toFixed(0)}% (PF=${profitFactor.toFixed(2)})`)
+      }
+      if (newStop !== config.stop_pct) {
+        patch.stop_pct = newStop
+        changes.push(`stop_pct ${(config.stop_pct * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (PF=${profitFactor.toFixed(2)})`)
       }
     }
 

@@ -60,10 +60,10 @@ async function runLTSleeve(
   }
 
   const [positions, equity] = await Promise.all([
-    api.getPositions() as Promise<{ symbol: string }[]>,
+    api.getPositions() as Promise<{ symbol: string; market_value?: number; current_price?: number; quantity?: number }[]>,
     api.getAccountBalance() as Promise<number | null>,
   ])
-  const heldSymbols  = new Set(positions.map((p: { symbol: string }) => p.symbol))
+  const heldSymbols  = new Set(positions.map((p) => p.symbol))
   const accountEquity = equity ?? (isPaper ? 100000 : 2000)
 
   // Count existing open LT positions to enforce sleeve cap
@@ -78,6 +78,15 @@ async function runLTSleeve(
 
   if (openSlots <= 0) {
     return { bought: [], skipped: [], message: `[${broker}] LT sleeve full (${ltHeld.size}/${maxSlots})` }
+  }
+
+  // Exposure cap: LT sleeve must not exceed 25% (Schwab) / 30% (paper) of account equity.
+  // This prevents long-term runners from dominating the account if they grow large.
+  const maxLTExposure = isPaper ? 0.30 : 0.25
+  const ltPositions   = positions.filter((p) => ltHeld.has(p.symbol))
+  const ltExposure    = ltPositions.reduce((s, p) => s + Math.abs(p.market_value ?? (p.current_price ?? 0) * (p.quantity ?? 0)), 0)
+  if (ltExposure / accountEquity >= maxLTExposure) {
+    return { bought: [], skipped: [], message: `[${broker}] LT exposure cap: ${(ltExposure/accountEquity*100).toFixed(0)}% ≥ ${maxLTExposure*100}%` }
   }
 
   const bought:  string[] = []
@@ -198,6 +207,8 @@ async function ensureFreshCandidates(db: ReturnType<typeof createServiceClient>)
     revenue_growth_pct: c.revenueGrowthPct,
     eps_revision_30d:   c.epsRevision30d,
     highlights:         JSON.stringify(c.highlights),
+    rs_score:           c.rsScore,
+    rs_spy:             c.rsSpy,
     price_target:       c.priceTarget,
     current_price:      c.currentPrice,
     screened_at:        c.screened_at,

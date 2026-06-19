@@ -284,6 +284,8 @@ export interface SNDKCandidate {
   stageScore:        number   // 0-30
   rsiScore:          number   // 0-20
   volumeScore:       number   // 0-10
+  rsScore:           number   // relative strength vs SPY (-5 to +10)
+  rsSpy:             number   // 90-day RS ratio (stock change / SPY change)
   grossMarginPct:    number
   operatingMarginPct: number
   revenueGrowthPct:  number
@@ -296,7 +298,8 @@ export interface SNDKCandidate {
 
 export async function scoreSNDKCandidate(
   symbol: string,
-  sector: string
+  sector: string,
+  spyCloses: number[] = []   // pass SPY closes from runSNDKScreener to avoid re-fetching
 ): Promise<SNDKCandidate | null> {
   const [price, fundamentals] = await Promise.all([
     fetchPriceHistory(symbol),
@@ -348,9 +351,31 @@ export async function scoreSNDKCandidate(
   // Volume
   const volScore = volumeExpansionScore(price.volume)
 
-  // Total SNDK score
+  // Relative Strength vs SPY (90-day window) — outperforming the index is a key SNDK tell.
+  // RS > 1.5× SPY = stock leading the market = +10. RS < 0.5 = laggard = -5.
+  let rsScore = 0
+  let rsSpy   = 1.0
+  if (spyCloses.length >= 90 && price.close.length >= 90) {
+    const n        = 90
+    const spyStart = spyCloses[spyCloses.length - n]
+    const spyEnd   = spyCloses[spyCloses.length - 1]
+    const stockStart = price.close[price.close.length - n]
+    const stockEnd   = price.close[price.close.length - 1]
+    if (spyStart > 0 && stockStart > 0) {
+      const spyChange   = (spyEnd - spyStart) / spyStart
+      const stockChange = (stockEnd - stockStart) / stockStart
+      rsSpy = spyChange !== 0 ? stockChange / spyChange : 1
+      if (rsSpy >= 2.0)      rsScore = 10   // doubling SPY — clear leadership
+      else if (rsSpy >= 1.5) rsScore = 7    // 50% stronger than market
+      else if (rsSpy >= 1.0) rsScore = 3    // keeping up with market
+      else if (rsSpy >= 0.5) rsScore = 0    // underperforming but not badly
+      else                   rsScore = -5   // laggard — avoid
+    }
+  }
+
+  // Total SNDK score (capped 0-100)
   const sndkScore = Math.max(0, Math.min(100,
-    fundamentalScore + stageScore + rsiScore + volScore
+    fundamentalScore + stageScore + rsiScore + volScore + rsScore
   ))
 
   // Analyst price target
@@ -372,6 +397,7 @@ export async function scoreSNDKCandidate(
   if (fRevAccel >= 7) highlights.push(`Revenue accelerating (YoY +${(revGrowth * 100).toFixed(0)}%)`)
   if (rsiDirection === 'rising_early') highlights.push(`RSI ${rsiNow.toFixed(0)} crossing up through 55-65 — early momentum signal`)
   if (volScore >= 7) highlights.push('Volume surge on recent breakout candles')
+  if (rsScore >= 7) highlights.push(`RS vs SPY: ${rsSpy.toFixed(1)}× — leading the market over 90 days`)
   if (priceTarget > currentPrice * 1.3) highlights.push(`Analyst target $${priceTarget.toFixed(0)} = +${(((priceTarget - currentPrice) / currentPrice) * 100).toFixed(0)}% upside`)
 
   if (sndkScore < 10) return null  // below minimum — not worth surfacing
@@ -380,6 +406,7 @@ export async function scoreSNDKCandidate(
     symbol, sector, sndkScore, stage, deviationPct,
     rsiCurrent: rsiNow, rsiDirection,
     fundamentalScore, stageScore, rsiScore, volumeScore: volScore,
+    rsScore, rsSpy: Math.round(rsSpy * 100) / 100,
     grossMarginPct:     Math.round(currentGM * 1000) / 10,
     operatingMarginPct: Math.round(currentOM * 1000) / 10,
     revenueGrowthPct:   Math.round(revGrowth * 1000) / 10,
@@ -395,12 +422,17 @@ export async function scoreSNDKCandidate(
 export async function runSNDKScreener(): Promise<SNDKCandidate[]> {
   const results: SNDKCandidate[] = []
 
+  // Fetch SPY once for relative-strength comparison — all candidates use the same baseline.
+  const spyData = await fetchPriceHistory('SPY').catch(() => null)
+  const spyCloses = spyData?.close ?? []
+  if (spyCloses.length > 0) console.log(`[screener] SPY loaded: ${spyCloses.length} days`)
+
   // Process in batches of 10 to avoid Yahoo Finance rate limits
   const entries = Object.entries(DISCOVERY_UNIVERSE)
   for (const [sector, symbols] of entries) {
     const batch = symbols.slice(0, 10)  // 10 per sector
     const scored = await Promise.all(
-      batch.map((sym) => scoreSNDKCandidate(sym, sector).catch(() => null))
+      batch.map((sym) => scoreSNDKCandidate(sym, sector, spyCloses).catch(() => null))
     )
     for (const c of scored) {
       if (c && c.sndkScore >= 15) results.push(c)
