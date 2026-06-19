@@ -8,7 +8,7 @@ import { PROFILES } from '@/lib/strategy-profiles'
 const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/learning', 'Learning'], ['/discovery', '🔭 Discovery'], ['/fix', '🔧 Fix'], ['/settings', 'Settings']]
 
 type Broker = 'schwab' | 'alpaca_paper'
-interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string; raw_symbol?: string; hold_mode?: string }
+interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string; raw_symbol?: string; hold_mode?: string; sndk_score?: number; sndk_stage?: number; sndk_rs_spy?: number; sndk_highlights?: string }
 interface StrategyStats { trades: number; wins: number; win_rate: number; total_pnl: number; avg_pnl: number; profit_factor: number }
 interface AuthStatus { ok: boolean; refresh_expires_at: string | null; hours_left: number | null }
 interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number; fetched_at?: string; auth_status?: AuthStatus; error?: string; reauth_url?: string }
@@ -1002,7 +1002,15 @@ export default function DashboardPage() {
                             <td className="l">
                               <span className="psym">{p.symbol}</span>
                               <span className={`pbadge ${opt ? 'opt' : 'eq'}`}>{opt ? 'OPT' : 'EQ'}</span>
-                              {p.hold_mode === 'trend' && <span className="pbadge" style={{ background: 'rgba(19,201,142,0.15)', color: 'var(--green)', marginLeft: 3 }}>TREND</span>}
+                              {p.hold_mode === 'trend' && (
+                                <span
+                                  className="pbadge"
+                                  style={{ background: 'rgba(19,201,142,0.15)', color: 'var(--green)', marginLeft: 3, cursor: 'help' }}
+                                  title={p.sndk_score != null
+                                    ? `SNDK Score: ${p.sndk_score}/100 · Stage ${p.sndk_stage ?? '?'} · RS vs SPY ${p.sndk_rs_spy != null ? `${p.sndk_rs_spy.toFixed(1)}x` : '?'}\n${(p.sndk_highlights ?? '').replace(/\|/g, '\n')}`
+                                    : 'Discovery LT — no time limit'}
+                                >TREND</span>
+                              )}
                               {p.hold_mode === 'day' && <span className="pbadge" style={{ background: 'rgba(255,200,0,0.12)', color: 'var(--amber)', marginLeft: 3 }}>DAY</span>}
                             </td>
                             <td style={{ textAlign: 'right' }}>{p.quantity > 0 ? '+' : ''}{p.quantity}</td>

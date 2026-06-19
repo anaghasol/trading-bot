@@ -29,9 +29,10 @@ export async function GET() {
     const symbols = raw.map((p) => String(p.symbol))
     const overrideKeys = symbols.map((s) => `entry_override_${s}`)
     const db = createServiceClient()
-    const [{ data: overrideRows }, { data: tradeRows }] = await Promise.all([
+    const [{ data: overrideRows }, { data: tradeRows }, { data: discoveryRows }] = await Promise.all([
       db.from('tb_settings').select('key, value').in('key', overrideKeys),
       db.from('tb_trades').select('symbol, reason').eq('status', 'OPEN').eq('broker', 'alpaca_paper').in('symbol', symbols),
+      db.from('tb_discoveries').select('symbol, sndk_score, stage, rs_spy, highlights').in('symbol', symbols),
     ])
 
     const overrides: Record<string, number> = {}
@@ -47,6 +48,16 @@ export async function GET() {
     for (const row of tradeRows ?? []) {
       const m = (row.reason as string | null)?.match(/hold_mode=(\w+)/)
       if (m) holdModes[row.symbol] = m[1]
+    }
+
+    const discoveryMap: Record<string, { sndk_score: number; stage: number; rs_spy: number; highlights: string }> = {}
+    for (const row of discoveryRows ?? []) {
+      discoveryMap[row.symbol] = {
+        sndk_score: row.sndk_score ?? 0,
+        stage:      row.stage ?? 0,
+        rs_spy:     row.rs_spy ?? 0,
+        highlights: row.highlights ?? '',
+      }
     }
 
     const positions = raw.map((p) => {
@@ -96,6 +107,10 @@ export async function GET() {
         option_expiry,
         entry_corrected:    hasOverride,
         hold_mode:          holdModes[symbol] ?? 'swing',
+        sndk_score:         discoveryMap[symbol]?.sndk_score,
+        sndk_stage:         discoveryMap[symbol]?.stage,
+        sndk_rs_spy:        discoveryMap[symbol]?.rs_spy,
+        sndk_highlights:    discoveryMap[symbol]?.highlights,
       }
     })
 

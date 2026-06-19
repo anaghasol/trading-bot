@@ -397,10 +397,47 @@ export async function GET(req: Request) {
     }
   }
 
+  // ── Mid-week decay scan (Wednesdays) — early warning for critically weak theses ──
+  // Friday does the full rebalance. Wednesday catches anything that collapsed fast
+  // (score < 30) so there's time to act before the weekend.
+  const dayOfWeek = new Date().getDay()
+  if (dayOfWeek === 3) {  // Wednesday
+    for (const broker of ['alpaca_paper', 'schwab'] as const) {
+      try {
+        const { data: ltTrades } = await db
+          .from('tb_trades').select('symbol').eq('status', 'OPEN')
+          .eq('strategy', 'DISCOVERY_LT').or(`broker.eq.${broker},broker.is.null`)
+        const ltSymbols = (ltTrades ?? []).map((t: { symbol: string }) => t.symbol)
+        if (ltSymbols.length === 0) continue
+
+        const { data: decayed } = await db
+          .from('tb_discoveries').select('symbol, sndk_score')
+          .in('symbol', ltSymbols).lt('sndk_score', 30)
+
+        if ((decayed ?? []).length > 0) {
+          const list = (decayed ?? []).map((r: { symbol: string; sndk_score: number }) => `${r.symbol}(${r.sndk_score})`).join(', ')
+          await db.from('tb_alerts').insert({
+            type: 'WARN', broker,
+            message: `[MID-WEEK DECAY] Critical score collapse (<30): ${list} — thesis may be broken, review before Friday`,
+          })
+          if (tgBot && tgChat) {
+            await fetch(`https://api.telegram.org/bot${tgBot}/sendMessage`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: tgChat,
+                text: `⚠️ *Mid-Week Decay Alert* [${broker}]\nCritical score collapse (score<30): ${list}\nThesis may be broken — review before Friday rebalance`,
+                parse_mode: 'Markdown',
+              }),
+            }).catch(() => {})
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+  }
+
   // ── Weekly LT sleeve rebalancing (Fridays only) ──────────────────────────
   // If LT sleeve > 28% of account equity, trim 1-2 weakest positions (lowest
   // current SNDK score from tb_discoveries) to free capital for new discoveries.
-  const dayOfWeek = new Date().getDay()
   if (dayOfWeek === 5) {  // Friday
     const rebalanceResults: string[] = []
     for (const broker of ['alpaca_paper', 'schwab'] as const) {
