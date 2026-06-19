@@ -275,6 +275,15 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Full ${marketTier}: ${positions.length}/${dynamicMaxPos} | VIX${vix.toFixed(0)}` }
   }
 
+  // Idle-cash gate: if <30% of equity is deployed, lower confidence gate by 3pts so we
+  // fill slots instead of sitting in cash. Paper deploys aggressively; Schwab stays guarded.
+  const deployedPct = totalMarketValue / equity
+  if (deployedPct < 0.30 && positions.length < Math.floor(dynamicMaxPos / 2)) {
+    const idleDrop = isSchwab ? 2 : 3
+    dynamicMinConf = Math.max(dynamicMinConf - idleDrop, isSchwab ? 55 : 18)
+    console.log(`[${broker}] Idle-cash mode: ${(deployedPct * 100).toFixed(0)}% deployed — gate lowered to ${dynamicMinConf}%`)
+  }
+
   // Load active intentions from TG channel signals — these shape every execution decision this tick
   const intentions = await getActiveIntentions().catch(() => [])
   const intentionMap = new Map(intentions.map((i) => [i.symbol, i]))

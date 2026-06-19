@@ -305,6 +305,22 @@ export async function getRecommendations(
     }
   } catch { /* non-fatal — runs fine without stage2 */ }
 
+  // Stage 1 SNDK discoveries — fundamental inflections BEFORE price runs.
+  // Weekly screener (Sunday) saves top candidates to tb_discoveries.
+  // Injected here so they're scanned every tick and caught when they set up technically.
+  let stage1DiscoverySymbols: string[] = []
+  try {
+    const dbD = (await import('./supabase-server')).createServiceClient()
+    const { data: dRows } = await dbD.from('tb_discoveries')
+      .select('symbol')
+      .eq('stage', 1)
+      .gte('sndk_score', 40)
+      .order('sndk_score', { ascending: false })
+      .limit(25)
+    stage1DiscoverySymbols = (dRows ?? []).map((r: { symbol: string }) => r.symbol)
+    if (stage1DiscoverySymbols.length > 0) console.log(`[advisor] Stage1 discoveries: ${stage1DiscoverySymbols.join(', ')}`)
+  } catch { /* non-fatal */ }
+
   // 1. Market regime + market-wide discovery IN PARALLEL (both free, no API key)
   // Discovery runs for BOTH live and paper — live uses tighter liquidity filters
   // (vol≥2M enforced inside getDiscoverySymbols) so no penny stocks on real money.
@@ -324,9 +340,10 @@ export async function getRecommendations(
   }
 
   // Discovery (today's movers) come first — most time-sensitive.
-  // Stage 2 after advisorSymbols — they're known uptrenders, worth a scan every tick.
+  // Stage 1 structural discoveries after stage2 — weekly screener picks.
+  // Stage 2 uptrenders come before base symbols.
   const seen2 = new Set<string>()
-  const symbols = [...discoverySyms, ...advisorSymbols, ...stage2Symbols, ...baseSymbols]
+  const symbols = [...discoverySyms, ...advisorSymbols, ...stage2Symbols, ...stage1DiscoverySymbols, ...baseSymbols]
     .filter((s) => !seen2.has(s) && seen2.add(s))
 
   // 2. EMA pullback + Momentum spike scans RUN IN PARALLEL (free, no AI cost)

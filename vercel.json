@@ -41,6 +41,10 @@
       "schedule": "0 0 * * 0"
     },
     {
+      "path": "/api/cron/discovery-trade",
+      "schedule": "45 13 * * 1-5"
+    },
+    {
       "path": "/api/cron/supercycle",
       "schedule": "0 0 * * 1"
     },
