@@ -284,7 +284,7 @@ export interface SNDKCandidate {
   stageScore:        number   // 0-30
   rsiScore:          number   // 0-20
   volumeScore:       number   // 0-10
-  rsScore:           number   // relative strength vs SPY (-5 to +10)
+  rsScore:           number   // relative strength vs SPY (-5 to +15)
   rsSpy:             number   // 90-day RS ratio (stock change / SPY change)
   grossMarginPct:    number
   operatingMarginPct: number
@@ -365,8 +365,9 @@ export async function scoreSNDKCandidate(
       const spyChange   = (spyEnd - spyStart) / spyStart
       const stockChange = (stockEnd - stockStart) / stockStart
       rsSpy = spyChange !== 0 ? stockChange / spyChange : 1
-      if (rsSpy >= 2.0)      rsScore = 10   // doubling SPY — clear leadership
-      else if (rsSpy >= 1.5) rsScore = 7    // 50% stronger than market
+      if (rsSpy >= 3.0)      rsScore = 15   // tripling SPY — rare market leader
+      else if (rsSpy >= 2.0) rsScore = 12   // doubling SPY — strong leadership
+      else if (rsSpy >= 1.5) rsScore = 8    // 50% stronger than market
       else if (rsSpy >= 1.0) rsScore = 3    // keeping up with market
       else if (rsSpy >= 0.5) rsScore = 0    // underperforming but not badly
       else                   rsScore = -5   // laggard — avoid
@@ -441,6 +442,69 @@ export async function runSNDKScreener(): Promise<SNDKCandidate[]> {
     await new Promise((r) => setTimeout(r, 500))
   }
 
-  // Sort by SNDK score descending
-  return results.sort((a, b) => b.sndkScore - a.sndkScore)
+  // Sort quantitative scores descending
+  results.sort((a, b) => b.sndkScore - a.sndkScore)
+
+  // ── Claude narrative validation ────────────────────────────────────────────
+  // Quantitative scoring catches the numbers; Claude catches the story.
+  // One API call on top Stage 1 candidates — not per-stock, so cost is minimal.
+  // Claude evaluates: "Is there a multi-month narrative shift driving this?"
+  // Returns a confidence boost (-5 to +10) and a narrative reason.
+  const stage1Top = results.filter((c) => c.stage === 1 && c.sndkScore >= 30).slice(0, 12)
+  if (stage1Top.length > 0 && process.env.ANTHROPIC_API_KEY) {
+    try {
+      const Anthropic = (await import('@anthropic-ai/sdk')).default
+      const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+      const stockList = stage1Top.map((c) =>
+        `${c.symbol} (${c.sector.replace(/_/g, ' ')}): ` +
+        `RevGrowth=${c.revenueGrowthPct.toFixed(0)}% GM=${c.grossMarginPct.toFixed(0)}% ` +
+        `EPS_rev30d=${c.epsRevision30d.toFixed(0)}% RS_SPY=${c.rsSpy.toFixed(1)}x ` +
+        `Stage=${c.stage} Dev200DMA=${c.deviationPct.toFixed(0)}%`
+      ).join('\n')
+
+      const msg = await ai.messages.create({
+        model:      'claude-sonnet-4-6',
+        max_tokens: 1024,
+        messages:   [{
+          role:    'user',
+          content: `You are a professional growth stock analyst specializing in identifying multi-bagger opportunities before they become obvious.
+
+For each stock below, evaluate: Is there evidence of a multi-month narrative shift similar to historical compounders (revenue acceleration + institutional attention + sector tailwind + product cycle)?
+
+Stocks (all are Stage 1: 0-40% above rising 200DMA — technically early):
+${stockList}
+
+Return JSON only, no explanation outside the JSON:
+{
+  "SYMBOL": { "narrative": true/false, "reason": "1 sentence max", "boost": number between -5 and 10 }
+}
+
+Boost guide: 10=clear narrative catalyst (spinoff, AI pivot, contract win, new product cycle), 5=sector tailwind but no specific catalyst, 0=unclear, -5=no narrative (just a cheap stock).`,
+        }],
+      })
+
+      const raw = msg.content[0].type === 'text' ? msg.content[0].text : ''
+      const jsonMatch = raw.match(/\{[\s\S]*\}/)
+      if (jsonMatch) {
+        const boosts = JSON.parse(jsonMatch[0]) as Record<string, { narrative: boolean; reason: string; boost: number }>
+        for (const c of results) {
+          const b = boosts[c.symbol]
+          if (!b) continue
+          const clampedBoost = Math.max(-5, Math.min(10, b.boost ?? 0))
+          c.sndkScore = Math.max(0, Math.min(100, c.sndkScore + clampedBoost))
+          if (b.narrative && b.reason) {
+            c.highlights.unshift(`🧠 ${b.reason}`)  // prepend — most important signal
+          }
+        }
+        // Re-sort after Claude adjustments
+        results.sort((a, b) => b.sndkScore - a.sndkScore)
+        console.log(`[screener] Claude narrative pass done: boosted ${Object.keys(boosts).length} stocks`)
+      }
+    } catch (e) {
+      console.warn('[screener] Claude narrative pass failed (non-fatal):', e)
+    }
+  }
+
+  return results
 }

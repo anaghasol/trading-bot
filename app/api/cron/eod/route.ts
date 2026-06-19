@@ -12,6 +12,8 @@ import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase-server'
 import { getRuntimeConfig, setRuntimeConfig, RuntimeConfig } from '@/lib/runtime-config'
 import { profileFor } from '@/lib/strategy-profiles'
+import * as AlpacaBroker from '@/lib/alpaca'
+import * as SchwabBroker from '@/lib/schwab'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -392,6 +394,84 @@ export async function GET(req: Request) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: tgChat, text, parse_mode: 'Markdown' }),
       }).catch((e) => console.error('[eod] TG send error:', e))
+    }
+  }
+
+  // ── Weekly LT sleeve rebalancing (Fridays only) ──────────────────────────
+  // If LT sleeve > 28% of account equity, trim 1-2 weakest positions (lowest
+  // current SNDK score from tb_discoveries) to free capital for new discoveries.
+  const dayOfWeek = new Date().getDay()
+  if (dayOfWeek === 5) {  // Friday
+    const rebalanceResults: string[] = []
+    for (const broker of ['alpaca_paper', 'schwab'] as const) {
+      try {
+        const api       = broker === 'alpaca_paper' ? AlpacaBroker : SchwabBroker
+        const positions = await api.getPositions()
+        const equity    = await api.getAccountBalance() ?? (broker === 'alpaca_paper' ? 100000 : 2000)
+
+        // Find open LT positions from tb_trades
+        const { data: ltTrades } = await db
+          .from('tb_trades')
+          .select('symbol')
+          .eq('status', 'OPEN')
+          .eq('strategy', 'DISCOVERY_LT')
+          .or(`broker.eq.${broker},broker.is.null`)
+        const ltSymbols = new Set((ltTrades ?? []).map((t: { symbol: string }) => t.symbol))
+
+        const ltPositions = positions.filter((p) => ltSymbols.has(p.symbol))
+        const ltExposure  = ltPositions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
+        const ltPct       = ltExposure / equity
+
+        if (ltPct <= 0.28 || ltPositions.length === 0) {
+          rebalanceResults.push(`[${broker}] LT ${(ltPct*100).toFixed(0)}% — no rebalance needed`)
+          continue
+        }
+
+        // Look up current SNDK scores from tb_discoveries
+        const { data: scores } = await db
+          .from('tb_discoveries')
+          .select('symbol, sndk_score')
+          .in('symbol', ltPositions.map((p) => p.symbol))
+        const scoreMap = new Map((scores ?? []).map((r: { symbol: string; sndk_score: number }) => [r.symbol, r.sndk_score]))
+
+        // Sort by score ascending — weakest first
+        const sorted = [...ltPositions].sort((a, b) =>
+          (scoreMap.get(a.symbol) ?? 0) - (scoreMap.get(b.symbol) ?? 0)
+        )
+
+        // Trim up to 2 weakest, only if score < 35 (stale/degraded thesis)
+        let trimmed = 0
+        for (const pos of sorted.slice(0, 2)) {
+          const score = scoreMap.get(pos.symbol) ?? 50
+          if (score >= 35) break  // still a valid pick — don't trim
+          const result = broker === 'alpaca_paper'
+            ? await AlpacaBroker.closePosition(pos.symbol).catch(() => null)
+            : await SchwabBroker.placeOrder(pos.symbol, Math.abs(pos.quantity), 'SELL', 'MARKET').catch(() => null)
+          if (result?.status === 'PLACED') {
+            await db.from('tb_alerts').insert({
+              type: 'SELL', symbol: pos.symbol, broker,
+              message: `[REBALANCE] Trimmed LT ${pos.symbol} (score=${score}) — LT sleeve was ${(ltPct*100).toFixed(0)}%, freeing capital`,
+            })
+            rebalanceResults.push(`[${broker}] Trimmed ${pos.symbol} score=${score}`)
+            trimmed++
+          }
+        }
+        if (trimmed === 0) rebalanceResults.push(`[${broker}] LT ${(ltPct*100).toFixed(0)}% but all positions still strong (score≥35)`)
+      } catch (e) {
+        console.error('[eod] rebalance error:', e)
+      }
+    }
+
+    if (tgBot && tgChat && rebalanceResults.some((r) => r.includes('Trimmed'))) {
+      await fetch(`https://api.telegram.org/bot${tgBot}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: tgChat,
+          text: `🔄 *LT Sleeve Friday Rebalance*\n${rebalanceResults.join('\n')}`,
+          parse_mode: 'Markdown',
+        }),
+      }).catch(() => {})
     }
   }
 
