@@ -63,6 +63,26 @@ async function monitorBroker(
   const api      = broker === 'schwab' ? SchwabBroker : AlpacaBroker
   const todayStr = today()
 
+  // Auto-cancel stale DAY buy orders — market buys not filled after 3 min are consuming
+  // buying power without contributing positions. GTC trailing stops (side=sell) are left alone.
+  if (broker !== 'schwab') {
+    try {
+      const openOrders = await AlpacaBroker.getOpenOrders()
+      const staleBuys = openOrders.filter((o) =>
+        o.instruction === 'BUY' &&
+        (Date.now() - new Date(o.entered_time).getTime()) > 3 * 60 * 1000
+      )
+      if (staleBuys.length > 0) {
+        console.log(`[monitor][alpaca] Cancelling ${staleBuys.length} stale buy orders: ${staleBuys.map(o => o.symbol).join(', ')}`)
+        await Promise.all(staleBuys.map((o) => AlpacaBroker.cancelOrder(o.order_id)))
+        void db.from('tb_alerts').insert({
+          type: 'INFO', broker: 'alpaca_paper',
+          message: `[monitor] Cancelled ${staleBuys.length} stale buy orders — freed buying power: ${staleBuys.map(o => o.symbol).join(', ')}`,
+        })
+      }
+    } catch { /* non-fatal */ }
+  }
+
   const [positions, balance, recentOrders] = await Promise.all([
     api.getPositions(),
     api.getAccountBalance(),
