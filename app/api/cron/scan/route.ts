@@ -16,6 +16,7 @@ import * as SchwabBroker from '@/lib/schwab'
 import * as AlpacaBroker from '@/lib/alpaca'
 import { getRecommendations } from '@/lib/ai-advisor'
 import { analyzePdtStatus } from '@/lib/pdt'
+import { batchEarningsCheck, formatEarningsWarning } from '@/lib/earnings'
 import { isMarketOpen, isDailyLossExceeded } from '@/lib/risk'
 import { alertTradeEntered, alertPreMarket } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
@@ -469,12 +470,26 @@ async function runScan(
 
   const skipReasons: string[] = []  // collected per scan tick, sent as one TG if no trades made
 
+  // Batch-fetch earnings dates for all ranked candidates in one Yahoo Finance call.
+  // Cheaper than per-stock calls inside the loop. Symbols with no data → treated as safe.
+  const earningsMap = await batchEarningsCheck(ranked.slice(0, reviewLimit).map((x) => x.rec.symbol)).catch(() => new Map())
+
   for (const { rec, bias, tg_confirmed, intent } of ranked.slice(0, reviewLimit)) {
     const quote = isSchwab
       ? await SchwabBroker.getQuote(rec.symbol)
       : await AlpacaBroker.getQuote(rec.symbol)
     if (!quote || quote.price <= 0) {
       skipReasons.push(`${rec.symbol}: no quote`)
+      continue
+    }
+
+    // Earnings guard: skip stocks with earnings within 2 days (before or after).
+    // Binary events = unpredictable gap risk. Let the dust settle, re-enter after.
+    const earningsInfo = earningsMap.get(rec.symbol)
+    if (earningsInfo?.hasSoon) {
+      const warn = formatEarningsWarning(earningsInfo)
+      console.log(`[${broker}] Skip ${rec.symbol} — ${warn}`)
+      skipReasons.push(`${rec.symbol}: ${warn}`)
       continue
     }
 

@@ -6,6 +6,7 @@ import { NextResponse } from 'next/server'
 import * as SchwabBroker from '@/lib/schwab'
 import * as AlpacaBroker from '@/lib/alpaca'
 import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceeded, INITIAL_STOP_PCT } from '@/lib/risk'
+import { batchEarningsCheck } from '@/lib/earnings'
 import { evaluateOptionsExit } from '@/lib/options-exit'
 import { profileFor } from '@/lib/strategy-profiles'
 import { analyzePdtStatus } from '@/lib/pdt'
@@ -218,8 +219,24 @@ async function monitorBroker(
   let closed = 0, partial = 0, runningPnl = dailyPnl
   const statuses: string[] = []
 
+  // Batch earnings check for all held equity positions — tighten stops on any
+  // position with earnings within 1 day. One call, not per-position.
+  const equitySymbols = positions.filter((p) => p.asset_type !== 'OPTION').map((p) => p.symbol)
+  const earningsMap = await batchEarningsCheck(equitySymbols).catch(() => new Map())
+
   for (const pos of positions) {
     const meta = tradeMap.get(pos.symbol)
+
+    // Earnings approaching: tighten trailing stop to 1.5% (Schwab) or 2% (Paper)
+    // so a binary event doesn't wipe an otherwise healthy position.
+    if (pos.asset_type !== 'OPTION' && earningsMap.get(pos.symbol)?.approachingSoon && meta) {
+      const tightTrail = broker === 'schwab' ? 1.5 : 2.0
+      const qty = Math.abs(pos.quantity)
+      const tightStop = await AlpacaBroker.placeStopOrder(pos.symbol, qty, pos.current_price * (1 - tightTrail / 100)).catch(() => null)
+      const msg = `[EARNINGS GUARD] ${pos.symbol} earnings tomorrow — tightened stop to ${tightTrail}% trail`
+      console.log(`[${broker}][monitor] ${msg}`)
+      void db.from('tb_alerts').insert({ type: 'INFO', symbol: pos.symbol, broker, message: msg })
+    }
 
     // ── OPTIONS: always evaluate — even without a journal entry ───────────────
     // MUST come before the "no journal" guard so unjournaled options aren't skipped.
