@@ -221,23 +221,38 @@ async function runScan(
   }
 
   if (totalMarketValue / equity > MAX_EXPOSURE) {
-    // Before hard-blocking: cut the worst open loser (pnl_pct most negative) if a
-    // high-score setup is queued. Paper: rotate anything > -0.8% loss — cut flat losers faster.
+    // Rotate up to 3 losers to bring exposure under cap, then CONTINUE the scan
+    // to immediately fill the freed slots. Previous behavior (rotate 1, return early)
+    // meant freed capital sat idle for 10 full minutes until the next scan cycle.
     const rotateThreshold = isSchwab ? -1.5 : -0.8
-    const worstLoser = positions
+    let runningMV = totalMarketValue
+    const rotated: string[] = []
+
+    const loserCandidates = [...positions]
       .filter((p) => p.pnl_pct < rotateThreshold && p.asset_type !== 'OPTION')
-      .sort((a, b) => a.pnl_pct - b.pnl_pct)[0]
-    if (worstLoser) {
-      console.log(`[${broker}] Exposure at ${(totalMarketValue/equity*100).toFixed(0)}% — auto-rotating out of ${worstLoser.symbol} (${worstLoser.pnl_pct.toFixed(1)}%) to free capital`)
-      const rotateResult = isSchwab
-        ? await SchwabBroker.placeOrder(worstLoser.symbol, Math.abs(worstLoser.quantity), 'SELL', 'MARKET')
-        : await AlpacaBroker.closePosition(worstLoser.symbol)
-      if (rotateResult.status === 'PLACED') {
-        await db.from('tb_alerts').insert({ type: 'SELL', symbol: worstLoser.symbol, broker,
-          message: `[ROTATE] Sold ${worstLoser.symbol} (${worstLoser.pnl_pct.toFixed(1)}%) to free capacity for new high-score entry` })
+      .sort((a, b) => a.pnl_pct - b.pnl_pct)
+
+    for (const loser of loserCandidates) {
+      if (runningMV / equity <= MAX_EXPOSURE) break  // exposure now under cap
+      if (rotated.length >= 3) break                  // cap rotations per cycle
+      const result = isSchwab
+        ? await SchwabBroker.placeOrder(loser.symbol, Math.abs(loser.quantity), 'SELL', 'MARKET')
+        : await AlpacaBroker.closePosition(loser.symbol)
+      if (result.status === 'PLACED') {
+        runningMV -= Math.abs(loser.market_value ?? loser.current_price * loser.quantity)
+        rotated.push(`${loser.symbol}(${loser.pnl_pct.toFixed(1)}%)`)
+        await db.from('tb_alerts').insert({ type: 'SELL', symbol: loser.symbol, broker,
+          message: `[ROTATE] Sold ${loser.symbol} (${loser.pnl_pct.toFixed(1)}%) → freeing capacity for high-score entry` })
+        console.log(`[${broker}] Rotated out ${loser.symbol} (${loser.pnl_pct.toFixed(1)}%) — exposure now ${(runningMV/equity*100).toFixed(0)}%`)
       }
     }
-    return { trades_made: 0, message: `[${broker}] Exposure cap: $${totalMarketValue.toFixed(0)}/$${equity.toFixed(0)} (${(totalMarketValue/equity*100).toFixed(0)}% > ${MAX_EXPOSURE*100}%) — rotated ${worstLoser?.symbol ?? 'none'}` }
+
+    // If still over cap after rotations, block for this cycle
+    if (runningMV / equity > MAX_EXPOSURE) {
+      return { trades_made: 0, message: `[${broker}] Exposure cap: ${(runningMV/equity*100).toFixed(0)}% > ${MAX_EXPOSURE*100}% — rotated [${rotated.join(', ') || 'none'}], still blocked` }
+    }
+    // Exposure freed — fall through and enter new positions immediately
+    console.log(`[${broker}] Rotated [${rotated.join(', ')}] — exposure now ${(runningMV/equity*100).toFixed(0)}%, continuing scan`)
   }
   // Running exposure: updated after each successful trade in this scan run so the
   // second and third picks in the same run can't sneak past the cap.

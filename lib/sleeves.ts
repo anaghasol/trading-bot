@@ -119,7 +119,11 @@ export function sleeveSizing(
   // share of the sleeve budget (also handles "share too pricey to fit" → 0).
   let qty = stopDist > 0 ? Math.floor(riskDollars / stopDist) : 0
   const maxByShare = price > 0 ? Math.floor((budget * spec.max_position_share) / price) : 0
-  qty = Math.max(0, Math.min(qty, maxByShare))
+  // Hard notional cap: no position can be >10% of equity regardless of stop distance.
+  // Prevents cheap stocks (e.g. $5 biotech) from generating 3,700-share positions
+  // that push exposure to 116% when the scan tries to add them.
+  const maxByNotional = price > 0 ? Math.floor((equity * 0.10) / price) : 0
+  qty = Math.max(0, Math.min(qty, maxByShare, maxByNotional))
 
   const biasNote = bias !== 1 ? ` bias×${bias.toFixed(2)}${convictionMult !== 1 ? `(conviction×${convictionMult.toFixed(1)})` : ''}` : ''
   return {
