@@ -1,16 +1,18 @@
 /**
- * Tests for the permanent aggressive strategy profile changes.
- * Guards against accidental regression of the key numbers.
+ * Tests for the alpaca_paper strategy profile.
+ * Guards against accidental regression of key numbers.
+ * Updated 2026-06-22: switched from "max aggression / 40 positions" to
+ * "quality mode / 20 positions" after 25% WR / PF=0.17 over two days.
  */
 import { PROFILES, profileFor } from '../lib/strategy-profiles'
 
-describe('alpaca_paper profile — permanent aggressive mode', () => {
+describe('alpaca_paper profile — quality mode (20 positions)', () => {
   const p = PROFILES.alpaca_paper
 
-  it('has 40 max positions', () => expect(p.max_positions).toBe(40))
-  it('has 2% initial stop (fast cut)', () => expect(p.initial_stop_pct).toBe(0.02))
-  it('has 4% trail (tight lock)', () => expect(p.trail_pct).toBe(0.04))
-  it('has 2.5% risk per trade (small enough for 40 positions)', () => expect(p.risk_pct).toBe(0.025))
+  it('has 20 max positions (quality over quantity)', () => expect(p.max_positions).toBe(20))
+  it('has 2.5% initial stop', () => expect(p.initial_stop_pct).toBe(0.025))
+  it('has 5% trail (room for winners)', () => expect(p.trail_pct).toBe(0.05))
+  it('has 3% risk per trade (fewer positions → more per entry)', () => expect(p.risk_pct).toBe(0.03))
   it('has 15% daily loss breaker', () => expect(p.daily_loss_stop_pct).toBe(0.15))
   it('allows day trades', () => expect(p.allow_day_trades).toBe(true))
   it('uses wide scan universe', () => expect(p.scan_universe).toBe('wide'))
@@ -28,7 +30,7 @@ describe('schwab profile — unchanged (real money, protected)', () => {
 
 describe('profileFor()', () => {
   it('returns alpaca_paper profile for alpaca_paper broker', () => {
-    expect(profileFor('alpaca_paper').max_positions).toBe(40)
+    expect(profileFor('alpaca_paper').max_positions).toBe(20)
   })
   it('returns schwab profile for schwab broker', () => {
     expect(profileFor('schwab').max_positions).toBe(4)
@@ -38,27 +40,22 @@ describe('profileFor()', () => {
   })
 })
 
-describe('position math sanity — 40 positions fit within capital', () => {
+describe('position math sanity — 20 positions / quality mode', () => {
   const p = PROFILES.alpaca_paper
   const equity = 100_000
 
-  it('40 positions at 2.5% risk each = 100% risk budget (diversified)', () => {
+  it('20 positions at 3% risk each = 60% risk budget', () => {
     const totalRiskBudget = p.max_positions * p.risk_pct * equity
-    // Total "risk" (money at risk if all stop out) = 40 * 2.5% * $100K = $100K
-    // That would only trigger if ALL 40 positions hit their stop simultaneously — impossible in practice
-    expect(totalRiskBudget).toBe(100_000)
+    expect(totalRiskBudget).toBe(60_000)
   })
 
-  it('per-position size at 2% stop: risk / stop = 2.5% / 2% = 1.25× equity per position', () => {
-    // This shows why the per-position cap (5% of equity) is essential
+  it('per-position size at 2.5% stop: risk / stop = 3% / 2.5% = 1.2× equity per position', () => {
     const impliedSize = (p.risk_pct / p.initial_stop_pct) * equity
-    expect(impliedSize).toBe(125_000)  // without cap, one position would exceed account — cap prevents this
+    expect(impliedSize).toBe(120_000)  // notional cap at 10% of equity ($10K) prevents this
   })
 
-  it('with 5% per-position cap: 40 × 5% = 200% — cap ensures max ~95% actual exposure', () => {
-    // Each position is capped at 5% of equity = $5K
-    // 40 × $5K = $200K theoretical max but exposure gate (95%) stops it at ~19 positions per scan
-    const cappedPerPos = 0.05 * equity
-    expect(cappedPerPos).toBe(5_000)
+  it('with 10% notional cap: 20 × 10% = 200% theoretical — exposure gate (97%) limits actual', () => {
+    const cappedPerPos = 0.10 * equity
+    expect(cappedPerPos).toBe(10_000)
   })
 })

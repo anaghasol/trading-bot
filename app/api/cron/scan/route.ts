@@ -478,11 +478,14 @@ async function runScan(
   // Live: strict AI gate applies — Claude's confidence must clear dynamicMinConf.
   const ranked = rankedPre
     .filter((x) => {
-      // Mechanical RS filter (paper only): stock must outperform SPY by ≥ 1.2pp today.
-      // Raised from no filter after 24W/49L — don't buy stocks lagging the market.
+      // Mechanical quality filters (paper only) — added after 24W/73L, PF=0.17:
+      // 1. RS vs SPY ≥ 1.3pp: stock must be outperforming the market today
+      // 2. Research score ≥ 6.5: only GOOD/STRONG setups get through (was no floor)
+      // Missing research data = pass through (data outage ≠ bad setup)
       if (!isSchwab) {
         const rs = research.get(x.rec.symbol)
-        if (rs && rs.rs_vs_spy < 1.2) return false  // missing data = pass through
+        if (rs && rs.rs_vs_spy < 1.3) return false
+        if (rs && rs.score < 6.5) return false
       }
       if (x.rec.confidence >= dynamicMinConf) return true
       if (!isSchwab && (x.rec.ema_score ?? 0) >= 3) {

@@ -49,7 +49,19 @@ export async function getRuntimeConfig(broker: 'alpaca_paper' | 'schwab'): Promi
     const { data } = await db.from('tb_settings').select('value').eq('key', key).single()
     if (!data?.value) return defaults
     const saved = JSON.parse(data.value) as Partial<RuntimeConfig>
-    return { ...defaults, ...saved }
+    // Clamp stored values to current profile floors so a code change to the profile
+    // takes effect immediately — without needing to wipe the DB config.
+    const floored = { ...saved }
+    // min_confidence uses integer scale (36 = 36%); floor to current profile minimum
+    if (floored.min_confidence !== undefined)
+      floored.min_confidence = Math.max(profile.min_confidence, floored.min_confidence)
+    // stop_pct uses fraction scale (0.025 = 2.5%); floor prevents auto-tuner from going below profile
+    if (floored.stop_pct !== undefined)
+      floored.stop_pct = Math.max(profile.initial_stop_pct, floored.stop_pct)
+    // max_positions: clamp DOWN to profile cap (new 20 cap must override old 40 in DB)
+    if (floored.max_positions !== undefined)
+      floored.max_positions = Math.min(profile.max_positions, floored.max_positions)
+    return { ...defaults, ...floored }
   } catch {
     return defaults
   }

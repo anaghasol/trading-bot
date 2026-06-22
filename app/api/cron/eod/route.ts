@@ -213,12 +213,12 @@ async function analyzeBroker(
   const patch: Partial<RuntimeConfig> = {}
   const changes: string[] = []
 
-  const minConf  = profile.min_confidence  // floor — never go below profile default
-  const maxConf  = 0.85                    // ceiling
+  const minConf  = profile.min_confidence  // floor (integer scale: 36 = 36%)
+  const maxConf  = 85                      // ceiling 85% — was 0.85 (fraction/integer mismatch bug)
 
   for (const issue of issues) {
     if (issue.code === 'LOW_ENTRY_RATE') {
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence - 0.05))
+      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence - 5))
       if (newConf !== config.min_confidence) {
         patch.min_confidence = newConf
         changes.push(`min_confidence ${(config.min_confidence * 100).toFixed(0)}% → ${(newConf * 100).toFixed(0)}% (too few entries)`)
@@ -226,15 +226,15 @@ async function analyzeBroker(
     }
 
     if (issue.code === 'POOR_WIN_RATE') {
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 0.05))
+      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 5))
       if (newConf !== config.min_confidence) {
         patch.min_confidence = newConf
-        changes.push(`min_confidence ${(config.min_confidence * 100).toFixed(0)}% → ${(newConf * 100).toFixed(0)}% (poor win rate)`)
+        changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (poor win rate)`)
       }
     }
 
     if (issue.code === 'LARGE_AVG_LOSS') {
-      const newStop = Math.max(0.01, Math.min(0.05, config.stop_pct - 0.005))
+      const newStop = Math.max(0.015, Math.min(0.05, config.stop_pct - 0.003))
       if (newStop !== config.stop_pct) {
         patch.stop_pct = newStop
         changes.push(`stop_pct ${(config.stop_pct * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (large avg loss)`)
@@ -242,7 +242,7 @@ async function analyzeBroker(
     }
 
     if (issue.code === 'POOR_RISK_REWARD' && !patch.stop_pct) {
-      const newTrail = Math.max(0.03, Math.min(0.08, config.trail_pct - 0.005))
+      const newTrail = Math.max(0.04, Math.min(0.10, config.trail_pct + 0.005))
       if (newTrail !== config.trail_pct) {
         patch.trail_pct = newTrail
         changes.push(`trail_pct ${(config.trail_pct * 100).toFixed(1)}% → ${(newTrail * 100).toFixed(1)}% (let winners run further)`)
@@ -250,12 +250,12 @@ async function analyzeBroker(
     }
 
     if (issue.code === 'LOW_PROFIT_FACTOR') {
-      // Aggressive correction: +10% gate raise (was +5%) + tighter stop — need to react fast
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 0.10))
-      const newStop = Math.max(0.01, Math.min(0.05, config.stop_pct - 0.005))
+      // +10pp gate raise on bad PF — now uses correct integer scale (was +0.10 fraction bug)
+      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 10))
+      const newStop = Math.max(0.015, Math.min(0.05, config.stop_pct - 0.003))
       if (newConf !== config.min_confidence) {
         patch.min_confidence = newConf
-        changes.push(`min_confidence ${(config.min_confidence * 100).toFixed(0)}% → ${(newConf * 100).toFixed(0)}% (PF=${profitFactor.toFixed(2)})`)
+        changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (PF=${profitFactor.toFixed(2)})`)
       }
       if (newStop !== config.stop_pct) {
         patch.stop_pct = newStop
@@ -264,7 +264,7 @@ async function analyzeBroker(
     }
 
     if (issue.code === 'STRONG_DAY') {
-      const newMax = Math.min(50, config.max_positions + 5)
+      const newMax = Math.min(profile.max_positions, config.max_positions + 3)
       if (newMax !== config.max_positions) {
         patch.max_positions = newMax
         changes.push(`max_positions ${config.max_positions} → ${newMax} (strong performance — expand)`)
@@ -272,10 +272,9 @@ async function analyzeBroker(
     }
 
     if (issue.code === 'ZERO_ENTRIES') {
-      // Loosen everything to avoid another dead day
-      const newConf = Math.max(minConf, config.min_confidence - 0.08)
+      const newConf = Math.max(minConf, config.min_confidence - 8)
       patch.min_confidence = newConf
-      changes.push(`min_confidence ${(config.min_confidence * 100).toFixed(0)}% → ${(newConf * 100).toFixed(0)}% (zero entries — scanner too tight)`)
+      changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (zero entries — scanner too tight)`)
     }
   }
 
