@@ -209,7 +209,7 @@ async function runScan(
   // in one scan run don't collectively bypass the cap.
   // Paper: 80% max deployed — keeps 20% dry powder for high-score setups.
   // Live (Schwab): 70% max — real money stays conservative.
-  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.95  // paper: deploy up to 95% — use ALL capital
+  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.97  // paper: 97% — near-full deployment with tiny buffer
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
 
   // Options exposure cap: don't let options consume more than 20% (paper) / 10% (live) of equity.
@@ -224,7 +224,7 @@ async function runScan(
     // Rotate up to 3 losers to bring exposure under cap, then CONTINUE the scan
     // to immediately fill the freed slots. Previous behavior (rotate 1, return early)
     // meant freed capital sat idle for 10 full minutes until the next scan cycle.
-    const rotateThreshold = isSchwab ? -1.5 : -0.8
+    const rotateThreshold = isSchwab ? -1.5 : -0.5  // paper: cut anything flat-to-losing
     let runningMV = totalMarketValue
     const rotated: string[] = []
 
@@ -234,7 +234,7 @@ async function runScan(
 
     for (const loser of loserCandidates) {
       if (runningMV / equity <= MAX_EXPOSURE) break  // exposure now under cap
-      if (rotated.length >= 3) break                  // cap rotations per cycle
+      if (rotated.length >= 5) break                  // up to 5 rotations per cycle
       const result = isSchwab
         ? await SchwabBroker.placeOrder(loser.symbol, Math.abs(loser.quantity), 'SELL', 'MARKET')
         : await AlpacaBroker.closePosition(loser.symbol)
