@@ -4,6 +4,11 @@ import './globals.css'
 export const metadata: Metadata = {
   title: 'MyTrade — AI Trading Desk',
   description: 'Automated AI-driven trading dashboard',
+  icons: {
+    icon: '/mytrade-icon.png',
+    shortcut: '/mytrade-icon.png',
+    apple: '/mytrade-icon.png',
+  },
 }
 
 export const viewport: Viewport = {
