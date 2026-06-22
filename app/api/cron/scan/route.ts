@@ -478,6 +478,12 @@ async function runScan(
   // Live: strict AI gate applies — Claude's confidence must clear dynamicMinConf.
   const ranked = rankedPre
     .filter((x) => {
+      // Mechanical RS filter (paper only): stock must outperform SPY by ≥ 1.2pp today.
+      // Raised from no filter after 24W/49L — don't buy stocks lagging the market.
+      if (!isSchwab) {
+        const rs = research.get(x.rec.symbol)
+        if (rs && rs.rs_vs_spy < 1.2) return false  // missing data = pass through
+      }
       if (x.rec.confidence >= dynamicMinConf) return true
       if (!isSchwab && (x.rec.ema_score ?? 0) >= 3) {
         x.rec.confidence = Math.max(x.rec.confidence, 50)  // floor for sizing

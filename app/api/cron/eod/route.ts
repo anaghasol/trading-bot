@@ -171,12 +171,12 @@ async function analyzeBroker(
     })
   }
 
-  // Profit factor too low — net loser even with a decent win rate
-  if (trades.length >= 5 && profitFactor < 1.0) {
+  // Profit factor too low — trigger at 1.1 (not just 1.0) for earlier correction
+  if (trades.length >= 5 && profitFactor < 1.1) {
     issues.push({
       code: 'LOW_PROFIT_FACTOR',
-      severity: 'critical',
-      message: `Profit factor ${profitFactor.toFixed(2)} < 1.0 — gross losses exceed gross wins. Raise gate and tighten stops.`,
+      severity: profitFactor < 1.0 ? 'critical' : 'warn',
+      message: `Profit factor ${profitFactor.toFixed(2)} < 1.1 — gross losses dominating. Raise gate and tighten stops.`,
       fix: 'Raise min_confidence + tighten stop_pct',
     })
   }
@@ -250,8 +250,8 @@ async function analyzeBroker(
     }
 
     if (issue.code === 'LOW_PROFIT_FACTOR') {
-      // Double correction: raise gate AND tighten stop — PF<1 means losses dominate
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 0.05))
+      // Aggressive correction: +10% gate raise (was +5%) + tighter stop — need to react fast
+      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 0.10))
       const newStop = Math.max(0.01, Math.min(0.05, config.stop_pct - 0.005))
       if (newConf !== config.min_confidence) {
         patch.min_confidence = newConf

@@ -72,7 +72,7 @@ export async function batchResearch(symbols: string[]): Promise<Map<string, Rese
 
     // ── Volume pace (0–3 pts) ─────────────────────────────────────────────────
     const vp = avgVol > 0 ? vol / (avgVol * sf) : 0
-    const vpScore = vp >= 3 ? 3 : vp >= 2 ? 2 : vp >= 1.5 ? 1 : 0
+    const vpScore = vp >= 3 ? 3 : vp >= 2 ? 2 : vp >= 1.8 ? 1 : 0  // raised floor 1.5→1.8
 
     // ── 52-week high proximity (0–2 pts) ──────────────────────────────────────
     const pctFromHigh = high52 > 0 ? ((high52 - price) / high52) * 100 : 100
