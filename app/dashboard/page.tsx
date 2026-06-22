@@ -108,10 +108,13 @@ function QuickTrade({ broker, cash, qmap, onDone }: { broker: string; cash: numb
     setQuoteLoading(true)
     quoteFetchRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/schwab/quotes?symbols=${upper}`)
+        const endpoint = broker === 'alpaca_paper'
+          ? `/api/alpaca/quotes?symbols=${upper}`
+          : `/api/schwab/quotes?symbols=${upper}`
+        const res = await fetch(endpoint)
         const data = await res.json()
         const q = (data.quotes ?? [])[0]
-        setFetchedQuote(q ? { price: q.price, change_pct: q.change_pct } : null)
+        setFetchedQuote(q?.price ? { price: q.price, change_pct: q.change_pct ?? 0 } : null)
       } catch { setFetchedQuote(null) }
       setQuoteLoading(false)
     }, 400)

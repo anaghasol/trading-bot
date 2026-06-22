@@ -211,10 +211,19 @@ async function runScan(
   // Live (Schwab): 70% max — real money stays conservative.
   const MAX_EXPOSURE = isSchwab ? 0.70 : 0.95  // paper: deploy up to 95% — use ALL capital
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
+
+  // Options exposure cap: don't let options consume more than 20% (paper) / 10% (live) of equity.
+  // AMD-style put losses can be catastrophic when options become 24%+ of account. Hard gate.
+  const MAX_OPT_EXPOSURE = isSchwab ? 0.10 : 0.20
+  const optMarketValue = positions.filter((p) => p.asset_type === 'OPTION').reduce((s, p) => s + Math.abs(p.market_value ?? 0), 0)
+  if (optMarketValue / equity > MAX_OPT_EXPOSURE) {
+    console.log(`[${broker}] Options exposure ${(optMarketValue/equity*100).toFixed(0)}% > ${MAX_OPT_EXPOSURE*100}% cap — blocking new option entries`)
+  }
+
   if (totalMarketValue / equity > MAX_EXPOSURE) {
     // Before hard-blocking: cut the worst open loser (pnl_pct most negative) if a
-    // high-score setup is queued. Paper: rotate anything > -0.5% loss — fast recycling.
-    const rotateThreshold = isSchwab ? -1.5 : -0.5
+    // high-score setup is queued. Paper: rotate anything > -0.8% loss — cut flat losers faster.
+    const rotateThreshold = isSchwab ? -1.5 : -0.8
     const worstLoser = positions
       .filter((p) => p.pnl_pct < rotateThreshold && p.asset_type !== 'OPTION')
       .sort((a, b) => a.pnl_pct - b.pnl_pct)[0]

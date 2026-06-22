@@ -55,6 +55,8 @@ export async function GET(req: Request) {
     for (const pos of optPositions) {
       const plPct = pos.unrealized_plpc * 100  // as percentage
 
+      // Stop loss at -15% of premium paid — AMD-style blow-ups cost 5x more than they should
+      const stopLoss = plPct <= -15
       // Take profit at 50% of max profit (standard options management rule)
       const takeProfit = plPct >= 50
       // Exit near expiry to avoid assignment risk (≤7 DTE)
@@ -72,8 +74,8 @@ export async function GET(req: Request) {
         } catch { return false }
       })()
 
-      if (takeProfit || nearExpiry) {
-        const reason = takeProfit ? `50% profit (${plPct.toFixed(0)}% gain)` : `≤7 DTE — exit before assignment risk`
+      if (stopLoss || takeProfit || nearExpiry) {
+        const reason = stopLoss ? `STOP -15% premium (${plPct.toFixed(0)}% loss — protecting capital)` : takeProfit ? `50% profit (${plPct.toFixed(0)}% gain)` : `≤7 DTE — exit before assignment risk`
         // For a short spread: buy back the short put, sell the long put
         // Simplest approach for paper: close each leg as a market order
         const side = pos.qty < 0 ? 'buy' : 'sell'  // reverse the position
