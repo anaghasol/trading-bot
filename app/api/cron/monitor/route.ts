@@ -392,6 +392,27 @@ async function monitorBroker(
       }
     }
 
+    // ── EMERGENCY HARD STOP — uses Alpaca's own pnl_pct, immune to bad tb_trades entry_price ──
+    // Root cause of MU -10.63%: tb_trades.entry_price can be wrong (health-cron auto-journal
+    // writes avg_cost at time of discovery, data glitches multiply it 10×, etc.).
+    // When entry_price is wrong, checkExitCondition calculates stops in the thousands and
+    // never fires. This catches -8%+ losses using Alpaca's own calculation, which is always correct.
+    const HARD_STOP_PCT = broker === 'alpaca_paper' ? -8 : -5
+    if (pos.pnl_pct < HARD_STOP_PCT && meta.hold_mode !== 'trend') {
+      const order = broker === 'alpaca_paper'
+        ? await AlpacaBroker.closePosition(pos.symbol)
+        : await api.placeOrder(pos.symbol, Math.abs(pos.quantity), 'SELL')
+      if (order.status === 'PLACED') {
+        closed++
+        runningPnl += pos.unrealized_pnl
+        if (meta.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl, pnl_pct: pos.pnl_pct, closed_at: new Date().toISOString() }).eq('id', meta.id)
+        void db.from('tb_alerts').insert({ type: 'STOP_LOSS', symbol: pos.symbol, broker,
+          message: `[HARD STOP] ${pos.symbol} at ${pos.pnl_pct.toFixed(1)}% (Alpaca P/L) — emergency close, stop chain may have failed` })
+        statuses.push(`${pos.symbol}: HARD_STOP ${pos.pnl_pct.toFixed(1)}% — emergency exit (immune to bad entry_price)`)
+        continue
+      }
+    }
+
     // Flat recycling (paper only): if a position has been stuck within ±2% for 2+ calendar days,
     // close it and free the slot for a fresh setup. Winners and trend holds are exempt.
     if (broker === 'alpaca_paper' && holdDays >= 2 && Math.abs(gainPct) < 2 && meta.hold_mode !== 'trend') {
