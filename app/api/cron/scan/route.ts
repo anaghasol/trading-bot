@@ -136,6 +136,20 @@ async function runScan(
   const equity = balance ?? (isSchwab ? 2000 : 100000)
   const pdt    = analyzePdtStatus(orders, equity)
 
+  // ── RECOVERY MODE (paper only) ──────────────────────────────────────────────
+  // When equity drops below 85% of the $100K starting balance, automatically
+  // reduce risk per trade and max positions to preserve remaining capital.
+  // Goal: stop the bleeding first, then compound back — not gamble out of the hole.
+  const PAPER_START_BALANCE = 100_000
+  const recoveryMode = !isSchwab && equity < PAPER_START_BALANCE * 0.85  // below $85K
+  const deepRecovery = !isSchwab && equity < PAPER_START_BALANCE * 0.75  // below $75K
+  if (recoveryMode) {
+    const drawdownPct = ((PAPER_START_BALANCE - equity) / PAPER_START_BALANCE * 100).toFixed(1)
+    const mode = deepRecovery ? 'DEEP RECOVERY' : 'RECOVERY'
+    console.log(`[${broker}] ${mode}: equity $${equity.toFixed(0)} (${drawdownPct}% drawdown from $100K). Risk and position cap reduced.`)
+    // Risk reduction is applied to runtimeCfg below — no DB write, in-memory only
+  }
+
   // Re-entry boost: if a symbol was stopped out in the last 90 minutes on this broker,
   // and it's no longer held, give it +5 confidence boost so the AI re-enters it
   // if the setup is still valid. This implements the "smart re-entry" behavior.
@@ -317,6 +331,20 @@ async function runScan(
     marketTier    = 'GOOD'
     dynamicMinConf = baseConf
     dynamicMaxPos  = isSchwab ? baseMax : Math.min(baseMax, 25)  // paper: cap at 25 in GOOD
+  }
+
+  // Recovery mode overrides: tighter caps protect remaining capital during drawdown
+  if (recoveryMode && !isSchwab) {
+    if (deepRecovery) {
+      // Below $75K: max 10 positions, gate +6pp, protect everything
+      dynamicMaxPos  = Math.min(dynamicMaxPos, 10)
+      dynamicMinConf = Math.min(85, dynamicMinConf + 6)
+    } else {
+      // Below $85K: max 15 positions, gate +3pp — still active but more selective
+      dynamicMaxPos  = Math.min(dynamicMaxPos, 15)
+      dynamicMinConf = Math.min(85, dynamicMinConf + 3)
+    }
+    console.log(`[${broker}] Recovery caps applied: maxPos=${dynamicMaxPos} gate=${dynamicMinConf}%`)
   }
 
   // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).
@@ -675,7 +703,12 @@ async function runScan(
     // Cap combined mult at 2.0× to avoid oversizing a single entry on small account.
     const trendMult = rec.hold_mode === 'trend' ? 1.5 : 1.0
     const combinedMult = Math.min(convictionMult * boostMult * trendMult, 2.0)
-    const sizing = sleeveSizing(sleeve, profile, equity, quote.price, alloc, bias, combinedMult)
+    // Recovery mode: reduce risk per trade to preserve remaining capital.
+    // Use a shrunken profile copy — don't mutate the real profile object.
+    const activeProfile = (recoveryMode && !isSchwab)
+      ? { ...profile, risk_pct: deepRecovery ? profile.risk_pct * 0.5 : profile.risk_pct * 0.67 }
+      : profile
+    const sizing = sleeveSizing(sleeve, activeProfile, equity, quote.price, alloc, bias, combinedMult)
     if (sizing.qty < 1) {
       skipReasons.push(`${rec.symbol}: qty=0 (${sizing.note})`)
       console.log(`[${broker}] SKIP ${rec.symbol} — sizing returned qty=0: ${sizing.note}`)

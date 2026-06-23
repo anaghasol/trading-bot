@@ -852,11 +852,31 @@ export default function DashboardPage() {
         {/* ════ MAIN ════ */}
         <div className="desk-col">
           {/* profile banner */}
-          <div className="profile-banner" style={{ background: isPaper ? 'var(--blue-faint)' : 'var(--green-faint)', border: `1px solid ${isPaper ? 'var(--blue)' : 'var(--green)'}` }}>
-            <b style={{ color: isPaper ? 'var(--blue)' : 'var(--green)' }}>{isPaper ? '🧪 Aggressive Lab' : '🛡 Protected'}</b>
-            <span className="muted" style={{ fontSize: '0.78rem' }}>{isPaper ? 'Alpaca paper $' : 'Schwab real $'} · {(profile.risk_pct * 100).toFixed(1)}% risk/trade · up to {profile.max_positions} positions · {profile.allow_day_trades ? 'day-trades ON (no PDT)' : 'PDT-safe swing (1–5d holds)'} · −{(profile.daily_loss_stop_pct * 100).toFixed(0)}% daily breaker · {profile.min_confidence}% AI gate</span>
-            {isPaper && <span className="chip blue" style={{ marginLeft: 'auto' }}>big balance — test hard</span>}
-          </div>
+          {(() => {
+            const PAPER_START = 100_000
+            const deepRecovery = isPaper && acctValue < PAPER_START * 0.75
+            const recovery     = isPaper && acctValue < PAPER_START * 0.85 && !deepRecovery
+            const drawdownPct  = isPaper ? ((PAPER_START - acctValue) / PAPER_START * 100).toFixed(1) : '0'
+            const bannerBg     = deepRecovery ? 'rgba(255,50,50,0.08)' : recovery ? 'rgba(255,160,0,0.08)' : isPaper ? 'var(--blue-faint)' : 'var(--green-faint)'
+            const bannerBorder = deepRecovery ? 'var(--red)' : recovery ? 'var(--amber)' : isPaper ? 'var(--blue)' : 'var(--green)'
+            return (
+              <div className="profile-banner" style={{ background: bannerBg, border: `1px solid ${bannerBorder}` }}>
+                <b style={{ color: bannerBorder }}>
+                  {deepRecovery ? '🚨 Deep Recovery Mode' : recovery ? '⚠ Recovery Mode' : isPaper ? '🧪 Aggressive Lab' : '🛡 Protected'}
+                </b>
+                <span className="muted" style={{ fontSize: '0.78rem' }}>
+                  {isPaper ? 'Alpaca paper $' : 'Schwab real $'} · {(profile.risk_pct * 100).toFixed(1)}% risk/trade · up to {profile.max_positions} positions · {profile.allow_day_trades ? 'day-trades ON (no PDT)' : 'PDT-safe swing (1–5d holds)'} · −{(profile.daily_loss_stop_pct * 100).toFixed(0)}% daily breaker · {profile.min_confidence}% AI gate
+                  {(recovery || deepRecovery) && ` · ${drawdownPct}% drawdown — reduced sizing until recovery`}
+                </span>
+                {deepRecovery
+                  ? <span className="chip" style={{ marginLeft: 'auto', background: 'rgba(255,50,50,0.15)', color: 'var(--red)', border: '1px solid var(--red)' }}>-{drawdownPct}% — protect capital</span>
+                  : recovery
+                    ? <span className="chip" style={{ marginLeft: 'auto', background: 'rgba(255,160,0,0.15)', color: 'var(--amber)', border: '1px solid var(--amber)' }}>-{drawdownPct}% — rebuilding</span>
+                    : isPaper && <span className="chip blue" style={{ marginLeft: 'auto' }}>big balance — test hard</span>
+                }
+              </div>
+            )
+          })()}
 
           {/* System health bar — last scan time, regime, VIX, candidates */}
           {lastScan && (() => {
