@@ -75,16 +75,39 @@ ${userNotes ? `\nAdditional context from user:\n${userNotes}` : ''}
 
     const fullPrompt = `${promptDef.prompt}\n\n${context}`
 
-    const message = await claude.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      messages: [{ role: 'user', content: fullPrompt }],
-    })
+    let output = ''
+    let modelUsed = 'claude-sonnet-4-6'
 
-    const output = message.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n')
+    try {
+      const message = await claude.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: fullPrompt }],
+      })
+      output = message.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n')
+    } catch (claudeErr) {
+      console.warn('[research] Claude failed, trying Groq fallback:', claudeErr)
+      // Groq fallback — OpenAI-compatible API, llama3-70b
+      const groqKey = process.env.GROQ_API_KEY
+      if (!groqKey) throw new Error('Claude failed and no GROQ_API_KEY set')
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama3-70b-8192',
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: fullPrompt }],
+        }),
+        signal: AbortSignal.timeout(60_000),
+      })
+      if (!res.ok) throw new Error(`Groq HTTP ${res.status}`)
+      const data = await res.json() as { choices: { message: { content: string } }[] }
+      output = data.choices[0]?.message?.content ?? ''
+      modelUsed = 'groq/llama3-70b-8192'
+    }
 
     // Persist to Supabase for history
     try {
@@ -98,7 +121,7 @@ ${userNotes ? `\nAdditional context from user:\n${userNotes}` : ''}
       })
     } catch { /* tb_research_reports may not exist yet — non-fatal */ }
 
-    return NextResponse.json({ success: true, output, prompt: { key: promptDef.key, name: promptDef.name, firm: promptDef.firm } })
+    return NextResponse.json({ success: true, output, model: modelUsed, prompt: { key: promptDef.key, name: promptDef.name, firm: promptDef.firm } })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: msg }, { status: 500 })

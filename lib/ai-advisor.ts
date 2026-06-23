@@ -22,8 +22,9 @@ import { buildLearningContext } from './learning'
 import { profileFor } from './strategy-profiles'
 import { getMarketSentiment } from './market-sentiment'
 
-const claude  = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
-const OAI_KEY = process.env.OPENAI_API_KEY
+const claude    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
+const OAI_KEY   = process.env.OPENAI_API_KEY
+const GROQ_KEY  = process.env.GROQ_API_KEY  // fallback when both Claude + OpenAI fail
 
 const isPaperBroker = (broker: string) => broker === 'alpaca_paper'
 
@@ -150,7 +151,41 @@ async function askClaude(
   }
 }
 
-// ── OpenAI call (raw fetch, no extra package) ─────────────────────────────────
+// ── OpenAI-compatible call (used for OpenAI + Groq) ──────────────────────────
+
+async function callOpenAICompatible(
+  url: string,
+  apiKey: string,
+  model: string,
+  prompt: string,
+  label: string,
+): Promise<Array<{ symbol: string; confidence: number }>> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        temperature: 0.15,
+        max_tokens: 2000,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(20_000),  // 20s timeout — don't block scan forever
+    })
+    if (!res.ok) {
+      console.warn(`[ai-advisor][${label}] HTTP ${res.status}`)
+      return []
+    }
+    const data = await res.json() as { choices: { message: { content: string } }[] }
+    let text = data.choices[0]?.message?.content?.trim() ?? ''
+    if (text.includes('```')) text = text.split('```')[1].replace(/^json/, '').trim()
+    const match = text.match(/\[[\s\S]*\]/)
+    return match ? JSON.parse(match[0]) : []
+  } catch (e) {
+    console.error(`[ai-advisor][${label}] error:`, e)
+    return []
+  }
+}
 
 async function askOpenAI(
   setups: EMASetup[], regime: MarketRegime,
@@ -158,27 +193,34 @@ async function askOpenAI(
   newsContext: string, learnedRules: string, signalMap: Map<string, string>
 ): Promise<Array<{ symbol: string; confidence: number }>> {
   if (!OAI_KEY) return []
-  try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${OAI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.15,
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap) }],
-      }),
-    })
-    if (!res.ok) return []
-    const data = await res.json() as { choices: { message: { content: string } }[] }
-    let text = data.choices[0]?.message?.content?.trim() ?? ''
-    if (text.includes('```')) text = text.split('```')[1].replace(/^json/, '').trim()
-    const match = text.match(/\[[\s\S]*\]/)
-    return match ? JSON.parse(match[0]) : []
-  } catch (e) {
-    console.error('[ai-advisor] OpenAI error:', e)
-    return []
-  }
+  return callOpenAICompatible(
+    'https://api.openai.com/v1/chat/completions',
+    OAI_KEY,
+    'gpt-4o-mini',
+    buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap),
+    'OpenAI',
+  )
+}
+
+// ── Groq fallback (OpenAI-compatible, free tier — llama3-70b) ────────────────
+// Called ONLY when both Claude and OpenAI return empty results (both failed/down).
+// Groq's llama3-70b is fast (~1-2s) and follows JSON instructions well enough
+// to produce confidence scores. Treated same as OpenAI — merged with Claude result.
+
+async function askGroq(
+  setups: EMASetup[], regime: MarketRegime,
+  equity: number, held: string[], learning: string, minConf: number, broker: string,
+  newsContext: string, learnedRules: string, signalMap: Map<string, string>
+): Promise<Array<{ symbol: string; confidence: number }>> {
+  if (!GROQ_KEY) return []
+  console.log('[ai-advisor][Groq] Both Claude+OpenAI failed — falling back to Groq llama3-70b')
+  return callOpenAICompatible(
+    'https://api.groq.com/openai/v1/chat/completions',
+    GROQ_KEY,
+    'llama3-70b-8192',
+    buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap),
+    'Groq',
+  )
 }
 
 // ── Merge dual-AI results ─────────────────────────────────────────────────────
@@ -464,10 +506,17 @@ export async function getRecommendations(
   const aiSetups = setups.slice(0, aiLimit)
 
   // 6. Claude + OpenAI IN PARALLEL — each sees chart data + all signals in one prompt
-  const [claudePicksRaw, openaiPicks] = await Promise.all([
+  let [claudePicksRaw, openaiPicks] = await Promise.all([
     askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
     askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
   ])
+
+  // Groq fallback: if BOTH Claude and OpenAI returned nothing, try Groq llama3-70b.
+  // Groq is OpenAI-compatible and free — same prompt format, result merged as openai slot.
+  if (claudePicksRaw.length === 0 && openaiPicks.length === 0 && aiSetups.length > 0) {
+    openaiPicks = await askGroq(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap)
+    if (openaiPicks.length > 0) console.log(`[ai-advisor][Groq] Fallback active — ${openaiPicks.length} picks recovered`)
+  }
 
   console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Raw:${rawSetups.length} NewsFiltered:${aiSetups.length} | Claude:${claudePicksRaw.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)
 
