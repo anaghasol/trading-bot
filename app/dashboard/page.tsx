@@ -580,7 +580,6 @@ export default function DashboardPage() {
   const dayPct = acctValue ? (dayPnl / acctValue) * 100 : 0
   const up = dayPnl >= 0
   const cash = summary?.cash ?? Math.max(0, acctValue - netLiq)
-  const deployedPct = acctValue ? Math.min(100, (netLiq / acctValue) * 100) : 0
   const breakerUsed = dayPnl < 0 ? Math.min(100, (Math.abs(dayPnl) / (acctValue * profile.daily_loss_stop_pct)) * 100) : 2
   const goalPct = Math.min(100, (acctValue / GOAL) * 100)
   const dtLeft = isPaper ? '∞' : (pdt?.day_trades_remaining ?? 0)
@@ -594,7 +593,6 @@ export default function DashboardPage() {
   const totDay = pos.reduce((s, p) => s + (dayChangeOf(p) ?? 0), 0)
   const totCost = pos.reduce((s, p) => s + p.avg_cost * p.quantity * (p.asset_type === 'OPTION' ? 100 : 1), 0)
   const totLive = pos.reduce((s, p) => { const lp = qmap[p.symbol]?.price ?? p.current_price; return s + lp * Math.abs(p.quantity) * (p.asset_type === 'OPTION' ? 100 : 1) }, 0)
-  const totDelta = pos.reduce((s, p) => s + (p.asset_type === 'OPTION' ? 0 : p.quantity), 0)
 
   // indices + watchlist from quote map
   const idx = (sym: string) => qmap[sym]
@@ -851,7 +849,7 @@ export default function DashboardPage() {
 
         {/* ════ MAIN ════ */}
         <div className="desk-col">
-          {/* profile banner */}
+          {/* profile banner + recovery roadmap */}
           {(() => {
             const PAPER_START = 100_000
             const deepRecovery = isPaper && acctValue < PAPER_START * 0.75
@@ -859,22 +857,89 @@ export default function DashboardPage() {
             const drawdownPct  = isPaper ? ((PAPER_START - acctValue) / PAPER_START * 100).toFixed(1) : '0'
             const bannerBg     = deepRecovery ? 'rgba(255,50,50,0.08)' : recovery ? 'rgba(255,160,0,0.08)' : isPaper ? 'var(--blue-faint)' : 'var(--green-faint)'
             const bannerBorder = deepRecovery ? 'var(--red)' : recovery ? 'var(--amber)' : isPaper ? 'var(--blue)' : 'var(--green)'
+
+            // Actual live values in effect (mirrors scan/route.ts recovery logic)
+            const liveRisk    = deepRecovery ? profile.risk_pct * 0.5 : recovery ? profile.risk_pct * 0.67 : profile.risk_pct
+            const liveMaxPos  = deepRecovery ? Math.min(profile.max_positions, 10) : recovery ? Math.min(profile.max_positions, 15) : profile.max_positions
+            const liveBreaker = deepRecovery ? 8 : recovery ? 12 : profile.daily_loss_stop_pct * 100
+            const liveGate    = deepRecovery ? Math.min(85, profile.min_confidence + 6) : recovery ? Math.min(85, profile.min_confidence + 3) : profile.min_confidence
+
+            // Recovery roadmap milestones
+            const m1 = PAPER_START * 0.75  // $75K — exit deep recovery
+            const m2 = PAPER_START * 0.85  // $85K — exit recovery mode
+            const m3 = PAPER_START         // $100K — full normal mode
+            const nextTarget = acctValue < m1 ? m1 : acctValue < m2 ? m2 : acctValue < m3 ? m3 : null
+            const rangeStart = acctValue < m1 ? 0 : acctValue < m2 ? m1 : acctValue < m3 ? m2 : m2
+            const rangeEnd   = acctValue < m1 ? m1 : acctValue < m2 ? m2 : m3
+            const progressPct = nextTarget ? Math.min(100, ((acctValue - rangeStart) / (rangeEnd - rangeStart)) * 100) : 100
+            const needed = nextTarget ? nextTarget - acctValue : 0
+            const neededPct = nextTarget ? ((needed / acctValue) * 100).toFixed(1) : '0'
+
             return (
-              <div className="profile-banner" style={{ background: bannerBg, border: `1px solid ${bannerBorder}` }}>
-                <b style={{ color: bannerBorder }}>
-                  {deepRecovery ? '🚨 Deep Recovery Mode' : recovery ? '⚠ Recovery Mode' : isPaper ? '🧪 Aggressive Lab' : '🛡 Protected'}
-                </b>
-                <span className="muted" style={{ fontSize: '0.78rem' }}>
-                  {isPaper ? 'Alpaca paper $' : 'Schwab real $'} · {(profile.risk_pct * 100).toFixed(1)}% risk/trade · up to {profile.max_positions} positions · {profile.allow_day_trades ? 'day-trades ON (no PDT)' : 'PDT-safe swing (1–5d holds)'} · −{(profile.daily_loss_stop_pct * 100).toFixed(0)}% daily breaker · {profile.min_confidence}% AI gate
-                  {(recovery || deepRecovery) && ` · ${drawdownPct}% drawdown — reduced sizing until recovery`}
-                </span>
-                {deepRecovery
-                  ? <span className="chip" style={{ marginLeft: 'auto', background: 'rgba(255,50,50,0.15)', color: 'var(--red)', border: '1px solid var(--red)' }}>-{drawdownPct}% — protect capital</span>
-                  : recovery
-                    ? <span className="chip" style={{ marginLeft: 'auto', background: 'rgba(255,160,0,0.15)', color: 'var(--amber)', border: '1px solid var(--amber)' }}>-{drawdownPct}% — rebuilding</span>
-                    : isPaper && <span className="chip blue" style={{ marginLeft: 'auto' }}>big balance — test hard</span>
-                }
-              </div>
+              <>
+                <div className="profile-banner" style={{ background: bannerBg, border: `1px solid ${bannerBorder}` }}>
+                  <b style={{ color: bannerBorder }}>
+                    {deepRecovery ? '🚨 Deep Recovery Mode' : recovery ? '⚠ Recovery Mode' : isPaper ? '🧪 Aggressive Lab' : '🛡 Protected'}
+                  </b>
+                  <span className="muted" style={{ fontSize: '0.78rem' }}>
+                    {isPaper ? 'Alpaca paper $' : 'Schwab real $'} · <b style={{ color: (recovery || deepRecovery) ? bannerBorder : undefined }}>{(liveRisk * 100).toFixed(1)}% risk/trade</b> · up to <b style={{ color: (recovery || deepRecovery) ? bannerBorder : undefined }}>{liveMaxPos} positions</b> · {profile.allow_day_trades ? 'day-trades ON (no PDT)' : 'PDT-safe swing (1–5d holds)'} · −{liveBreaker.toFixed(0)}% daily breaker · {liveGate}% AI gate
+                    {(recovery || deepRecovery) && <span style={{ color: bannerBorder }}> · auto-reduced from base ({(profile.risk_pct * 100).toFixed(0)}% / {profile.max_positions}pos)</span>}
+                  </span>
+                  {deepRecovery
+                    ? <span className="chip" style={{ marginLeft: 'auto', background: 'rgba(255,50,50,0.15)', color: 'var(--red)', border: '1px solid var(--red)', whiteSpace: 'nowrap' }}>-{drawdownPct}% — protect capital</span>
+                    : recovery
+                      ? <span className="chip" style={{ marginLeft: 'auto', background: 'rgba(255,160,0,0.15)', color: 'var(--amber)', border: '1px solid var(--amber)', whiteSpace: 'nowrap' }}>-{drawdownPct}% — rebuilding</span>
+                      : isPaper && <span className="chip blue" style={{ marginLeft: 'auto' }}>big balance — test hard</span>
+                  }
+                </div>
+
+                {/* Recovery roadmap — only shown when in recovery */}
+                {(recovery || deepRecovery) && (
+                  <div style={{ display: 'grid', gap: 8, padding: '10px 14px', background: 'var(--bg-2)', border: `1px solid ${bannerBorder}`, borderTop: 'none', borderRadius: '0 0 8px 8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem' }}>
+                      <span style={{ fontWeight: 700, color: bannerBorder }}>Recovery Roadmap</span>
+                      <span style={{ color: 'var(--fg-2)' }}>Need <b style={{ color: bannerBorder }}>+{neededPct}%</b> (+${needed.toFixed(0)}) to reach next milestone</span>
+                    </div>
+                    {/* Milestone track */}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {[
+                        { label: 'Now', val: acctValue, color: bannerBorder, done: true },
+                        { label: '$75K', val: 75000, subtitle: 'Exit deep recovery', color: acctValue >= 75000 ? 'var(--green)' : acctValue < 75000 ? bannerBorder : 'var(--fg-3)', done: acctValue >= 75000 },
+                        { label: '$85K', val: 85000, subtitle: 'Normal sizing returns', color: acctValue >= 85000 ? 'var(--green)' : 'var(--fg-3)', done: acctValue >= 85000 },
+                        { label: '$100K', val: 100000, subtitle: 'Full reset', color: acctValue >= 100000 ? 'var(--green)' : 'var(--fg-3)', done: acctValue >= 100000 },
+                        { label: '$25K Schwab', val: null, subtitle: 'PDT unlocked', color: 'var(--green)', done: false },
+                      ].map((m, i, arr) => (
+                        <div key={m.label} style={{ display: 'flex', alignItems: 'center', flex: i < arr.length - 1 ? 1 : undefined }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                            <div style={{
+                              width: 10, height: 10, borderRadius: '50%',
+                              background: m.done ? 'var(--green)' : (m.val !== null && acctValue > (m.val - 2000) && acctValue < (m.val || 0)) ? bannerBorder : 'var(--surface-3)',
+                              border: `2px solid ${m.color}`,
+                              boxShadow: m.val !== null && nextTarget === m.val ? `0 0 6px ${bannerBorder}` : 'none',
+                            }} />
+                            <span style={{ fontSize: '0.65rem', color: m.color, fontWeight: 700, whiteSpace: 'nowrap' }}>{m.label}</span>
+                            <span style={{ fontSize: '0.58rem', color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>{m.subtitle ?? ''}</span>
+                          </div>
+                          {i < arr.length - 1 && (
+                            <div style={{ flex: 1, height: 2, margin: '0 4px', marginBottom: 20, background: 'var(--surface-3)', position: 'relative' }}>
+                              {m.done && <div style={{ position: 'absolute', inset: 0, background: 'var(--green)' }} />}
+                              {!m.done && m.val !== null && nextTarget === m.val && (
+                                <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${progressPct}%`, background: bannerBorder, transition: 'width 0.3s' }} />
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {/* What unlocks at next milestone */}
+                    <div style={{ fontSize: '0.7rem', color: 'var(--fg-2)', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                      {deepRecovery && <span>At <b style={{ color: 'var(--amber)' }}>$75K</b>: risk → 2.0%, max positions → 15</span>}
+                      {(deepRecovery || recovery) && <span>At <b style={{ color: 'var(--green)' }}>$85K</b>: full 3.0% risk restored, 25 positions</span>}
+                      <span style={{ color: 'var(--fg-3)' }}>Mode exits automatically when equity crosses each threshold</span>
+                    </div>
+                  </div>
+                )}
+              </>
             )
           })()}
 
