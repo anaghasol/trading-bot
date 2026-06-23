@@ -416,9 +416,21 @@ async function runScan(
   // Telegram-confirmed symbols get +8 confidence bonus before ranking.
   // Supercycle-queued symbols get +10 confidence bonus (monthly momentum confirmed).
   // Research layer applied BEFORE the confidence gate so high-RS stocks can unlock themselves.
+  // Leveraged/inverse ETFs are permanently banned — they can drop 30-50% in a day
+  // (SOXL -$3,749 on 2026-06-23 demonstrated this). Their stop-loss math is also
+  // fundamentally broken: a 2.5% stop on a 3× ETF fires on normal daily noise.
+  const BANNED_TICKERS = new Set([
+    'SOXL','SOXS','TQQQ','SQQQ','SPXL','SPXU','UPRO','SPXS',
+    'LABU','LABD','UVXY','SVXY','VXX','VIXY','TNA','TZA',
+    'NUGT','DUST','JNUG','JDST','GUSH','DRIP','BOIL','KOLD',
+    'FNGU','FNGD','ERX','ERY','FAS','FAZ','TECL','TECS',
+    'DPST','DRN','DRV','NAIL','WEBL','WEBS',
+  ])
+
   const rankedPre = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
     .filter((r) => !avoidSymbols.has(r.symbol))   // channel said avoid — never enter
+    .filter((r) => !BANNED_TICKERS.has(r.symbol)) // leveraged/inverse ETFs — permanently banned
     .map((r) => {
       const rawBias = biasForSymbol(r.symbol, rotation)
       const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias
@@ -509,11 +521,11 @@ async function runScan(
       // Trend/LT picks are exempt — already high-conviction by design.
       if (!isSchwab && !isTrend) {
         const rs = research.get(x.rec.symbol)
-        // No research data = treat as score 0 (fails 6.5 threshold) — don't let data
+        // No research data = treat as score 0 (fails threshold) — don't let data
         // outages open the gate. Only skip filter if stock is already above AI gate.
         if (!rs && x.rec.confidence < dynamicMinConf) return false
-        if (rs && rs.rs_vs_spy < 1.3) return false
-        if (rs && rs.score < 6.5) return false
+        if (rs && rs.rs_vs_spy < 1.4) return false   // raised 1.3 → 1.4 after 19% WR
+        if (rs && rs.score < 7.0) return false        // raised 6.5 → 7.0 after PF=0.05
       }
 
       // ── AI gate (all brokers) ──────────────────────────────────────────────

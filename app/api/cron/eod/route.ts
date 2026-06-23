@@ -91,10 +91,11 @@ async function analyzeBroker(
   const grossLosses = Math.abs(losses.reduce((s, t) => s + ((t.pnl as number) ?? 0), 0))
   const profitFactor = grossLosses > 0 ? grossWins / grossLosses : (grossWins > 0 ? 999 : 1)
 
-  const sortedByPnl   = [...trades].sort((a, b) => ((b.pnl as number) ?? 0) - ((a.pnl as number) ?? 0))
-  const biggestWinner = sortedByPnl[0]  ? `${sortedByPnl[0].symbol} +$${(sortedByPnl[0].pnl as number)?.toFixed(0)}` : 'none'
+  const pnlOf = (t: typeof trades[0]) => (t.pnl as number | null) ?? 0
+  const sortedByPnl   = [...trades].sort((a, b) => pnlOf(b) - pnlOf(a))
+  const biggestWinner = sortedByPnl[0]  ? `${sortedByPnl[0].symbol} +$${pnlOf(sortedByPnl[0]).toFixed(0)}` : 'none'
   const biggestLoser  = sortedByPnl[sortedByPnl.length - 1]
-    ? `${sortedByPnl[sortedByPnl.length - 1].symbol} $${(sortedByPnl[sortedByPnl.length - 1].pnl as number)?.toFixed(0)}`
+    ? `${sortedByPnl.at(-1)!.symbol} $${pnlOf(sortedByPnl.at(-1)!).toFixed(0)}`
     : 'none'
 
   // ── Pull today's entries (BUY alerts) ────────────────────────────────────
@@ -238,78 +239,95 @@ async function analyzeBroker(
   const minConf  = profile.min_confidence  // floor (integer scale: 36 = 36%)
   const maxConf  = 85                      // ceiling 85% — was 0.85 (fraction/integer mismatch bug)
 
+  // Each handler must read from patch (accumulated) not config (original).
+  // Without this, POOR_WIN_RATE writes 41, then LOW_PROFIT_FACTOR reads 36 and
+  // overwrites with 46 — the +5pp WR correction is silently discarded.
+  const curConf  = () => patch.min_confidence ?? config.min_confidence
+  const curStop  = () => patch.stop_pct       ?? config.stop_pct
+  const curTrail = () => patch.trail_pct      ?? config.trail_pct
+  const curMax   = () => patch.max_positions  ?? config.max_positions
+
   for (const issue of issues) {
     if (issue.code === 'LOW_ENTRY_RATE') {
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence - 5))
-      if (newConf !== config.min_confidence) {
+      const before = curConf()
+      const newConf = Math.max(minConf, Math.min(maxConf, before - 5))
+      if (newConf !== before) {
         patch.min_confidence = newConf
-        changes.push(`min_confidence ${(config.min_confidence * 100).toFixed(0)}% → ${(newConf * 100).toFixed(0)}% (too few entries)`)
+        changes.push(`min_confidence ${before}% → ${newConf}% (too few entries)`)
       }
     }
 
     if (issue.code === 'POOR_WIN_RATE') {
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 5))
-      if (newConf !== config.min_confidence) {
+      const before = curConf()
+      const newConf = Math.max(minConf, Math.min(maxConf, before + 5))
+      if (newConf !== before) {
         patch.min_confidence = newConf
-        changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (poor win rate)`)
+        changes.push(`min_confidence ${before}% → ${newConf}% (poor win rate)`)
       }
     }
 
     if (issue.code === 'LARGE_AVG_LOSS') {
-      const newStop = Math.max(0.015, Math.min(0.05, config.stop_pct - 0.003))
-      if (newStop !== config.stop_pct) {
+      const before = curStop()
+      const newStop = Math.max(0.015, Math.min(0.05, before - 0.003))
+      if (newStop !== before) {
         patch.stop_pct = newStop
-        changes.push(`stop_pct ${(config.stop_pct * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (large avg loss)`)
+        changes.push(`stop_pct ${(before * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (large avg loss)`)
       }
     }
 
     if (issue.code === 'POOR_RISK_REWARD' && !patch.stop_pct) {
-      const newTrail = Math.max(0.04, Math.min(0.10, config.trail_pct + 0.005))
-      if (newTrail !== config.trail_pct) {
+      const before = curTrail()
+      const newTrail = Math.max(0.04, Math.min(0.10, before + 0.005))
+      if (newTrail !== before) {
         patch.trail_pct = newTrail
-        changes.push(`trail_pct ${(config.trail_pct * 100).toFixed(1)}% → ${(newTrail * 100).toFixed(1)}% (let winners run further)`)
+        changes.push(`trail_pct ${(before * 100).toFixed(1)}% → ${(newTrail * 100).toFixed(1)}% (let winners run further)`)
       }
     }
 
     if (issue.code === 'LOW_PROFIT_FACTOR') {
-      // +10pp gate raise on bad PF — now uses correct integer scale (was +0.10 fraction bug)
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 10))
-      const newStop = Math.max(0.015, Math.min(0.05, config.stop_pct - 0.003))
-      if (newConf !== config.min_confidence) {
+      const beforeConf = curConf()
+      const beforeStop = curStop()
+      const newConf = Math.max(minConf, Math.min(maxConf, beforeConf + 10))
+      const newStop = Math.max(0.015, Math.min(0.05, beforeStop - 0.003))
+      if (newConf !== beforeConf) {
         patch.min_confidence = newConf
-        changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (PF=${profitFactor.toFixed(2)})`)
+        changes.push(`min_confidence ${beforeConf}% → ${newConf}% (PF=${profitFactor.toFixed(2)})`)
       }
-      if (newStop !== config.stop_pct) {
+      if (newStop !== beforeStop) {
         patch.stop_pct = newStop
-        changes.push(`stop_pct ${(config.stop_pct * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (PF=${profitFactor.toFixed(2)})`)
+        changes.push(`stop_pct ${(beforeStop * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (PF=${profitFactor.toFixed(2)})`)
       }
     }
 
     if (issue.code === 'STRONG_DAY') {
-      const newMax = Math.min(profile.max_positions, config.max_positions + 3)
-      if (newMax !== config.max_positions) {
+      const before = curMax()
+      const newMax = Math.min(profile.max_positions, before + 3)
+      if (newMax !== before) {
         patch.max_positions = newMax
-        changes.push(`max_positions ${config.max_positions} → ${newMax} (strong performance — expand)`)
+        changes.push(`max_positions ${before} → ${newMax} (strong performance — expand)`)
       }
     }
 
     if (issue.code === 'ZERO_ENTRIES') {
-      const newConf = Math.max(minConf, config.min_confidence - 8)
+      const before = curConf()
+      const newConf = Math.max(minConf, before - 8)
       patch.min_confidence = newConf
-      changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (zero entries — scanner too tight)`)
+      changes.push(`min_confidence ${before}% → ${newConf}% (zero entries — scanner too tight)`)
     }
 
     if (issue.code === 'CONSECUTIVE_BAD_PF') {
       // Two red PF days in a row — emergency +8pp gate, tighter stop floor at 1.5%
-      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 8))
-      const newStop = Math.max(0.015, Math.min(0.04, config.stop_pct - 0.005))
-      if (newConf !== config.min_confidence) {
+      const beforeConf = curConf()
+      const beforeStop = curStop()
+      const newConf = Math.max(minConf, Math.min(maxConf, beforeConf + 8))
+      const newStop = Math.max(0.015, Math.min(0.04, beforeStop - 0.005))
+      if (newConf !== beforeConf) {
         patch.min_confidence = newConf
-        changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (2 consecutive PF<0.9 days)`)
+        changes.push(`min_confidence ${beforeConf}% → ${newConf}% (2 consecutive PF<0.9 days)`)
       }
-      if (newStop !== config.stop_pct) {
+      if (newStop !== beforeStop) {
         patch.stop_pct = newStop
-        changes.push(`stop_pct ${(config.stop_pct * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (2 consecutive PF<0.9 days)`)
+        changes.push(`stop_pct ${(beforeStop * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (2 consecutive PF<0.9 days)`)
       }
     }
   }
