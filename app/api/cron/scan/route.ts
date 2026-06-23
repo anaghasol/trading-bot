@@ -507,6 +507,21 @@ async function runScan(
   const openSlots = dynamicMaxPos - positions.length
   const reviewLimit = isSchwab ? openSlots : Math.max(openSlots, 80)  // paper: review up to 80 ranked
 
+  // LT sleeve cap: trend/SNDK positions capped at 30% of equity to prevent over-concentration.
+  // Compute existing trend exposure from current open positions that are hold_mode=trend.
+  const MAX_TREND_EXPOSURE = 0.30
+  const trendSymbols = new Set<string>()
+  if (!isSchwab) {
+    const { data: trendTrades } = await db.from('tb_trades')
+      .select('symbol').eq('status', 'OPEN').eq('broker', 'alpaca_paper')
+      .like('reason', '%hold_mode=trend%')
+    ;(trendTrades ?? []).forEach((t) => trendSymbols.add(t.symbol))
+  }
+  const existingTrendMV = positions
+    .filter((p) => trendSymbols.has(p.symbol))
+    .reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
+  let runningTrendMV = existingTrendMV
+
   const skipReasons: string[] = []  // collected per scan tick, sent as one TG if no trades made
 
   // Batch-fetch earnings dates for all ranked candidates in one Yahoo Finance call.
@@ -677,6 +692,17 @@ async function runScan(
       continue
     }
 
+    // LT sleeve cap: trend/SNDK picks capped at 30% of equity total.
+    // Prevents over-concentration in any single discovery run even in GOOD regime.
+    if (!isSchwab && rec.hold_mode === 'trend') {
+      if ((runningTrendMV + tradeCost) / equity > MAX_TREND_EXPOSURE) {
+        const pct = ((runningTrendMV + tradeCost) / equity * 100).toFixed(0)
+        console.log(`[${broker}] Skip ${rec.symbol} (trend) — would push trend exposure to ${pct}% (cap ${MAX_TREND_EXPOSURE * 100}%)`)
+        skipReasons.push(`${rec.symbol}: trend exposure ${pct}%>30%`)
+        continue
+      }
+    }
+
     const { buy, stop_order_id } = isSchwab
       ? await SchwabBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
       : await AlpacaBroker.placeBuyWithProtection(rec.symbol, sizing.qty, sizing.trail_pct)
@@ -691,6 +717,7 @@ async function runScan(
 
     if (buy.status === 'PLACED') {
       runningExposure += tradeCost  // keep cap accurate within this scan run
+      if (!isSchwab && rec.hold_mode === 'trend') runningTrendMV += tradeCost
       enteredSymbols.add(rec.symbol)
       tradesMade++
 

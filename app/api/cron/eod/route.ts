@@ -40,6 +40,7 @@ interface EODReport {
   wins: number
   losses: number
   win_rate: number
+  profit_factor: number
   total_pnl: number
   avg_win: number
   avg_loss: number
@@ -356,6 +357,7 @@ async function analyzeBroker(
     wins:           wins.length,
     losses:         losses.length,
     win_rate:       winRate,
+    profit_factor:  profitFactor,
     total_pnl:      totalPnl,
     avg_win:        avgWin,
     avg_loss:       avgLoss,
@@ -377,9 +379,14 @@ function buildTelegramReport(report: EODReport): string {
   const pnlEmoji = report.total_pnl >= 0 ? '🟢' : '🔴'
   const wr = (report.win_rate * 100).toFixed(0)
 
+  const pf = report.profit_factor
+  const pfStr = pf >= 999 ? '∞' : pf.toFixed(2)
+  const pfEmoji = pf >= 1.5 ? '🟢' : pf >= 1.0 ? '🟡' : '🔴'
+
   const lines: string[] = [
     `📊 *EOD Report — ${report.date}* (${report.broker === 'alpaca_paper' ? 'Paper' : 'Live'})`,
     `${pnlEmoji} P&L: *${sign}$${report.total_pnl.toFixed(0)}*  |  Win rate: *${wr}%* (${report.wins}W/${report.losses}L)`,
+    `${pfEmoji} Profit Factor: *${pfStr}*  |  Avg win $${report.avg_win.toFixed(0)} vs avg loss $${Math.abs(report.avg_loss).toFixed(0)}`,
     `Entries: ${report.entries_today}  |  Stops fired: ${report.stops_fired}  |  Partials: ${report.partials_taken}`,
     `🏆 Best: ${report.biggest_winner}   💀 Worst: ${report.biggest_loser}`,
   ]

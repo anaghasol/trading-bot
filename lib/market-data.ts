@@ -60,6 +60,7 @@ export interface MarketRegime {
   spy_change: number
   vix: number
   spy_above_200sma: boolean
+  days_below_200sma: number  // 0 if above, else consecutive trading days below
   label: string
 }
 
@@ -253,9 +254,18 @@ export async function getMarketRegime(): Promise<MarketRegime> {
     ])
 
     const spyCloses     = spy1y?.closes ?? []
-    const spy_above_200sma = spyCloses.length >= 200
-      ? spyCloses.at(-1)! > sma(spyCloses, 200)
-      : true
+    const sma200val = spyCloses.length >= 200 ? sma(spyCloses, 200) : null
+    const spy_above_200sma = sma200val !== null ? spyCloses.at(-1)! > sma200val : true
+
+    // Count consecutive trading days SPY has closed below the 200SMA (from most recent backward)
+    let days_below_200sma = 0
+    if (sma200val !== null && !spy_above_200sma) {
+      for (let i = spyCloses.length - 1; i >= Math.max(0, spyCloses.length - 30); i--) {
+        const dayAvg = sma(spyCloses.slice(0, i + 1), Math.min(200, i + 1))
+        if (spyCloses[i] < dayAvg) days_below_200sma++
+        else break
+      }
+    }
 
     const spy_change = spyCloses.length >= 2
       ? ((spyCloses.at(-1)! - spyCloses.at(-2)!) / spyCloses.at(-2)!) * 100
@@ -266,9 +276,11 @@ export async function getMarketRegime(): Promise<MarketRegime> {
     let regime: MarketRegime['regime']
     let label: string
 
-    if (spy_change <= -1.5 || vix >= 30 || !spy_above_200sma) {
+    // Sustained downtrend: >3 days below 200SMA = treat same as RISK_OFF even on calm days
+    const sustainedDowntrend = days_below_200sma >= 3
+    if (spy_change <= -1.5 || vix >= 30 || !spy_above_200sma || sustainedDowntrend) {
       regime = 'RISK_OFF'
-      label  = `Bear signal: SPY ${spy_change.toFixed(1)}% | VIX ${vix.toFixed(0)} | SPY ${spy_above_200sma ? 'above' : 'BELOW'} 200SMA`
+      label  = `Bear signal: SPY ${spy_change.toFixed(1)}% | VIX ${vix.toFixed(0)} | SPY ${spy_above_200sma ? 'above' : `BELOW 200SMA ${days_below_200sma}d`}`
     } else if (spy_change <= -0.5 || vix >= 22) {
       regime = 'CAUTION'
       label  = `Elevated vol: SPY ${spy_change.toFixed(1)}% | VIX ${vix.toFixed(0)}`
@@ -277,9 +289,9 @@ export async function getMarketRegime(): Promise<MarketRegime> {
       label  = `Bull: SPY ${spy_change.toFixed(1)}% | VIX ${vix.toFixed(0)} | above 200SMA ✓`
     }
 
-    return { regime, spy_change, vix, spy_above_200sma, label }
+    return { regime, spy_change, vix, spy_above_200sma, days_below_200sma, label }
   } catch {
-    return { regime: 'CAUTION', spy_change: 0, vix: 20, spy_above_200sma: true, label: 'Market data unavailable' }
+    return { regime: 'CAUTION', spy_change: 0, vix: 20, spy_above_200sma: true, days_below_200sma: 0, label: 'Market data unavailable' }
   }
 }
 
