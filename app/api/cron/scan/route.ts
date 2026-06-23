@@ -308,15 +308,15 @@ async function runScan(
   if (!aboveSma || vix > 28) {
     marketTier    = 'BAD'
     dynamicMinConf = isSchwab ? Math.max(baseConf + 12, 65) : baseConf + 6
-    dynamicMaxPos  = isSchwab ? Math.min(baseMax, 6) : Math.min(baseMax, 16)
+    dynamicMaxPos  = isSchwab ? Math.min(baseMax, 6) : Math.min(baseMax, 12)  // paper: cap at 12 in BAD
   } else if (vix > 22) {
     marketTier    = 'TOUGH'
     dynamicMinConf = isSchwab ? baseConf + 5 : baseConf + 2
-    dynamicMaxPos  = baseMax
+    dynamicMaxPos  = isSchwab ? baseMax : Math.min(baseMax, 18)  // paper: cap at 18 in TOUGH
   } else {
     marketTier    = 'GOOD'
     dynamicMinConf = baseConf
-    dynamicMaxPos  = baseMax
+    dynamicMaxPos  = isSchwab ? baseMax : Math.min(baseMax, 25)  // paper: cap at 25 in GOOD
   }
 
   // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).
@@ -478,16 +478,22 @@ async function runScan(
   // Live: strict AI gate applies — Claude's confidence must clear dynamicMinConf.
   const ranked = rankedPre
     .filter((x) => {
+      const isTrend = x.rec.hold_mode === 'trend'  // Dip Runner / SNDK LT picks
+
       // Mechanical quality filters (paper only) — added after 24W/73L, PF=0.17:
       // 1. RS vs SPY ≥ 1.3pp: stock must be outperforming the market today
-      // 2. Research score ≥ 6.5: only GOOD/STRONG setups get through (was no floor)
+      // 2. Research score ≥ 6.5: only GOOD/STRONG setups get through
+      // LT/trend picks are exempted — they're already high-conviction by design
       // Missing research data = pass through (data outage ≠ bad setup)
-      if (!isSchwab) {
+      if (!isSchwab && !isTrend) {
         const rs = research.get(x.rec.symbol)
         if (rs && rs.rs_vs_spy < 1.3) return false
         if (rs && rs.score < 6.5) return false
       }
       if (x.rec.confidence >= dynamicMinConf) return true
+      // Trend picks: use a lower gate (dynamicMinConf - 8) so LT/SNDK entries aren't
+      // blocked by the tightened 36%+ gate when AI is legitimately cautious on them.
+      if (!isSchwab && isTrend && x.rec.confidence >= Math.max(28, dynamicMinConf - 8)) return true
       if (!isSchwab && (x.rec.ema_score ?? 0) >= 3) {
         x.rec.confidence = Math.max(x.rec.confidence, 50)  // floor for sizing
         return true

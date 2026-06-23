@@ -128,8 +128,29 @@ async function analyzeBroker(
     String(a.message ?? '').includes('PARTIAL')
   ).length
 
+  // ── Yesterday's PF for consecutive-day bad run detection ────────────────
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().split('T')[0]
+  const { data: prevReport } = await db
+    .from('tb_eod_reports')
+    .select('profit_factor')
+    .eq('date', yesterday)
+    .eq('broker', broker)
+    .single()
+    .then((r) => r, () => ({ data: null }))
+  const prevPF = (prevReport?.profit_factor as number | null) ?? null
+
   // ── Detect issues ─────────────────────────────────────────────────────────
   const issues: DiagnosticIssue[] = []
+
+  // Two consecutive days with PF < 0.9 — apply emergency +8pp gate + tighter stop
+  if (profitFactor < 0.9 && prevPF !== null && prevPF < 0.9 && broker === 'alpaca_paper') {
+    issues.push({
+      code: 'CONSECUTIVE_BAD_PF',
+      severity: 'critical',
+      message: `Two consecutive days PF < 0.9 (today ${profitFactor.toFixed(2)}, yesterday ${prevPF.toFixed(2)}). Emergency correction.`,
+      fix: 'Raise gate +8pp and tighten stop',
+    })
+  }
 
   // Too few entries
   if (entriesCount < 5 && broker === 'alpaca_paper') {
@@ -276,6 +297,20 @@ async function analyzeBroker(
       patch.min_confidence = newConf
       changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (zero entries — scanner too tight)`)
     }
+
+    if (issue.code === 'CONSECUTIVE_BAD_PF') {
+      // Two red PF days in a row — emergency +8pp gate, tighter stop floor at 1.5%
+      const newConf = Math.max(minConf, Math.min(maxConf, config.min_confidence + 8))
+      const newStop = Math.max(0.015, Math.min(0.04, config.stop_pct - 0.005))
+      if (newConf !== config.min_confidence) {
+        patch.min_confidence = newConf
+        changes.push(`min_confidence ${config.min_confidence}% → ${newConf}% (2 consecutive PF<0.9 days)`)
+      }
+      if (newStop !== config.stop_pct) {
+        patch.stop_pct = newStop
+        changes.push(`stop_pct ${(config.stop_pct * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (2 consecutive PF<0.9 days)`)
+      }
+    }
   }
 
   let configAfter: Partial<RuntimeConfig> = configBefore
@@ -302,6 +337,7 @@ async function analyzeBroker(
     wins:          wins.length,
     losses:        losses.length,
     win_rate:      Math.round(winRate * 1000) / 10,
+    profit_factor: Math.round(profitFactor * 100) / 100,
     total_pnl:     Math.round(totalPnl * 100) / 100,
     avg_win:       Math.round(avgWin * 100) / 100,
     avg_loss:      Math.round(avgLoss * 100) / 100,
