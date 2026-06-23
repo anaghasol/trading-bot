@@ -500,32 +500,44 @@ async function runScan(
     }
   }
 
-  // Paper mode: EMA score IS the quality gate. Claude ranks/sizes, doesn't veto.
-  // ema≥3 = any mechanical structure = enter paper. Pro systems act, not deliberate.
-  // Bypassed setups get confidence floored at 50 so sizing math works correctly.
-  // Live: strict AI gate applies — Claude's confidence must clear dynamicMinConf.
   const ranked = rankedPre
     .filter((x) => {
       const isTrend = x.rec.hold_mode === 'trend'  // Dip Runner / SNDK LT picks
 
-      // Mechanical quality filters (paper only) — added after 24W/73L, PF=0.17:
-      // 1. RS vs SPY ≥ 1.3pp: stock must be outperforming the market today
-      // 2. Research score ≥ 6.5: only GOOD/STRONG setups get through
-      // LT/trend picks are exempted — they're already high-conviction by design
-      // Missing research data = pass through (data outage ≠ bad setup)
+      // ── Paper quality filters (after 24W/73L, PF=0.17) ────────────────────
+      // Missing research data = FAIL not pass — data outage shouldn't unlock bad trades.
+      // Trend/LT picks are exempt — already high-conviction by design.
       if (!isSchwab && !isTrend) {
         const rs = research.get(x.rec.symbol)
+        // No research data = treat as score 0 (fails 6.5 threshold) — don't let data
+        // outages open the gate. Only skip filter if stock is already above AI gate.
+        if (!rs && x.rec.confidence < dynamicMinConf) return false
         if (rs && rs.rs_vs_spy < 1.3) return false
         if (rs && rs.score < 6.5) return false
       }
+
+      // ── AI gate (all brokers) ──────────────────────────────────────────────
       if (x.rec.confidence >= dynamicMinConf) return true
-      // Trend picks: use a lower gate (dynamicMinConf - 8) so LT/SNDK entries aren't
-      // blocked by the tightened 36%+ gate when AI is legitimately cautious on them.
+
+      // ── Trend bypass (paper only) ──────────────────────────────────────────
       if (!isSchwab && isTrend && x.rec.confidence >= Math.max(28, dynamicMinConf - 8)) return true
-      if (!isSchwab && (x.rec.ema_score ?? 0) >= 3) {
-        x.rec.confidence = Math.max(x.rec.confidence, 50)  // floor for sizing
+
+      // ── Paper EMA bypass (raised from 3→5): strong mechanical structure
+      // can enter even if AI confidence is borderline. Floor raised 50→65 so
+      // undersized entries don't lose more than position sizing intends.
+      if (!isSchwab && (x.rec.ema_score ?? 0) >= 5) {
+        x.rec.confidence = Math.max(x.rec.confidence, 65)
         return true
       }
+
+      // ── Schwab high-conviction EMA bypass: ema≥7 + within 8pp of gate.
+      // Handles the "0 ranked" case where Claude gives 70% to a strong setup
+      // but the gate is 78%. High EMA score = strong mechanical signal = slight
+      // gate relaxation for live money. Only in GOOD/CAUTION (not BAD market).
+      if (isSchwab && marketTier !== 'BAD' && (x.rec.ema_score ?? 0) >= 7 && x.rec.confidence >= dynamicMinConf - 8) {
+        return true
+      }
+
       return false
     })
     .sort((a, b) => (b.rec.confidence * b.bias) - (a.rec.confidence * a.bias))
@@ -679,8 +691,9 @@ async function runScan(
         skipReasons.push(`${rec.symbol}: BREAKOUT needs TG or (ema≥8+conf≥75%)`)
         continue
       }
-      // All other strategies: need TG confirmation OR decent mechanical score
-      // Lowered from 5 → 4: a score of 4/10 still shows some setup quality, don't waste the slot
+      // All other strategies: need TG confirmation OR decent mechanical score (ema≥4).
+      // Setups that entered via the high-EMA bypass (ema≥7) never reach ema<4, so this
+      // check correctly gates low-quality Schwab entries without blocking quality bypasses.
       if (!tg_confirmed && (rec.ema_score ?? 0) < 4) {
         const msg = `[schwab] SKIPPED ${rec.symbol} — no TG confirm and low EMA score ${rec.ema_score}/10`
         console.log(msg)
