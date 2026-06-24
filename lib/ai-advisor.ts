@@ -1,15 +1,17 @@
 /**
- * Dual-AI advisor — mechanical EMA scanner → Claude + OpenAI parallel validation.
+ * Multi-model AI advisor — mechanical EMA scanner → Groq free ensemble primary.
  *
  * Flow:
- *   1. EMA pullback scanner (free, no AI) → top 6 mechanical setups
- *   2. Claude and OpenAI evaluate setups IN PARALLEL (one call each)
- *   3. Merge: final confidence = avg(claude, openai), only keep if BOTH >= threshold
- *   4. Sort by merged confidence, return top picks
+ *   1. EMA pullback scanner (free, no AI) → top mechanical setups
+ *   2. FOUR Groq models evaluate setups IN PARALLEL — all free, all fast
+ *      Primary (llama-3.3-70b): provides full recs (setup type, reason, hold mode)
+ *      Secondary x3 (llama3-70b, mixtral, gemma2): confidence validation
+ *   3. Merge: confidence = avg across all models that responded
+ *   4. Claude fallback ONLY if all 4 Groq models fail (network issue etc.)
  *
- * Why dual AI: two independent LLMs disagreeing → skip (weak signal).
- * Both agreeing with high confidence → strong edge.
- * OpenAI called via raw fetch — no extra npm package needed.
+ * Why ensemble: 4 independent models disagreeing → weak signal, skip.
+ * All 4 agreeing with high confidence → strong edge.
+ * Cost: $0 (Groq free tier, well within rate limits at 1 scan/10min).
  */
 import Anthropic from '@anthropic-ai/sdk'
 import {
@@ -23,8 +25,18 @@ import { profileFor } from './strategy-profiles'
 import { getMarketSentiment } from './market-sentiment'
 
 const claude    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
-const OAI_KEY   = process.env.OPENAI_API_KEY
-const GROQ_KEY  = process.env.GROQ_API_KEY  // fallback when both Claude + OpenAI fail
+const OAI_KEY   = process.env.OPENAI_API_KEY  // kept but no longer primary
+const GROQ_KEY  = process.env.GROQ_API_KEY    // PRIMARY — free 4-model ensemble
+
+// Groq free models used in ensemble — all OpenAI-compatible, ~1-2s latency
+// Primary provides full rec objects (setup, reason, hold_mode).
+// Secondary models provide only confidence scores → averaged for validation.
+const GROQ_ENSEMBLE = [
+  { model: 'llama-3.3-70b-versatile', label: 'Groq/Llama3.3-70B', primary: true  },
+  { model: 'llama3-70b-8192',          label: 'Groq/Llama3-70B',   primary: false },
+  { model: 'mixtral-8x7b-32768',       label: 'Groq/Mixtral-8x7B', primary: false },
+  { model: 'gemma2-9b-it',             label: 'Groq/Gemma2-9B',    primary: false },
+]
 
 const isPaperBroker = (broker: string) => broker === 'alpaca_paper'
 
@@ -202,25 +214,86 @@ async function askOpenAI(
   )
 }
 
-// ── Groq fallback (OpenAI-compatible, free tier — llama3-70b) ────────────────
-// Called ONLY when both Claude and OpenAI return empty results (both failed/down).
-// Groq's llama3-70b is fast (~1-2s) and follows JSON instructions well enough
-// to produce confidence scores. Treated same as OpenAI — merged with Claude result.
+// ── Groq single-model call ────────────────────────────────────────────────────
 
-async function askGroq(
+function callGroqModel(
+  model: string, label: string,
   setups: EMASetup[], regime: MarketRegime,
   equity: number, held: string[], learning: string, minConf: number, broker: string,
   newsContext: string, learnedRules: string, signalMap: Map<string, string>
-): Promise<Array<{ symbol: string; confidence: number }>> {
-  if (!GROQ_KEY) return []
-  console.log('[ai-advisor][Groq] Both Claude+OpenAI failed — falling back to Groq llama3-70b')
+) {
+  if (!GROQ_KEY) return Promise.resolve([])
   return callOpenAICompatible(
     'https://api.groq.com/openai/v1/chat/completions',
     GROQ_KEY,
-    'llama3-70b-8192',
+    model,
     buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap),
-    'Groq',
+    label,
   )
+}
+
+// ── Groq 4-model ensemble (PRIMARY signal source) ─────────────────────────────
+// Runs llama-3.3-70b, llama3-70b, mixtral, gemma2 in parallel — all free.
+// Primary model returns full recommendation objects (setup, reason, hold_mode).
+// Secondary models return only confidence scores, averaged into ensemble_conf.
+// Returns: primary recs with ensemble-averaged confidence; secondary picks
+//   are surfaced as the "openai" slot so mergeResults sees consensus validation.
+
+async function askGroqEnsemble(
+  setups: EMASetup[], regime: MarketRegime,
+  equity: number, held: string[], learning: string, minConf: number, broker: string,
+  newsContext: string, learnedRules: string, signalMap: Map<string, string>
+): Promise<{
+  primaryPicks: Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }>
+  ensemblePicks: Array<{ symbol: string; confidence: number }>
+  modelsUsed: string[]
+}> {
+  if (!GROQ_KEY) return { primaryPicks: [], ensemblePicks: [], modelsUsed: [] }
+
+  // Limit to 50 setups per call — fits comfortably in 8k-32k Groq context windows
+  const groqSetups = setups.slice(0, 50)
+
+  const results = await Promise.all(
+    GROQ_ENSEMBLE.map(({ model, label }) =>
+      callGroqModel(model, label, groqSetups, regime, equity, held, learning, minConf, broker, newsContext, learnedRules, signalMap)
+    )
+  )
+
+  const respondingIdx = results.map((r, i) => ({ i, len: r.length })).filter((x) => x.len > 0)
+  const modelsUsed = respondingIdx.map(({ i }) => GROQ_ENSEMBLE[i].label)
+
+  console.log(`[ai-advisor][Groq] Ensemble results: ${GROQ_ENSEMBLE.map((m, i) => `${m.label}:${results[i].length}`).join(' | ')}`)
+
+  // Primary model provides full rec objects (setup, reason, hold_mode).
+  // If the designated primary (index 0) fails, promote the first model that responded.
+  // This way a single model outage never silences the whole ensemble.
+  const primaryIdx   = respondingIdx[0]?.i ?? -1   // first responding model
+  const primaryPicks = primaryIdx >= 0
+    ? results[primaryIdx] as Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }>
+    : []
+
+  if (primaryIdx > 0) {
+    console.log(`[ai-advisor][Groq] Primary (index 0) failed — promoted ${GROQ_ENSEMBLE[primaryIdx].label} as primary`)
+  }
+
+  // ALL responding models contribute to the ensemble confidence (including primary).
+  // Average per symbol across every model that rated it → robust consensus score.
+  const confAccum = new Map<string, { sum: number; count: number }>()
+  for (const { i } of respondingIdx) {
+    for (const p of results[i]) {
+      const prev = confAccum.get((p as { symbol: string }).symbol) ?? { sum: 0, count: 0 }
+      confAccum.set((p as { symbol: string }).symbol, {
+        sum:   prev.sum + (p as { confidence: number }).confidence,
+        count: prev.count + 1,
+      })
+    }
+  }
+  const ensemblePicks = Array.from(confAccum.entries()).map(([symbol, { sum, count }]) => ({
+    symbol,
+    confidence: Math.round(sum / count),
+  }))
+
+  return { primaryPicks, ensemblePicks, modelsUsed }
 }
 
 // ── Merge dual-AI results ─────────────────────────────────────────────────────
@@ -505,20 +578,24 @@ export async function getRecommendations(
   const aiLimit  = isPaper ? 150 : 6
   const aiSetups = setups.slice(0, aiLimit)
 
-  // 6. Claude + OpenAI IN PARALLEL — each sees chart data + all signals in one prompt
-  let [claudePicksRaw, openaiPicks] = await Promise.all([
-    askClaude(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
-    askOpenAI(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap),
-  ])
+  // 6. GROQ ENSEMBLE PRIMARY — 4 free models in parallel, zero API cost.
+  //    Primary (llama-3.3-70b) provides full rec objects (setup, reason, hold_mode).
+  //    Secondary models (llama3-70b, mixtral, gemma2) provide confidence validation.
+  //    Any model can fail — surviving models cover. Claude only fires if ALL 4 fail.
+  const { primaryPicks: groqPrimary, ensemblePicks: groqEnsemble, modelsUsed } =
+    await askGroqEnsemble(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap)
 
-  // Groq fallback: if BOTH Claude and OpenAI returned nothing, try Groq llama3-70b.
-  // Groq is OpenAI-compatible and free — same prompt format, result merged as openai slot.
+  let claudePicksRaw = groqPrimary
+  let openaiPicks    = groqEnsemble
+
+  // Claude fallback: ONLY if every Groq model failed (network outage, API key issue, etc.)
   if (claudePicksRaw.length === 0 && openaiPicks.length === 0 && aiSetups.length > 0) {
-    openaiPicks = await askGroq(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap)
-    if (openaiPicks.length > 0) console.log(`[ai-advisor][Groq] Fallback active — ${openaiPicks.length} picks recovered`)
+    console.warn('[ai-advisor] All Groq models failed — falling back to Claude (paid)')
+    claudePicksRaw = await askClaude(aiSetups.slice(0, 20), regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap)
   }
 
-  console.log(`[ai-advisor] EMA:${emaSetups.length} Momentum:${momentumSetups.length} → Raw:${rawSetups.length} NewsFiltered:${aiSetups.length} | Claude:${claudePicksRaw.length} OpenAI:${openaiPicks.length} | Gate:${minConf}%`)
+  const primaryLabel = modelsUsed[0] ?? 'Claude-fallback'
+  console.log(`[ai-advisor] EMA:${emaSetups.length} Mom:${momentumSetups.length} → Raw:${rawSetups.length} Filtered:${aiSetups.length} | ${primaryLabel} primary:${claudePicksRaw.length} ensemble:${openaiPicks.length} | Gate:${minConf}%`)
 
   // Paper mechanical fallback: if Claude returned nothing, build picks from EMA scores directly.
   // A pro system never sits idle. EMA score ≥ 4/10 = real mechanical structure = enter.
