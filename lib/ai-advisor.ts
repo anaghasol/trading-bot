@@ -28,14 +28,14 @@ const claude    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 const OAI_KEY   = process.env.OPENAI_API_KEY  // kept but no longer primary
 const GROQ_KEY  = process.env.GROQ_API_KEY    // PRIMARY — free 4-model ensemble
 
-// Groq free models used in ensemble — all OpenAI-compatible, ~1-2s latency
-// Primary provides full rec objects (setup, reason, hold_mode).
-// Secondary models provide only confidence scores → averaged for validation.
-const GROQ_ENSEMBLE = [
-  { model: 'llama-3.3-70b-versatile', label: 'Groq/Llama3.3-70B', primary: true  },
-  { model: 'llama3-70b-8192',          label: 'Groq/Llama3-70B',   primary: false },
-  { model: 'mixtral-8x7b-32768',       label: 'Groq/Mixtral-8x7B', primary: false },
-  { model: 'gemma2-9b-it',             label: 'Groq/Gemma2-9B',    primary: false },
+// Groq sequential fallback chain — best quality first, drops to next on 429/503.
+// Each model has a separate rate-limit quota so they don't all fail together.
+// llama-3.1-8b-instant is tiny/fast and almost never hits rate limits.
+const GROQ_CHAIN = [
+  { model: 'llama-3.3-70b-versatile', label: 'Groq/Llama3.3-70B' },  // best quality
+  { model: 'llama3-70b-8192',          label: 'Groq/Llama3-70B'   },  // older 70B, separate quota
+  { model: 'gemma2-9b-it',             label: 'Groq/Gemma2-9B'    },  // Google model, different pool
+  { model: 'llama-3.1-8b-instant',     label: 'Groq/Llama3.1-8B'  },  // smallest, almost never rate-limits
 ]
 
 const isPaperBroker = (broker: string) => broker === 'alpaca_paper'
@@ -214,32 +214,55 @@ async function askOpenAI(
   )
 }
 
-// ── Groq single-model call ────────────────────────────────────────────────────
+// ── Groq sequential chain (PRIMARY signal source) ─────────────────────────────
+// Tries models in order — best quality first. On 429/503 immediately drops to
+// the next model (separate quota pool). Returns null to signal "try next".
+// Never blocks the scan: 20s timeout per attempt, chain exits on first success.
+//
+// Chain order (user-specified):
+//   1. llama-3.3-70b-versatile  — default, best quality
+//   2. llama3-70b-8192          — if throttled, separate quota
+//   3. gemma2-9b-it             — fast, different pool (Google model)
+//   4. llama-3.1-8b-instant     — smallest, almost never rate-limits
 
-function callGroqModel(
-  model: string, label: string,
-  setups: EMASetup[], regime: MarketRegime,
-  equity: number, held: string[], learning: string, minConf: number, broker: string,
-  newsContext: string, learnedRules: string, signalMap: Map<string, string>
-) {
-  if (!GROQ_KEY) return Promise.resolve([])
-  return callOpenAICompatible(
-    'https://api.groq.com/openai/v1/chat/completions',
-    GROQ_KEY,
-    model,
-    buildPrompt(setups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap),
-    label,
-  )
+async function tryGroqModel(
+  model: string,
+  label: string,
+  prompt: string,
+): Promise<Array<{ symbol: string; confidence: number; setup?: string; reason?: string; target_pct?: number; hold_days?: number; stop_pct?: number; hold_mode?: string }> | null> {
+  if (!GROQ_KEY) return null
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        temperature: 0.15,
+        max_tokens: 2000,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (res.status === 429 || res.status === 503) {
+      console.warn(`[ai-advisor][Groq] ${label} → ${res.status} rate-limited — trying next model`)
+      return null  // null = "try next in chain", distinct from [] = "model responded, no picks"
+    }
+    if (!res.ok) {
+      console.warn(`[ai-advisor][Groq] ${label} → HTTP ${res.status} (not rate-limit) — skipping`)
+      return null
+    }
+    const data = await res.json() as { choices: { message: { content: string } }[] }
+    let text = data.choices[0]?.message?.content?.trim() ?? ''
+    if (text.includes('```')) text = text.split('```')[1].replace(/^json/, '').trim()
+    const match = text.match(/\[[\s\S]*\]/)
+    return match ? JSON.parse(match[0]) : []
+  } catch (e) {
+    console.error(`[ai-advisor][Groq] ${label} error:`, e)
+    return null
+  }
 }
 
-// ── Groq 4-model ensemble (PRIMARY signal source) ─────────────────────────────
-// Runs llama-3.3-70b, llama3-70b, mixtral, gemma2 in parallel — all free.
-// Primary model returns full recommendation objects (setup, reason, hold_mode).
-// Secondary models return only confidence scores, averaged into ensemble_conf.
-// Returns: primary recs with ensemble-averaged confidence; secondary picks
-//   are surfaced as the "openai" slot so mergeResults sees consensus validation.
-
-async function askGroqEnsemble(
+async function askGroqChain(
   setups: EMASetup[], regime: MarketRegime,
   equity: number, held: string[], learning: string, minConf: number, broker: string,
   newsContext: string, learnedRules: string, signalMap: Map<string, string>
@@ -250,50 +273,32 @@ async function askGroqEnsemble(
 }> {
   if (!GROQ_KEY) return { primaryPicks: [], ensemblePicks: [], modelsUsed: [] }
 
-  // Limit to 50 setups per call — fits comfortably in 8k-32k Groq context windows
+  // 50 setups fits safely in 8k context — enough for quality signal coverage
   const groqSetups = setups.slice(0, 50)
+  const prompt = buildPrompt(groqSetups, regime, equity, held, learning, minConf, broker, 'openai', newsContext, learnedRules, signalMap)
 
-  const results = await Promise.all(
-    GROQ_ENSEMBLE.map(({ model, label }) =>
-      callGroqModel(model, label, groqSetups, regime, equity, held, learning, minConf, broker, newsContext, learnedRules, signalMap)
-    )
-  )
+  // Sequential chain: try each model, fall through only on 429/503
+  let primaryPicks: Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }> = []
+  let modelUsed = ''
 
-  const respondingIdx = results.map((r, i) => ({ i, len: r.length })).filter((x) => x.len > 0)
-  const modelsUsed = respondingIdx.map(({ i }) => GROQ_ENSEMBLE[i].label)
-
-  console.log(`[ai-advisor][Groq] Ensemble results: ${GROQ_ENSEMBLE.map((m, i) => `${m.label}:${results[i].length}`).join(' | ')}`)
-
-  // Primary model provides full rec objects (setup, reason, hold_mode).
-  // If the designated primary (index 0) fails, promote the first model that responded.
-  // This way a single model outage never silences the whole ensemble.
-  const primaryIdx   = respondingIdx[0]?.i ?? -1   // first responding model
-  const primaryPicks = primaryIdx >= 0
-    ? results[primaryIdx] as Array<{ symbol: string; confidence: number; setup: string; reason: string; target_pct: number; hold_days: number; stop_pct: number; hold_mode?: string }>
-    : []
-
-  if (primaryIdx > 0) {
-    console.log(`[ai-advisor][Groq] Primary (index 0) failed — promoted ${GROQ_ENSEMBLE[primaryIdx].label} as primary`)
+  for (const { model, label } of GROQ_CHAIN) {
+    const result = await tryGroqModel(model, label, prompt)
+    if (result === null) continue     // rate-limited / error → try next
+    // Model responded (even if empty) — accept and stop chain
+    primaryPicks = result as typeof primaryPicks
+    modelUsed = label
+    console.log(`[ai-advisor][Groq] ${label} → ${primaryPicks.length} picks`)
+    break
   }
 
-  // ALL responding models contribute to the ensemble confidence (including primary).
-  // Average per symbol across every model that rated it → robust consensus score.
-  const confAccum = new Map<string, { sum: number; count: number }>()
-  for (const { i } of respondingIdx) {
-    for (const p of results[i]) {
-      const prev = confAccum.get((p as { symbol: string }).symbol) ?? { sum: 0, count: 0 }
-      confAccum.set((p as { symbol: string }).symbol, {
-        sum:   prev.sum + (p as { confidence: number }).confidence,
-        count: prev.count + 1,
-      })
-    }
+  if (!modelUsed) {
+    console.warn('[ai-advisor][Groq] All 4 models rate-limited or failed')
   }
-  const ensemblePicks = Array.from(confAccum.entries()).map(([symbol, { sum, count }]) => ({
-    symbol,
-    confidence: Math.round(sum / count),
-  }))
 
-  return { primaryPicks, ensemblePicks, modelsUsed }
+  // ensemblePicks is empty here — chain is single-model by design.
+  // The mergeResults function treats empty openaiPicks as "Claude-only" mode
+  // (no penalty, uses primary confidence directly) which is correct behaviour.
+  return { primaryPicks, ensemblePicks: [], modelsUsed: modelUsed ? [modelUsed] : [] }
 }
 
 // ── Merge dual-AI results ─────────────────────────────────────────────────────
@@ -583,7 +588,7 @@ export async function getRecommendations(
   //    Secondary models (llama3-70b, mixtral, gemma2) provide confidence validation.
   //    Any model can fail — surviving models cover. Claude only fires if ALL 4 fail.
   const { primaryPicks: groqPrimary, ensemblePicks: groqEnsemble, modelsUsed } =
-    await askGroqEnsemble(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap)
+    await askGroqChain(aiSetups, regime, equity, heldSymbols, learning, minConf, broker, sentiment.newsContext, learnedRules, signalMap)
 
   let claudePicksRaw = groqPrimary
   let openaiPicks    = groqEnsemble
