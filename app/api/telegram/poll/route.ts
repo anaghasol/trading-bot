@@ -35,6 +35,8 @@ interface ChannelCfg {
   watermarkKey: string  // key in tb_settings for last-seen message ID
   source: string        // written to tb_learning.source
   tradeEnabled: boolean // false = learn/log only, no order execution
+  skipSpamFilter: boolean // trusted curated channels — don't apply generic spam regex
+  signalStyle: string   // injected into AI prompt so Groq knows the channel's signal format
 }
 
 // Index + commodity/forex → tradeable ETF equivalents
@@ -82,25 +84,31 @@ function resolveSymbol(sym: string): string {
 
 const CHANNELS: ChannelCfg[] = [
   {
-    id:           parseInt(process.env.TELEGRAM_CHANNEL_ID ?? '-1002381909837'),
-    name:         'SF Essential Trades',
-    watermarkKey: 'tg_last_msg_id',
-    source:       'sf_essential_trades',
-    tradeEnabled: false,  // muted — removed subscription, keep for macro/learn context only
+    id:              parseInt(process.env.TELEGRAM_CHANNEL_ID ?? '-1002381909837'),
+    name:            'SF Essential Trades',
+    watermarkKey:    'tg_last_msg_id',
+    source:          'sf_essential_trades',
+    tradeEnabled:    false,   // muted — macro/learn context only
+    skipSpamFilter:  false,
+    signalStyle:     'General US equity and macro commentary. May contain watchlists, sector views, earnings previews.',
   },
   {
-    id:           '@OptionT1',
-    name:         'US Equities',
-    watermarkKey: 'tg_last_msg_id_us_equities',
-    source:       'us_equities',
-    tradeEnabled: true,
+    id:              '@OptionT1',
+    name:            'US Equities',
+    watermarkKey:    'tg_last_msg_id_us_equities',
+    source:          'us_equities',
+    tradeEnabled:    true,
+    skipSpamFilter:  true,    // curated channel — skip generic spam regex, trust every message
+    signalStyle:     'US equity trading signals. Format: "Buy TICKER at PRICE SL PRICE target PRICE" or "Watch TICKER near PRICE" or momentum callouts like "INTC AMD moving — entry near X". Also posts earnings previews, watchlists, and "X% up today" momentum alerts. Act on explicit BUY/SELL entries; learn from watchlist and momentum callouts.',
   },
   {
-    id:           '@JimmyLeshTrades',
-    name:         "Jimmy Trader's Life",
-    watermarkKey: 'tg_last_msg_id_jimmy_trades',
-    source:       'jimmy_trades',
-    tradeEnabled: true,   // crypto signals → equity proxies via INDEX_MAP (POL→COIN, BTC→MSTR, etc.)
+    id:              '@JimmyLeshTrades',
+    name:            "Jimmy Trader's Life",
+    watermarkKey:    'tg_last_msg_id_jimmy_trades',
+    source:          'jimmy_trades',
+    tradeEnabled:    true,    // crypto signals → equity proxies via INDEX_MAP (XRP→COIN, BTC→MSTR, etc.)
+    skipSpamFilter:  true,    // curated channel — skip generic spam regex
+    signalStyle:     'Crypto futures signals, occasionally US equities. Crypto format: "XRPUSDT LONG entry 0.22 SL 0.21 TP 0.25" or "XRP long, entry X SL Y". Equity format: "Buy TICKER at X SL Y". Also posts "if you entered the trade, TP hit" updates — classify those as exit or learn. Always extract the ticker and direction; the system maps crypto → equity proxies automatically.',
   },
 ]
 
@@ -261,8 +269,9 @@ export async function GET(req: Request) {
 
       if (!isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
 
-      // Spam gate — prop firm promos, affiliate links, subscription ads → skip before AI call
-      if (isSpam(text)) {
+      // Spam gate — only apply to untrusted/muted channels.
+      // Active trade channels (@OptionT1, @JimmyLeshTrades) are curated — never spam-filter them.
+      if (!ch.skipSpamFilter && isSpam(text)) {
         await db.from('tb_alerts').insert({ type: 'INFO', symbol: null, message: `🚫 ${ch.name} [spam]: ${text.slice(0, 80)}` })
         return { id: msg.id, type: 'spam' }
       }
@@ -297,7 +306,7 @@ export async function GET(req: Request) {
         return { id: msg.id, type: 'options_learn' }
       }
 
-      const signal = await parseSignal(text, ch.name)
+      const signal = await parseSignal(text, ch.name, ch.signalStyle)
       if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
       // Resolve index/commodity symbols → ETF for TRADE and EXIT signals

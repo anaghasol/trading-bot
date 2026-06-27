@@ -184,9 +184,13 @@ For ignore: {"msg_index":N,"type":"ignore"}`)
   }
 }
 
-export async function parseSignal(text: string, channelName = 'Trading Channel'): Promise<ParsedSignal> {
+export async function parseSignal(text: string, channelName = 'Trading Channel', signalStyle = ''): Promise<ParsedSignal> {
   try {
-    const raw = await groqClassify(`You are a human stock trader reading a message from "${channelName}". Your job: decide exactly what action to take (if any) as a STOCK trader — not an options trader.
+    const channelContext = signalStyle
+      ? `\nCHANNEL STYLE: ${signalStyle}\n`
+      : ''
+    const raw = await groqClassify(`You are a human stock trader reading a message from "${channelName}".${channelContext}
+Your job: decide exactly what action to take (if any) as a STOCK trader — not an options trader.
 
 Message: "${text}"
 
