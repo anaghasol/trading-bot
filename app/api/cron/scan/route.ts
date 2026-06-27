@@ -377,16 +377,17 @@ async function runScan(
   const intentionMap = new Map(intentions.map((i) => [i.symbol, i]))
   const avoidSymbols = new Set(intentions.filter((i) => i.type === 'avoid').map((i) => i.symbol))
 
-  // Telegram signal boost: symbols mentioned in recent Telegram trade signals
-  // (last 4 hours) get +8 confidence points — channel confirms our own scan.
-  const since = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
-  const { data: tgRows } = await db
-    .from('tb_alerts')
-    .select('symbol')
-    .in('type', ['BUY', 'SELL'])
-    .gte('created_at', since)
-    .not('symbol', 'is', null)
-  const tgSymbols = new Set((tgRows ?? []).map((r) => r.symbol as string))
+  // Telegram signal boosts — tiered by signal strength:
+  //   +15: TG channel sent explicit BUY/SELL and we executed (last 4h) — highest conviction
+  //   +8:  TG channel mentioned ticker as watchlist/momentum (TG_WATCH, last 2h) — directional nudge
+  const since4h = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
+  const since2h = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+  const [tgTradeRows, tgWatchRows] = await Promise.all([
+    db.from('tb_alerts').select('symbol').in('type', ['BUY', 'SELL']).gte('created_at', since4h).not('symbol', 'is', null),
+    db.from('tb_alerts').select('symbol').eq('type', 'TG_WATCH').gte('created_at', since2h).not('symbol', 'is', null),
+  ])
+  const tgSymbols      = new Set((tgTradeRows.data ?? []).map((r) => r.symbol as string))  // explicit trade executed
+  const tgWatchSymbols = new Set((tgWatchRows.data  ?? []).map((r) => r.symbol as string)) // watchlist/momentum mention
 
   // Supercycle queue boost: symbols queued by weekly supercycle screener get +10 confidence.
   // SUPERCYCLE_QUEUE entries written by /api/cron/supercycle every Sunday — valid for 7 days.
@@ -445,7 +446,9 @@ async function runScan(
       } else if (intent?.type === 'watch_only') {
         intentBoost = 5
       } else if (tgSymbols.has(r.symbol)) {
-        intentBoost = 10  // TG channel confirmed: strong post-Claude safety-net boost
+        intentBoost = 15  // TG executed trade signal — explicit BUY from trusted channel
+      } else if (tgWatchSymbols.has(r.symbol)) {
+        intentBoost = 8   // TG watchlist/momentum mention — directional nudge, not a trade signal
       }
       const supercycleBoost = supercycleSymbols.has(r.symbol) ? 12 : 0  // strong: weekly RS+200MA confirmed
       const hotlistBoost    = hotlistSymbols.has(r.symbol)    ? 12 : 0  // strong: today's hot mover by volume
@@ -453,9 +456,9 @@ async function runScan(
 
       const totalBoost = intentBoost + supercycleBoost + hotlistBoost + reentryBoost
       const finalConf  = Math.min(100, r.confidence + totalBoost)
-      if (totalBoost > 0 || tgSymbols.has(r.symbol) || supercycleSymbols.has(r.symbol)) {
+      if (totalBoost > 0 || tgSymbols.has(r.symbol) || tgWatchSymbols.has(r.symbol) || supercycleSymbols.has(r.symbol)) {
         const sigLabels = [
-          tgSymbols.has(r.symbol) ? 'TG✓' : '',
+          tgSymbols.has(r.symbol) ? 'TG✓+15' : tgWatchSymbols.has(r.symbol) ? 'TG👁+8' : '',
           supercycleSymbols.has(r.symbol) ? 'SC✓' : '',
           hotlistSymbols.has(r.symbol) ? 'HL✓' : '',
           recentStopSymbols.has(r.symbol) ? 'RE✓' : '',
@@ -467,7 +470,7 @@ async function runScan(
       return {
         rec: { ...r, confidence: finalConf },
         bias,
-        tg_confirmed:  tgSymbols.has(r.symbol) || !!intent,
+        tg_confirmed:  tgSymbols.has(r.symbol) || tgWatchSymbols.has(r.symbol) || !!intent,
         supercycle:    supercycleSymbols.has(r.symbol),
         intent,
       }

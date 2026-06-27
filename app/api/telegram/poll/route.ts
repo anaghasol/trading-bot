@@ -423,6 +423,16 @@ export async function GET(req: Request) {
               created_at: new Date().toISOString(),
             })
 
+            // TG_WATCH: write to tb_alerts so the scan gives this symbol a +8 confidence boost.
+            // Only for active channels with bullish/actionable signals — gives scanner a nudge.
+            if (ch.tradeEnabled && signal.actionable && (signal.sentiment === 'bullish' || signal.sentiment === 'neutral')) {
+              await db.from('tb_alerts').insert({
+                type: 'TG_WATCH', symbol: sym, broker: null,
+                message: `[${ch.name}] watchlist/momentum: ${signal.summary.slice(0, 100)}`,
+              })
+              console.log(`[TG][${ch.name}] WATCH ${sym} — +8 scan boost queued | ${signal.summary.slice(0, 60)}`)
+            }
+
             if (signal.sentiment === 'bullish' || signal.sentiment === 'neutral') {
               const priceZone = signal.watch_zone ? parseZonePrices(signal.watch_zone) : null
               const isHoldSignal = /hold|don'?t.exit|remain.bullish|stay.in|keep/i.test(signal.summary)
@@ -568,8 +578,14 @@ export async function GET(req: Request) {
         : { qty: 10 }
       const qty = sizing.qty
 
+      // Resolve the display symbol for logging (handles crypto mapping that already happened above)
+      const displaySym = signal.symbol
+      console.log(`[TG][${ch.name}] ${signal.action} ${qty} ${displaySym} @ ${livePrice ? `$${livePrice}` : 'market'} SL${signal.stop_loss ?? 'auto'} conf=${signal.confidence}%${afterHoursTag}`)
+
       const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
       const stopPrice = signal.stop_loss ?? (livePrice ? Math.round(livePrice * (1 - profile.initial_stop_pct) * 100) / 100 : null)
+
+      console.log(`[TG][${ch.name}] ${displaySym} order → ${order.status}`)
 
       await db.from('tb_alerts').insert({
         type: signal.action,
