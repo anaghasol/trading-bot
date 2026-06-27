@@ -943,6 +943,42 @@ export default function DashboardPage() {
             )
           })()}
 
+          {/* TG disconnection banner — shown during market hours when TG poller is down */}
+          {(() => {
+            if (!tg) return null
+            const etHour = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
+            const marketHours = parseInt(etHour) >= 9 && parseInt(etHour) < 16
+            const tgDown = !tg.connected && marketHours
+            if (!tgDown) return null
+            const reason = !tg.has_session
+              ? 'Session missing — never authenticated'
+              : tg.tg_status === 'no_session'
+                ? 'Session expired — needs re-auth'
+                : tg.tg_status?.startsWith('error:')
+                  ? `Connect error: ${tg.tg_status.replace('error:', '').trim()}`
+                  : `Poller silent ${tg.minutes_silent ?? '?'}m`
+            const minutesLost = tg.last_poll
+              ? Math.round((Date.now() - new Date(tg.last_poll).getTime()) / 60000)
+              : null
+            return (
+              <div style={{ background: 'rgba(255,50,50,0.10)', border: '1px solid var(--red)', borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--red)', fontWeight: 700, fontSize: '0.82rem', flexShrink: 0 }}>⚡ TG DISCONNECTED</span>
+                <span style={{ color: 'var(--fg-2)', fontSize: '0.78rem', flex: 1 }}>
+                  {reason}{minutesLost && minutesLost > 2 ? ` · signals missed for ${minutesLost}m` : ''}
+                  {' — '}US Equities + Jimmy signals not being received
+                </span>
+                <a
+                  href="/api/telegram/auth"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ background: 'var(--red)', color: '#fff', borderRadius: 5, padding: '4px 12px', fontSize: '0.75rem', fontWeight: 700, textDecoration: 'none', flexShrink: 0 }}
+                >
+                  Reconnect TG →
+                </a>
+              </div>
+            )
+          })()}
+
           {/* System health bar — last scan time, regime, VIX, candidates */}
           {lastScan && (() => {
             const scanEt = new Date(lastScan.ts).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true })

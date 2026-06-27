@@ -1,15 +1,34 @@
 /**
- * Classifies Telegram messages from SF Essential Trades — acts like a human trader.
+ * Classifies Telegram messages — acts like a human trader.
  *
  *   type: 'trade'   → explicit BUY/SELL → execute immediately
  *   type: 'exit'    → channel says a stock hit SL/target → close our position if held
  *   type: 'learn'   → insight/analysis → save to learning log for future AI context
  *   type: 'ignore'  → noise, promos, greetings → skip
+ *
+ * Uses Groq (free) for all text classification — llama-3.3-70b-versatile.
+ * Claude is NOT used here; it's only used for image OCR in the poll route.
  */
 
-import Anthropic from '@anthropic-ai/sdk'
+const GROQ_KEY = process.env.GROQ_API_KEY ?? ''
 
-const client = new Anthropic()
+async function groqClassify(prompt: string): Promise<string> {
+  if (!GROQ_KEY) throw new Error('GROQ_API_KEY not set')
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.1,
+      max_tokens: 600,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) throw new Error(`Groq HTTP ${res.status}`)
+  const data = await res.json() as { choices: { message: { content: string } }[] }
+  return data.choices[0]?.message?.content?.trim() ?? ''
+}
 
 const TRADE_KEYWORDS = /\b(buy|sell|long|short|entry|sl|stop.?loss|target|t1|t2|t3|breakout|support|resistance|earnings|hold|exit|watchlist|alert|position|setup|hit|stopped|closed)\b/i
 const HAS_TICKER    = /\b[A-Z]{2,5}\b/
@@ -131,12 +150,7 @@ export async function parseSignalThread(
   if (messages.length === 0) return []
   try {
     const numbered = messages.map((m, i) => `[${i + 1}] ${m.text}`).join('\n\n')
-    const msg = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1500,
-      messages: [{
-        role: 'user',
-        content: `You are reading a THREAD of messages from "${channelName}". Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.
+    const raw = await groqClassify(`You are reading a THREAD of messages from "${channelName}". Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.
 
 ${numbered}
 
@@ -156,10 +170,7 @@ Return ONLY a JSON array with exactly ${messages.length} objects (one per messag
 
 For trade: {"msg_index":N,"type":"trade","symbol":"X","action":"BUY","entry_price":20.5,"stop_loss":18.5,"target":null,"confidence":95}
 For exit: {"msg_index":N,"type":"exit","symbol":"X","reason":"ADVISOR_EXIT","summary":"..."}
-For ignore: {"msg_index":N,"type":"ignore"}`,
-      }],
-    })
-    const raw = (msg.content[0] as { type: string; text: string }).text.trim()
+For ignore: {"msg_index":N,"type":"ignore"}`)
     const match = raw.match(/\[[\s\S]*\]/)
     if (!match) return messages.map((m) => ({ id: m.id, signal: { type: 'ignore' as const } }))
     const parsed = JSON.parse(match[0]) as Array<Record<string, unknown>>
@@ -175,12 +186,7 @@ For ignore: {"msg_index":N,"type":"ignore"}`,
 
 export async function parseSignal(text: string, channelName = 'Trading Channel'): Promise<ParsedSignal> {
   try {
-    const msg = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 500,
-      messages: [{
-        role: 'user',
-        content: `You are a human stock trader reading a message from "${channelName}". Your job: decide exactly what action to take (if any) as a STOCK trader — not an options trader.
+    const raw = await groqClassify(`You are a human stock trader reading a message from "${channelName}". Your job: decide exactly what action to take (if any) as a STOCK trader — not an options trader.
 
 Message: "${text}"
 
@@ -224,11 +230,8 @@ Rules:
 - confidence < 75 → demote trade to learn
 - Default to learn when unsure
 - No person's names in summary — describe the signal objectively
-- Options P&L updates (50% gain on spreads, buying back spreads) = type:learn, extract bullish/bearish direction`,
-      }],
-    })
+- Options P&L updates (50% gain on spreads, buying back spreads) = type:learn, extract bullish/bearish direction`)
 
-    const raw = (msg.content[0] as { type: string; text: string }).text.trim()
     const jsonMatch = raw.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return { type: 'ignore' }
 
