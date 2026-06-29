@@ -129,6 +129,8 @@ ${JSON.stringify(setups.map((s) => ({
   rsi: s.rsi, d1: `${s.change_1d.toFixed(1)}%`, d5: `${s.change_5d.toFixed(1)}%`,
   rs_rank: s.rs_rank, from_52wh: `${s.pct_from_52w_high.toFixed(1)}%`,
   score: `${s.pullback_score}/10`, why: s.reason,
+  ...(s.hv30 ? { hv30: `${s.hv30}%` } : {}),
+  ...(s.earnings_date ? { earnings: s.earnings_date } : {}),
   signals: signalMap.get(s.symbol) ?? 'none',
 })))}
 

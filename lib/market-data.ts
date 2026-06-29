@@ -51,6 +51,8 @@ export interface EMASetup {
   candle_pattern: string        // e.g. 'HAMMER', 'ENGULFING', 'NONE'
   rs_vs_spy: number             // stock 1d change minus SPY 1d change
   earnings_soon: boolean        // within 7 days of earnings (avoid)
+  earnings_date: string | null  // ISO date of next earnings, e.g. "2026-07-22"
+  hv30: number | null           // 30-day annualized historical volatility % (IV proxy)
   rs_rank: number               // 0-100 percentile rank by 1d RS within scanned batch
   pct_from_52w_high: number     // % below 52w high (negative, e.g. -12.5 = 12.5% below)
 }
@@ -199,20 +201,51 @@ function candleScore(pattern: string): number {
 
 // ── Earnings Proximity Check ──────────────────────────────────────────────────
 
-async function hasEarningsSoon(symbol: string): Promise<boolean> {
+export async function getEarningsInfo(symbol: string): Promise<{ soon: boolean; daysUntil: number | null; date: string | null }> {
   try {
     const res = await fetch(
       `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=calendarEvents`,
       { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 3600 } }
     )
-    if (!res.ok) return false
+    if (!res.ok) return { soon: false, daysUntil: null, date: null }
     const data = await res.json()
     const dates = data?.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate
-    if (!Array.isArray(dates) || dates.length === 0) return false
+    if (!Array.isArray(dates) || dates.length === 0) return { soon: false, daysUntil: null, date: null }
     const nextEarnings = new Date((dates[0].raw as number) * 1000)
     const daysUntil = (nextEarnings.getTime() - Date.now()) / 86_400_000
-    return daysUntil >= 0 && daysUntil <= 7
-  } catch { return false }
+    return {
+      soon: daysUntil >= 0 && daysUntil <= 7,
+      daysUntil: Math.round(daysUntil * 10) / 10,
+      date: nextEarnings.toISOString().split('T')[0],
+    }
+  } catch { return { soon: false, daysUntil: null, date: null } }
+}
+
+async function hasEarningsSoon(symbol: string): Promise<boolean> {
+  return (await getEarningsInfo(symbol)).soon
+}
+
+// ── Historical Volatility (HV30) — free IV proxy ──────────────────────────────
+// Annualized 30-day HV from log returns of daily closes.
+// Correlates ~80% with implied volatility — no options chain needed.
+//
+// Interpretation:
+//   HV30 < 25%  → low vol / quiet stock
+//   HV30 25-40% → moderate — options priced fairly
+//   HV30 > 40%  → elevated — options expensive, good for post-earnings put selling
+//   HV30 > 60%  → very high — biotech/meme territory, avoid unless directional
+export async function getHistoricalVolatility(symbol: string): Promise<{ hv30: number | null; elevated: boolean }> {
+  try {
+    const ohlcv = await fetchOHLCV(symbol, '45d')
+    const closes = ohlcv?.closes
+    if (!closes || closes.length < 22) return { hv30: null, elevated: false }
+    const last30 = closes.slice(-31)
+    const logReturns = last30.slice(1).map((c, i) => Math.log(c / last30[i]))
+    const mean = logReturns.reduce((a, b) => a + b, 0) / logReturns.length
+    const variance = logReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / logReturns.length
+    const hv30 = Math.sqrt(variance * 252) * 100
+    return { hv30: Math.round(hv30 * 10) / 10, elevated: hv30 > 38 }
+  } catch { return { hv30: null, elevated: false } }
 }
 
 // Keep legacy fetchChart for getMarketRegime
@@ -431,11 +464,18 @@ export async function scanForEMAPullback(
         if (rs_vs_spy > 2) { score += 2; reasons.push(`RS+${rs_vs_spy.toFixed(1)}% vs SPY`) }
         else if (rs_vs_spy > 1) { score += 1; reasons.push(`RS+${rs_vs_spy.toFixed(1)}% vs SPY`) }
 
-        // ── Earnings proximity (skip if earnings within 7 days) ───────────────
-        const earnings_soon = await hasEarningsSoon(symbol)
+        // ── Earnings proximity + HV30 (run in parallel — both use cached OHLCV) ─
+        const [earningsInfo, hvData] = await Promise.all([
+          getEarningsInfo(symbol),
+          getHistoricalVolatility(symbol),
+        ])
+        const earnings_soon = earningsInfo.soon
         if (earnings_soon) {
-          reasons.push('⚠️ earnings soon — skip')
-          // Still include but zero score so AI can decide
+          const dStr = earningsInfo.daysUntil !== null ? ` in ${earningsInfo.daysUntil.toFixed(0)}d` : ''
+          reasons.push(`⚠️ earnings${dStr} — skip`)
+        }
+        if (hvData.elevated) {
+          reasons.push(`HV30=${hvData.hv30}% elevated`)
         }
 
         setups.push({
@@ -450,6 +490,8 @@ export async function scanForEMAPullback(
           candle_pattern,
           rs_vs_spy,
           earnings_soon,
+          earnings_date: earningsInfo.date,
+          hv30: hvData.hv30,
           pct_from_52w_high,
           rs_rank: 0,  // computed after all symbols processed
         })
@@ -725,6 +767,8 @@ export async function scanMomentumSpike(
           candle_pattern,
           rs_vs_spy,
           earnings_soon: false,
+          earnings_date: null,
+          hv30: null,
           pct_from_52w_high,
           rs_rank: 0,
         })

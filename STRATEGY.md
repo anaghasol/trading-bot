@@ -313,25 +313,34 @@ Signal comes in with OCC symbol (e.g. AMD260724C00210000):
   → Target: +80% / +100% premium gain
 ```
 
-**Post-Earnings IV Crush** (your friend's suggestion — not yet built):
+**Post-Earnings IV Crush** (your friend's suggestion — partially built):
 ```
-Before earnings: IV is high → options are expensive
-After earnings:  IV collapses ("IV crush") → options drop in value fast
+Before earnings: IV is high → options are expensive (IV Rank > 50% = sell)
+After earnings:  IV collapses ("IV crush") → put sellers profit from premium decay
 
-Strategy:
-  1. Identify stocks with earnings in 1–2 days
-  2. Check IV Rank — if > 50% (historically elevated), sell a put
-  3. Collect premium while IV is high
-  4. After earnings, buy back at 50% profit (IV has collapsed)
-  5. Risk: stock gaps down past your put strike
+How IV data works (no external API needed):
+  - Yahoo Finance provides earnings dates via calendarEvents module → getEarningsInfo()
+  - We compute 30-day Historical Volatility (HV30) from our existing OHLCV price data
+  - HV30 > 38% = "elevated" = proxy for high IV → options are expensive → good to sell
+  - Groq now sees hv30 and earnings_date for every stock it rates
+  - Example Groq prompt entry: { sym:"NVDA", hv30:"52.3%", earnings:"2026-08-14", ... }
 
-Status: NOT YET BUILT. Needs:
-  - Earnings calendar integration
-  - IV Rank data source
-  - Put selling order type support
-  - Position management for short options
+Strategy (stock trade version — no options account needed):
+  Day before earnings:
+    - Bot sees hv30 > 38% + earnings in 1-2 days
+    - Does NOT enter (earnings_soon=true blocks entry)
+    - Notes the stock as IV-rich candidate
 
-When to add: after paper account exits recovery and WR stabilizes > 45%.
+  Morning after earnings:
+    - If stock gap < 5%: IV crushed, stock likely range-bound → buy dip, tight target
+    - If stock gap > 8%: skip — stock moved too much, different play
+
+Full put-selling version (future):
+  Status: needs options-level-2 account on Alpaca + put-selling order type
+  Logic: sell ATM put after earnings, exit at 50% profit (IV collapse)
+  Risk: stock gaps down past put strike → max loss = strike × 100 - premium collected
+
+When to add: when paper exits recovery + Alpaca options enabled on account.
 ```
 
 ---
