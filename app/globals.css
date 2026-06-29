@@ -35,14 +35,14 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
 
 /* ── Top bar ────────────────────────────────────────────────── */
 .top, .desk-top {
-  display: flex; align-items: center; gap: 12px; padding: 0 16px;
-  height: 48px; min-height: 48px; max-height: 48px;
+  display: flex; align-items: center; gap: 8px; padding: 0 14px;
+  height: 44px; min-height: 44px; max-height: 44px;
   background: linear-gradient(180deg,#11161f,#0d1219);
   border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 30;
   overflow: hidden; flex-wrap: nowrap;
 }
-.brand, .desk-brand { display: flex; align-items: center; gap: 9px; }
-.bmark { width: 30px; height: 30px; border-radius: 9px; background: var(--green-dim); border: 1px solid rgba(19,201,142,.35); display: grid; place-items: center; }
+.brand, .desk-brand { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.bmark { width: 26px; height: 26px; border-radius: 7px; background: var(--green-dim); border: 1px solid rgba(19,201,142,.35); display: grid; place-items: center; flex-shrink: 0; }
 .bname { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
 .bsub  { font-size: 9.5px; color: var(--fg-3); text-transform: uppercase; letter-spacing: .1em; margin-top: 1px; }
 
@@ -66,35 +66,35 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
 .updating { animation: pulse 1s infinite; }
 
 .countdown {
-  display: flex; align-items: center; gap: 7px;
+  display: flex; align-items: center; gap: 5px;
   background: var(--amber-dim); border: 1px solid rgba(245,166,35,.3);
-  color: var(--amber); padding: 5px 11px; border-radius: var(--r-pill);
-  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  color: var(--amber); padding: 3px 9px; border-radius: var(--r-pill);
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
   white-space: nowrap; flex-shrink: 0; line-height: 1;
 }
 .countdown.open { background: var(--green-dim); border-color: rgba(19,201,142,.35); color: var(--green); }
 
 .seg {
-  display: inline-flex; gap: 3px;
+  display: inline-flex; gap: 2px; flex-shrink: 0;
   background: var(--inset); border: 1px solid var(--border);
-  border-radius: var(--r-md); padding: 3px;
+  border-radius: var(--r-md); padding: 2px;
 }
 .segbtn, .seg-btn {
-  padding: 6px 14px; border: none; background: transparent;
+  padding: 4px 10px; border: none; background: transparent;
   color: var(--fg-3); font-family: var(--font-sans); font-weight: 600;
-  font-size: 12px; cursor: pointer; border-radius: 5px;
-  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; cursor: pointer; border-radius: 4px;
+  display: flex; align-items: center; gap: 5px;
 }
 .segbtn.on-live,  .seg-btn.on-red  { background: var(--red-dim);  color: var(--red);  }
 .segbtn.on-paper, .seg-btn.on-blue { background: var(--blue-dim); color: var(--blue); }
 .segbtn.on,       .seg-btn.on      { background: var(--green-dim); color: var(--green); }
 
 .iconbtn {
-  background: var(--bg-3); border: 1px solid var(--border);
-  color: var(--fg-2); border-radius: var(--r-md); padding: 6px 11px;
-  font-family: var(--font-mono); font-size: 11.5px; cursor: pointer;
+  background: none; border: 1px solid var(--border);
+  color: var(--fg-3); border-radius: 5px; padding: 3px 8px;
+  font-family: var(--font-mono); font-size: 11px; cursor: pointer; flex-shrink: 0;
 }
-.iconbtn:hover { color: var(--fg-1); }
+.iconbtn:hover { color: var(--fg-1); background: var(--bg-3); }
 
 /* ── Page layout ────────────────────────────────────────────── */
 .wrap, .desk-wrap {
@@ -355,16 +355,19 @@ body { background: var(--bg-0); color: var(--fg-1); font-family: var(--font-sans
   .desk-col { max-width: 100%; }
 }
 
-/* ── Tablet header (≤1024px): hide indices, compress nav ── */
+/* ── Tablet header (≤1200px): hide indices ── */
+@media(max-width:1200px) {
+  .desk-idx { display: none; }
+}
+
+/* ── Tablet header (≤1024px): compress nav + hide extras ── */
 @media(max-width:1024px) {
-  .desk-top { gap: 10px; padding: 8px 14px; flex-wrap: nowrap; overflow: hidden; }
-  .desk-idx { display: none; }          /* hide SPY/QQQ prices */
-  .desk-rt  { display: none; }          /* hide 'Realtime data' */
-  .desk-nav { gap: 1px; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 1; }
-  .desk-nav a { padding: 4px 8px; font-size: 11.5px; white-space: nowrap; }
-  .desk-spacer { min-width: 0; flex: 1; }
-  .seg { flex-shrink: 0; }
-  .seg-btn { padding: 5px 10px; font-size: 11px; }
+  .desk-top { gap: 6px; padding: 0 10px; }
+  .desk-rt  { display: none; }
+  .sys-label { display: none; }         /* dots only, no text labels */
+  .desk-nav { gap: 1px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .desk-nav a { padding: 4px 7px; font-size: 11px; }
+  .seg-btn { padding: 4px 8px; font-size: 11px; }
   .countdown { font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 }
 

@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { money, signed, pnlColor } from '@/components/ui/kit'
 import { PROFILES } from '@/lib/strategy-profiles'
 
-const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/performance', 'Performance'], ['/learning', 'Learning'], ['/discovery', 'Discovery'], ['/backtest', 'Backtest'], ['/fix', 'Fix'], ['/settings', 'Settings']]
+const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', 'Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/performance', 'Performance'], ['/learning', 'Learning'], ['/discovery', 'Discovery'], ['/backtest', 'Backtest'], ['/fix', 'Fix'], ['/settings', 'Settings']]
 
 type Broker = 'schwab' | 'alpaca_paper'
 interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string; raw_symbol?: string; hold_mode?: string; sndk_score?: number; sndk_stage?: number; sndk_rs_spy?: number; sndk_highlights?: string }
@@ -647,56 +647,56 @@ export default function DashboardPage() {
           <div><div style={{ fontWeight: 700, fontSize: '0.95rem', lineHeight: 1 }}>MyTrade</div><div className="eyebrow" style={{ marginTop: 2 }}>Live Desk</div></div>
         </div>
         <nav className="desk-nav" style={{ flex: 1, overflowX: 'auto', scrollbarWidth: 'none' }}>{NAV.map(([href, label]) => <Link key={href} href={href} className={href === '/dashboard' ? 'on' : ''}>{label}</Link>)}</nav>
-        {/* Indices — compact, tooltip for label */}
-        {idx('SPY') && <div className="desk-idx" title="S&P 500 · SPY"><span className="tabular" style={{ fontSize: '0.78rem' }}>{num(idx('SPY')!.price)}</span><span className="tabular" style={{ fontSize: '0.68rem', color: pnlColor(idx('SPY')!.change_pct) }}>{p2(idx('SPY')!.change_pct)}</span></div>}
-        {idx('QQQ') && <div className="desk-idx" title="Nasdaq · QQQ"><span className="tabular" style={{ fontSize: '0.78rem', color: 'var(--fg-2)' }}>{num(idx('QQQ')!.price)}</span></div>}
-        {/* Market status — icon + short text, no ⏱ */}
-        <span className={`countdown ${market.open ? 'open' : ''}`} title={market.txt}>
-          {market.open ? <span className="dot live" style={{ background: 'var(--green)' }} /> : null}
-          {market.open ? market.txt.split('·')[0].trim() : market.txt.split('·')[0].trim()}
+        {/* Indices */}
+        {idx('SPY') && <div className="desk-idx" title="S&P 500 · SPY"><span className="tabular" style={{ fontSize: '0.75rem' }}>{num(idx('SPY')!.price)}</span><span className="tabular" style={{ fontSize: '0.65rem', color: pnlColor(idx('SPY')!.change_pct) }}>{p2(idx('SPY')!.change_pct)}</span></div>}
+        {idx('QQQ') && <div className="desk-idx" title="Nasdaq · QQQ"><span className="tabular" style={{ fontSize: '0.75rem', color: 'var(--fg-2)' }}>{num(idx('QQQ')!.price)}</span></div>}
+        {/* Market status */}
+        <span className={`countdown ${market.open ? 'open' : ''}`} title={market.txt} style={{ fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
+          {market.open && <span className="dot live" style={{ background: 'var(--green)' }} />}
+          {market.open ? 'Market open' : 'Closed'}
         </span>
         {/* Broker switcher */}
-        <div className="seg">
-          <button className={`seg-btn ${broker === 'schwab' ? 'on-red' : ''}`} onClick={() => setBroker('schwab')} title="Live · Schwab"><span className="dot" style={{ background: broker === 'schwab' ? 'var(--red)' : 'var(--fg-3)' }} /> Live</button>
-          <button className={`seg-btn ${isPaper ? 'on-blue' : ''}`} onClick={() => setBroker('alpaca_paper')} title="Paper · Alpaca"><span className="dot" style={{ background: isPaper ? 'var(--blue)' : 'var(--fg-3)' }} /> Paper</button>
+        <div className="seg" style={{ flexShrink: 0 }}>
+          <button className={`seg-btn ${broker === 'schwab' ? 'on-red' : ''}`} onClick={() => setBroker('schwab')} title="Live · Schwab"><span className="dot" style={{ background: broker === 'schwab' ? 'var(--red)' : 'var(--fg-3)' }} />Live</button>
+          <button className={`seg-btn ${isPaper ? 'on-blue' : ''}`} onClick={() => setBroker('alpaca_paper')} title="Paper · Alpaca"><span className="dot" style={{ background: isPaper ? 'var(--blue)' : 'var(--fg-3)' }} />Paper</button>
         </div>
-        {/* ── System health dots — compact, in header ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 4 }} className="sys-dots">
+        {/* System health — dots only, labels on hover via title */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} className="sys-dots">
           {(() => {
             const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
             const dayName = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'long' })
-            const isWeekend = dayName === 'Saturday' || dayName === 'Sunday'
-            const afterHrs = isWeekend || etH >= 18 || etH < 9
+            const afterHrs = dayName === 'Saturday' || dayName === 'Sunday' || etH >= 18 || etH < 9
             const tgOk = tg?.connected
             const tgColor = tg == null ? 'var(--fg-3)' : tgOk ? 'var(--green)' : afterHrs ? '#888' : 'var(--red)'
             const alpOk = !!summary
-            const mktColor = market.open ? 'var(--green)' : '#888'
             const dots = [
-              { label: 'TG', color: tgColor, title: tgOk ? 'TG: connected' : afterHrs ? 'TG: market closed' : `TG: ${tg?.minutes_silent ?? '?'}m silent` },
-              { label: 'ALP', color: alpOk ? 'var(--green)' : 'var(--red)', title: alpOk ? 'Alpaca: ok' : 'Alpaca: error' },
+              { label: 'TG',  color: tgColor,                                              title: tgOk ? 'Telegram: connected' : `Telegram: ${afterHrs ? 'after hours' : `${tg?.minutes_silent ?? '?'}m silent`}` },
+              { label: 'ALP', color: alpOk ? 'var(--green)' : 'var(--red)',                title: alpOk ? 'Alpaca: ok' : 'Alpaca: error' },
               { label: 'SCH', color: broker === 'schwab' && alpOk ? 'var(--green)' : '#888', title: 'Schwab' },
-              { label: 'AI', color: 'var(--green)', title: 'Claude AI: ok' },
-              { label: 'MKT', color: mktColor, title: market.open ? 'Market open' : 'Market closed' },
+              { label: 'AI',  color: 'var(--green)',                                        title: 'Claude AI: ok' },
+              { label: 'MKT', color: market.open ? 'var(--green)' : '#888',                title: market.open ? 'Market open' : 'Market closed' },
             ]
             return dots.map(({ label, color, title }) => (
-              <span key={label} title={title} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.6rem', color: 'var(--fg-3)' }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
-                <span className="sys-label">{label}</span>
+              <span key={label} title={`${label}: ${title}`} style={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'default' }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block' }} />
+                <span style={{ fontSize: '0.58rem', color: 'var(--fg-3)', lineHeight: 1 }} className="sys-label">{label}</span>
               </span>
             ))
           })()}
         </div>
-        <button className="iconbtn" onClick={() => load(broker)}>
-          ↻ {stamp || '—'}
-          {streamActive && <span title="Live price stream active" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#13c98e', marginLeft: 5, verticalAlign: 'middle', boxShadow: '0 0 4px #13c98e' }} />}
+        {/* Time + stream indicator */}
+        <button className="iconbtn" onClick={() => load(broker)} title="Refresh" style={{ fontSize: '0.68rem', padding: '3px 6px', flexShrink: 0 }}>
+          {stamp || '—'}
+          {streamActive && <span style={{ display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: '#13c98e', marginLeft: 4, verticalAlign: 'middle', boxShadow: '0 0 4px #13c98e' }} />}
         </button>
+        {/* Scan */}
         <button
           className="iconbtn"
           onClick={forceScan}
           disabled={scanning || !market.open}
           title={market.open ? 'Force AI scan now' : 'Market closed'}
-          style={{ color: scanning ? 'var(--amber)' : market.open ? 'var(--green)' : 'var(--fg-3)', opacity: market.open ? 1 : 0.5 }}
-        >{scanning ? '⏳ Scanning…' : '⚡ Scan'}</button>
+          style={{ fontSize: '0.68rem', padding: '3px 8px', flexShrink: 0, color: scanning ? 'var(--amber)' : market.open ? 'var(--green)' : 'var(--fg-3)', opacity: market.open ? 1 : 0.5, border: `1px solid ${market.open ? 'rgba(19,201,142,0.3)' : 'var(--border)'}`, borderRadius: 5 }}
+        >{scanning ? 'Scanning…' : 'Scan'}</button>
       </header>
 
       {/* ── Connection alert strip — full-width red bar for any broken service ── */}
