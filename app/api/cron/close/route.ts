@@ -211,22 +211,71 @@ export async function GET(req: Request) {
     const schwab = schwabResult.status === 'fulfilled' ? schwabResult.value : { closed: 0, pdt_used: 0, balance: 2000,   actions: [`schwab error: ${(schwabResult as PromiseRejectedResult).reason}`] }
     const paper  = paperResult.status  === 'fulfilled' ? paperResult.value  : { closed: 0, pdt_used: 0, balance: 100_000, actions: [`paper error: ${(paperResult  as PromiseRejectedResult).reason}`] }
 
-    // EOD comparison SMS — once at pre-close after both brokers processed
+    // EOD report — once at pre-close after both brokers processed
     if (isPreClose) {
-      const { data: paperClosed } = await db.from('tb_trades').select('pnl').gte('closed_at', `${today}T00:00:00Z`).eq('status', 'CLOSED').eq('broker', 'alpaca_paper')
-      const { data: liveClosed  } = await db.from('tb_trades').select('pnl').gte('closed_at', `${today}T00:00:00Z`).eq('status', 'CLOSED').eq('broker', 'schwab')
-      const paperPnl   = (paperClosed ?? []).reduce((s, t) => s + (t.pnl ?? 0), 0)
-      const livePnl    = (liveClosed  ?? []).reduce((s, t) => s + (t.pnl ?? 0), 0)
-      const paperWins  = (paperClosed ?? []).filter((t) => t.pnl > 0).length
-      const paperLoss  = (paperClosed ?? []).filter((t) => t.pnl < 0).length
-      const liveWins   = (liveClosed  ?? []).filter((t) => t.pnl > 0).length
-      const liveLoss   = (liveClosed  ?? []).filter((t) => t.pnl < 0).length
+      const [paperClosedRes, liveClosedRes] = await Promise.all([
+        db.from('tb_trades').select('pnl,symbol,strategy,reason').gte('closed_at', `${today}T00:00:00Z`).eq('status', 'CLOSED').or('broker.eq.alpaca_paper,broker.is.null'),
+        db.from('tb_trades').select('pnl,symbol,strategy,reason').gte('closed_at', `${today}T00:00:00Z`).eq('status', 'CLOSED').eq('broker', 'schwab'),
+      ])
+      const pc = paperClosedRes.data ?? []
+      const lc = liveClosedRes.data ?? []
+
+      const sumStats = (rows: { pnl: number }[]) => {
+        const pnl    = rows.reduce((s, t) => s + (t.pnl ?? 0), 0)
+        const wins   = rows.filter(t => (t.pnl ?? 0) > 0)
+        const losses = rows.filter(t => (t.pnl ?? 0) < 0)
+        const gw     = wins.reduce((s, t) => s + (t.pnl ?? 0), 0)
+        const gl     = losses.reduce((s, t) => s + Math.abs(t.pnl ?? 0), 0)
+        const best   = rows.length ? Math.max(...rows.map(t => t.pnl ?? 0)) : 0
+        const worst  = rows.length ? Math.min(...rows.map(t => t.pnl ?? 0)) : 0
+        const pf     = gl > 0 ? gw / gl : gw > 0 ? 99 : 0
+        const wr     = rows.length > 0 ? Math.round(wins.length / rows.length * 100) : 0
+        return { pnl, trades: rows.length, wins: wins.length, losses: losses.length, wr, pf, best, worst }
+      }
+      const ps = sumStats(pc)
+      const ls = sumStats(lc)
+
+      // Save to tb_daily_summary
+      await db.from('tb_daily_summary').upsert([
+        { date: today, broker: 'alpaca_paper', daily_pnl: ps.pnl, total_pnl: ps.pnl,
+          wins: ps.wins, losses: ps.losses, win_rate: ps.wr,
+          ending_balance: paper.balance, best_trade: ps.best, worst_trade: ps.worst, profit_factor: ps.pf },
+        { date: today, broker: 'schwab', daily_pnl: ls.pnl, total_pnl: ls.pnl,
+          wins: ls.wins, losses: ls.losses, win_rate: ls.wr,
+          ending_balance: schwab.balance, best_trade: ls.best, worst_trade: ls.worst, profit_factor: ls.pf },
+      ], { onConflict: 'date,broker' })
+
+      // Send EOD TG report
+      const fmt = (v: number) => (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2)
+      const tgMsg = [
+        `📊 *EOD Report — ${today}*`,
+        ``,
+        `🔵 *Paper (Alpaca)*`,
+        `P&L: ${fmt(ps.pnl)} | ${ps.trades} trades | ${ps.wins}W ${ps.losses}L | ${ps.wr}% win`,
+        `PF: ${ps.pf >= 99 ? '—' : ps.pf.toFixed(2)} | Best: ${fmt(ps.best)} | Worst: ${fmt(ps.worst)}`,
+        `Balance: $${paper.balance.toLocaleString()}`,
+        ``,
+        `🔴 *Live (Schwab)*`,
+        `P&L: ${fmt(ls.pnl)} | ${ls.trades} trades | ${ls.wins}W ${ls.losses}L | ${ls.wr}% win`,
+        `PF: ${ls.pf >= 99 ? '—' : ls.pf.toFixed(2)} | Best: ${fmt(ls.best)} | Worst: ${fmt(ls.worst)}`,
+        `Balance: $${schwab.balance.toLocaleString()}`,
+      ].join('\n')
+
+      const botToken = process.env.TELEGRAM_BOT_TOKEN
+      const chatId   = process.env.TELEGRAM_ALLOWED_CHAT_ID
+      if (botToken && chatId) {
+        await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: tgMsg, parse_mode: 'Markdown' }),
+        }).catch(() => {})
+      }
 
       await alertEODComparison({
-        paper_pnl: paperPnl, paper_balance: paper.balance,
-        live_pnl: livePnl,   live_balance: schwab.balance,
-        paper_wins: paperWins, paper_losses: paperLoss,
-        live_wins: liveWins,   live_losses: liveLoss,
+        paper_pnl: ps.pnl, paper_balance: paper.balance,
+        live_pnl: ls.pnl,  live_balance: schwab.balance,
+        paper_wins: ps.wins, paper_losses: ps.losses,
+        live_wins: ls.wins,  live_losses: ls.losses,
       }).catch(() => {})
     }
 
