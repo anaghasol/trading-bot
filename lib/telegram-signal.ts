@@ -189,52 +189,50 @@ export async function parseSignal(text: string, channelName = 'Trading Channel',
     const channelContext = signalStyle
       ? `\nCHANNEL STYLE: ${signalStyle}\n`
       : ''
-    const raw = await groqClassify(`You are a human stock trader reading a message from "${channelName}".${channelContext}
-Your job: decide exactly what action to take (if any) as a STOCK trader — not an options trader.
+    const raw = await groqClassify(`You are a trading signal classifier for a bot that trades stocks AND single-leg options.
+Channel: "${channelName}"${channelContext}
 
 Message: "${text}"
 
-STEP 1 — Is this about OPTIONS (spreads, calls, puts, strike prices like 2935/2945, premium, expiry dates)?
-→ If YES: ALWAYS return type:learn. Options signals are NEVER stock trades for us. Extract the market direction as sentiment.
+STEP 1 — CRYPTO? (BTC, ETH, SOL, POL, MATIC, XRP, ADA, BNB, etc.)
+→ TRADE signal! LONG=BUY, SHORT=SELL. Symbol = crypto ticker (e.g. "POL" from "POLUSDT LONG").
+→ The system maps crypto→equity proxies. Just classify it.
+→ Use the stop loss from message. Set entry_price=null. No stop loss = type:learn.
 
-STEP 2 — Is this about INDICES (RUT, RTY, SPX, NDX, VIX, ES, NQ)?
-→ Index mentions alone = type:learn. We trade ETF proxies (IWM, SPY, QQQ) only on explicit actionable buy signals, not options commentary.
+STEP 2 — SINGLE-LEG OPTIONS (explicit call or put with a stock ticker, strike price, and expiry)?
+→ e.g. "Buy NVDA 140 Call Aug 15", "Buy AMD 105P July 24", "Enter TSLA 200C"
+→ Return type:trade with action=BUY. Set symbol to the format "TICKER STRIKE TYPE EXPIRY"
+  e.g. symbol="NVDA 140 CALL 2026-08-15" or "AMD 105 PUT 2026-07-24"
+→ The system will look up the actual contract. Use stop_loss from message or null.
+→ SKIP if: multi-leg spread (condor, straddle, bull put, bear call, debit/credit spread) → type:learn
+→ SKIP if: options exit / "closing my call" / "took profit on puts" → type:learn
 
-STEP 2b — Is this a CRYPTO signal (BTC, ETH, SOL, POL, MATIC, XRP, ADA, BNB, etc.)?
-→ Treat as a TRADE signal! Extract the direction (LONG=BUY, SHORT=SELL) and set the symbol to the crypto ticker (e.g. "POL" from "POLUSDT LONG").
-→ The system will map crypto → equity proxies (POL→COIN, BTC→MSTR, etc.) — your job is just to classify accurately.
-→ Use the stop loss price from the message if given. Set entry_price to null (live price will be fetched).
-→ If no stop loss given, return type:learn instead.
+STEP 3 — STOCK trade?
+→ Explicit: stock ticker + BUY/SELL + price/market + stop loss → type:trade
+→ e.g. "Buy SPIR at 20 SL 18.5", "Enter COIN market SL 245"
+→ No stop loss = type:learn (not confident enough to execute)
+→ Index mentions (SPX, NDX, RUT, VIX) alone = type:learn, trade ETF proxy only if explicit BUY
 
-STEP 3 — Classify:
+STEP 4 — EXIT?
+→ Explicit close/exit of a stock position we hold → type:exit
+→ NOT for options P&L updates or spread closings
 
-type:trade → ONLY when: explicit stock symbol + BUY/SELL instruction + price or "at market" + stop loss
-  e.g. "Buy NVDA at 200 SL 190", "Buy TEM at 52 SL 46 target 58"
-  Never use this for index/options signals.
+STEP 5 — LEARN/IGNORE
+→ type:learn = macro commentary, watchlists, sector views, conditional setups, options P&L
+→ type:ignore = greetings, referrals, admin, very short noise
 
-type:exit → ONLY when: explicit instruction to close/exit a STOCK position we might hold
-  e.g. "Exit NVDA", "Sell SPIR now", "Book profits on TEM"
-  NOT for options exits (closing a spread ≠ stock exit for us)
-  NOT for "X hit SL/target" (that's their trade, not our command)
+Reply ONLY with a JSON object:
 
-type:learn → Everything else: macro views, index commentary, options P&L updates, sector trends, watch alerts, conditional setups not yet triggered
-  Mark actionable:true only if bullish and it should influence AI scanner picks
-  Mark actionable:false for bearish, options-only, or conditional setups
-
-type:ignore → Greetings, referral links, admin, very short noise
-
-Reply with ONLY a JSON object — no explanation:
-
-trade: {"type":"trade","symbol":"TICKER","action":"BUY","entry_price":200,"stop_loss":190,"target":null,"confidence":90}
-exit:  {"type":"exit","symbol":"TICKER","reason":"ADVISOR_EXIT","summary":"one factual sentence"}
-learn: {"type":"learn","summary":"one factual sentence — no names","symbols":["TICKER"],"sentiment":"bullish","sector":"small-cap","watch_zone":null,"actionable":true}
-ignore: {"type":"ignore"}
+For stock trade: {"type":"trade","symbol":"TICKER","action":"BUY","entry_price":200,"stop_loss":190,"target":null,"confidence":90}
+For options trade: {"type":"trade","symbol":"NVDA 140 CALL 2026-08-15","action":"BUY","entry_price":null,"stop_loss":null,"target":null,"confidence":85}
+For exit: {"type":"exit","symbol":"TICKER","reason":"ADVISOR_EXIT","summary":"one factual sentence"}
+For learn: {"type":"learn","summary":"one factual sentence — no names","symbols":["TICKER"],"sentiment":"bullish","sector":null,"watch_zone":null,"actionable":true}
+For ignore: {"type":"ignore"}
 
 Rules:
 - confidence < 75 → demote trade to learn
 - Default to learn when unsure
-- No person's names in summary — describe the signal objectively
-- Options P&L updates (50% gain on spreads, buying back spreads) = type:learn, extract bullish/bearish direction`)
+- No person names in summary`)
 
     const jsonMatch = raw.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return { type: 'ignore' }

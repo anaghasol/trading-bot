@@ -124,15 +124,20 @@ export async function GET(req: Request) {
       return NextResponse.json({ status: 'ok', actions, new_spreads: 0, closed_spreads: closedSpreads })
     }
 
-    // Scan eligible symbols (liquid underlyings only)
-    const eligibleSyms = ALL_ALPACA_SYMBOLS.filter((s) => SPREAD_ELIGIBLE_LIST.includes(s))
-    const setups = await scanForEMAPullback(eligibleSyms, { loose: false })
+    // Scan eligible symbols — include all SPREAD_ELIGIBLE even if not in ALL_ALPACA_SYMBOLS
+    const eligibleSet = new Set([
+      ...ALL_ALPACA_SYMBOLS.filter((s) => SPREAD_ELIGIBLE.has(s)),
+      ...SPREAD_ELIGIBLE_LIST,
+    ])
+    const eligibleSyms = Array.from(eligibleSet)
+    const setups = await scanForEMAPullback(eligibleSyms, { loose: true })
 
-    // Filter for high conviction only: EMA score ≥ 8, strong momentum
+    // Score ≥ 5 (was 8 — large-caps rarely score 8+, leaving 0 candidates every day)
+    // Trend must be bullish over 5d even if down today
     const candidates = setups
-      .filter((s) => s.pullback_score >= 8 && s.rsi >= 50 && s.change_1d >= 0)
+      .filter((s) => s.pullback_score >= 5 && s.rsi >= 45 && s.change_5d >= 0 && !s.earnings_soon)
       .sort((a, b) => b.pullback_score - a.pullback_score)
-      .slice(0, 5)
+      .slice(0, 6)
 
     actions.push(`Candidates: ${candidates.length} high-score setups (${setups.length} scanned)`)
 
@@ -161,7 +166,7 @@ export async function GET(req: Request) {
       if (openSyms.has(setup.symbol)) continue  // already long equity — skip
 
       const chain  = await getPutChain(setup.symbol, setup.price)
-      const spread = buildBullPutSpread(setup.symbol, setup.price, chain, accountEquity)
+      const spread = buildBullPutSpread(setup.symbol, setup.price, chain, accountEquity, 0.02, setup.hv30 ?? 40)
 
       if (!spread) {
         actions.push(`${setup.symbol}: no viable spread (chain=${chain.length} contracts)`)

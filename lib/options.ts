@@ -23,8 +23,11 @@ function hdr() {
   return { 'APCA-API-KEY-ID': KEY_ID, 'APCA-API-SECRET-KEY': SECRET, 'Content-Type': 'application/json' }
 }
 
-// Only trade spreads on liquid underlyings — tight bid/ask, high open interest
-export const SPREAD_ELIGIBLE_LIST = ['SPY', 'QQQ', 'NVDA', 'AMD', 'AAPL', 'TSLA', 'META', 'AMZN', 'MSFT', 'ARM', 'GOOGL', 'SMCI']
+// Liquid underlyings with active options markets (tight bid/ask, high OI)
+export const SPREAD_ELIGIBLE_LIST = [
+  'SPY', 'QQQ', 'NVDA', 'AMD', 'AAPL', 'TSLA', 'META', 'AMZN', 'MSFT', 'ARM', 'GOOGL', 'SMCI',
+  'COIN', 'MSTR', 'PLTR', 'CRWD', 'PANW', 'SOFI', 'RIVN', 'MRVL', 'MU', 'INTC',
+]
 export const SPREAD_ELIGIBLE = new Set(SPREAD_ELIGIBLE_LIST)
 
 export interface OptionsContract {
@@ -60,6 +63,53 @@ export interface BullPutSpread {
   roi_pct: number              // max_profit / max_loss × 100
 }
 
+// ── OCC symbol resolver ───────────────────────────────────────────────────────
+// Groq returns "NVDA 140 CALL 2026-08-15" — this converts to the real OCC symbol
+// by querying Alpaca's contracts endpoint for the exact strike+expiry.
+
+export interface ResolvedContract {
+  occ: string              // e.g. "NVDA260815C00140000"
+  premium: number          // estimated premium (close_price or BS estimate)
+  dte: number
+  displayLabel: string     // "NVDA $140C 8/15"
+}
+
+export async function resolveOptionToOCC(
+  description: string,  // e.g. "NVDA 140 CALL 2026-08-15" from Groq
+  currentPrice: number,
+): Promise<ResolvedContract | null> {
+  try {
+    // Parse: "TICKER STRIKE TYPE DATE"
+    const m = description.match(/^([A-Z]{1,6})\s+([\d.]+)\s+(CALL|PUT|C|P)\s+(\d{4}-\d{2}-\d{2})$/i)
+    if (!m) return null
+    const [, ticker, strikeStr, typeStr, expiry] = m
+    const strike = parseFloat(strikeStr)
+    const optType = typeStr.toUpperCase().startsWith('C') ? 'call' : 'put'
+
+    const dte = Math.round((new Date(expiry + 'T16:00:00-05:00').getTime() - Date.now()) / 86_400_000)
+    if (dte < 3) return null   // too close to expiry
+
+    // Find the contract on Alpaca
+    const url = `${PAPER_BASE}/options/contracts?underlying_symbols=${ticker}&type=${optType}`
+             + `&expiration_date_gte=${expiry}&expiration_date_lte=${expiry}`
+             + `&strike_price_gte=${(strike * 0.99).toFixed(2)}&strike_price_lte=${(strike * 1.01).toFixed(2)}&limit=5`
+    const res = await fetch(url, { headers: hdr(), signal: AbortSignal.timeout(8000) })
+    if (!res.ok) return null
+    const data = await res.json() as { option_contracts: OptionsContract[] }
+    const contracts = data.option_contracts ?? []
+    if (contracts.length === 0) return null
+
+    const c = contracts[0]
+    const premium = c.close_price ?? bsEstimatePut(currentPrice, strike, dte, 0.40)
+    const typeChar = optType === 'call' ? 'C' : 'P'
+    const displayLabel = `${ticker} $${strike}${typeChar} ${parseInt(expiry.slice(5, 7))}/${parseInt(expiry.slice(8, 10))}`
+
+    return { occ: c.symbol, premium, dte, displayLabel }
+  } catch {
+    return null
+  }
+}
+
 // ── Chain fetch ───────────────────────────────────────────────────────────────
 
 /**
@@ -92,6 +142,29 @@ export async function getPutChain(symbol: string, currentPrice: number): Promise
   }
 }
 
+// ── Black-Scholes put price estimator ─────────────────────────────────────────
+// Used when Alpaca doesn't provide live bid/ask (common on paper accounts).
+// σ = HV30 as decimal (e.g. 0.45 for 45%), r = 4% risk-free, T = DTE/365
+function bsEstimatePut(S: number, K: number, dte: number, sigma: number): number {
+  if (sigma <= 0 || dte <= 0) return 0
+  const T = dte / 365
+  const r = 0.04
+  const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T))
+  const d2 = d1 - sigma * Math.sqrt(T)
+  const nd1 = normalCDF(-d1)
+  const nd2 = normalCDF(-d2)
+  return Math.max(0, K * Math.exp(-r * T) * nd2 - S * nd1)
+}
+
+function normalCDF(x: number): number {
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741
+  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911
+  const sign = x < 0 ? -1 : 1
+  const t = 1 / (1 + p * Math.abs(x))
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2)
+  return 0.5 * (1 + sign * y)
+}
+
 // ── Spread builder ────────────────────────────────────────────────────────────
 
 /**
@@ -99,9 +172,11 @@ export async function getPutChain(symbol: string, currentPrice: number): Promise
  *
  * Logic:
  *  1. Pick first expiry with 21-45 DTE
- *  2. Short put: ~6% OTM (strike near 94% of current price), OI > 100
- *  3. Long put: $2-5 below short put, OI > 50
- *  4. Validate: credit ≥ 20% of spread width, total risk ≤ 2% of equity
+ *  2. Short put: ~5.5% OTM (92-97% of current price), OI > 10
+ *  3. Long put: $2-10 below short put
+ *  4. Validate: credit ≥ 10% of spread width (uses BS estimate when no bid/ask)
+ *
+ * hv30: 30-day historical volatility as percent (e.g. 45 for 45%) — used for BS fallback.
  */
 export function buildBullPutSpread(
   symbol: string,
@@ -109,6 +184,7 @@ export function buildBullPutSpread(
   chain: OptionsContract[],
   accountEquity: number,
   maxRiskPct = 0.02,
+  hv30 = 40,   // default 40% HV — reasonable for liquid equities
 ): BullPutSpread | null {
   if (chain.length === 0) return null
 
@@ -122,44 +198,43 @@ export function buildBullPutSpread(
 
     const slice = chain.filter((c) => c.expiration_date === expiry)
 
-    // Short put: target 93-96% of current price (~4-7% OTM)
-    const targetStrike = currentPrice * 0.935
+    // Short put: target 92-97% of current price (~3-8% OTM) — widened to find more candidates
+    const targetStrike = currentPrice * 0.945
     const shortCandidates = slice
-      .filter((c) => c.strike_price >= currentPrice * 0.91 && c.strike_price <= currentPrice * 0.97)
-      .filter((c) => (c.open_interest ?? 0) > 50)
+      .filter((c) => c.strike_price >= currentPrice * 0.90 && c.strike_price <= currentPrice * 0.97)
+      .filter((c) => (c.open_interest ?? 0) > 10)   // lowered from 50 — paper OI data is sparse
       .sort((a, b) => Math.abs(a.strike_price - targetStrike) - Math.abs(b.strike_price - targetStrike))
 
     if (!shortCandidates.length) continue
     const shortPut = shortCandidates[0]
 
-    // IV proxy filter: require annualized IV > 25% on short put (screens out low-vol setups
-    // where selling premium doesn't generate enough credit). True IVR needs historical data;
-    // this per-contract IV is a practical substitute available directly from the chain.
-    const shortIV = shortPut.implied_volatility ?? 0
-    if (shortIV > 0 && shortIV < 0.25) continue  // skip if IV data present but < 25%
-
-    // Long put: $2-5 below short put, hard cap at $5 width to keep risk small
+    // Long put: $2-10 below short put (widened from $5 max to allow larger spreads on high-priced stocks)
     const longCandidates = slice
-      .filter((c) => c.strike_price >= shortPut.strike_price - 5 && c.strike_price < shortPut.strike_price - 1.5)
-      .filter((c) => (c.open_interest ?? 0) > 20)
+      .filter((c) => c.strike_price >= shortPut.strike_price - 10 && c.strike_price < shortPut.strike_price - 1)
+      .filter((c) => (c.open_interest ?? 0) > 5)
       .sort((a, b) => b.strike_price - a.strike_price)   // closest to short put first
 
     if (!longCandidates.length) continue
     const longPut = longCandidates[0]
 
-    // Hard cap: spread width must be ≤ $5
-    if (shortPut.strike_price - longPut.strike_price > 5) continue
+    const spreadWidth = shortPut.strike_price - longPut.strike_price
+    if (spreadWidth <= 0 || spreadWidth > 20) continue
 
-    // Use mid-price; fall back to close_price (prior session)
-    const shortMid = shortPut.bid_price != null ? (shortPut.bid_price + (shortPut.ask_price ?? shortPut.bid_price)) / 2 : (shortPut.close_price ?? 0)
-    const longMid  = longPut.bid_price  != null ? (longPut.bid_price  + (longPut.ask_price  ?? longPut.bid_price))  / 2 : (longPut.close_price  ?? 0)
+    // Use mid-price; fall back to close_price (prior session); fall back to HV30 Black-Scholes estimate
+    // Alpaca paper rarely has live bid/ask for options — close_price is stale but usable as floor
+    const shortMid = shortPut.bid_price != null
+      ? (shortPut.bid_price + (shortPut.ask_price ?? shortPut.bid_price)) / 2
+      : (shortPut.close_price ?? bsEstimatePut(currentPrice, shortPut.strike_price, dte, hv30))
+    const longMid  = longPut.bid_price  != null
+      ? (longPut.bid_price  + (longPut.ask_price  ?? longPut.bid_price))  / 2
+      : (longPut.close_price  ?? bsEstimatePut(currentPrice, longPut.strike_price, dte, hv30))
 
     const netCredit  = shortMid - longMid
-    const spreadWidth = shortPut.strike_price - longPut.strike_price
-    if (netCredit <= 0 || spreadWidth <= 0) continue
+    if (netCredit <= 0) continue
 
     const creditPct = netCredit / spreadWidth
-    if (creditPct < 0.25) continue   // raised from 20% → 25% — better edge on each spread
+    // Require ≥ 10% credit (lowered from 25% — Alpaca stale close_price makes 25% unreachable)
+    if (creditPct < 0.10) continue
 
     const maxLossPerContract   = (spreadWidth - netCredit) * 100
     const maxProfitPerContract = netCredit * 100

@@ -17,6 +17,7 @@ import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal, isWorthClassifying, isOptionsSignal, isOCCSymbol } from '@/lib/telegram-signal'
 import { addIntention, parseZonePrices } from '@/lib/tg-intentions'
+import { resolveOptionToOCC } from '@/lib/options'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -513,6 +514,23 @@ export async function GET(req: Request) {
       const afterHoursTag = afterHours ? ' [FILLS AT OPEN]' : ''
 
       // ── Options single-leg: route through dedicated options handler ─────────────
+      // Groq returns either a raw OCC symbol OR the human-readable "TICKER STRIKE TYPE DATE"
+      // format. Detect and resolve the human-readable one to OCC first.
+      const optDescMatch = signal.symbol.match(/^([A-Z]{1,6})\s+([\d.]+)\s+(CALL|PUT|C|P)\s+(\d{4}-\d{2}-\d{2})$/i)
+      if (optDescMatch && signal.action === 'BUY') {
+        const liveQuoteForOpts = await Alpaca.getQuote(optDescMatch[1])
+        const underlyingPrice = liveQuoteForOpts?.price ?? 0
+        const resolved = await resolveOptionToOCC(signal.symbol, underlyingPrice)
+        if (!resolved) {
+          await tgSend(`⚠️ *Options skipped* (${ch.name}) — could not find contract for ${signal.symbol}`)
+          return { id: msg.id, type: 'skip', reason: 'options_contract_not_found' }
+        }
+        // Mutate signal to use OCC symbol so the OCC handler below processes it
+        ;(signal as unknown as Record<string, unknown>).symbol = resolved.occ
+        ;(signal as unknown as Record<string, unknown>).entry_price = resolved.premium
+        console.log(`[TG][${ch.name}] options resolved: ${signal.symbol} → ${resolved.occ} (${resolved.displayLabel}) prem~$${resolved.premium.toFixed(2)}`)
+      }
+
       if (isOCCSymbol(signal.symbol)) {
         // OCC symbol → options trade. Place order, journal with raw_symbol for monitor.
         const m = signal.symbol.match(/^([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/)
