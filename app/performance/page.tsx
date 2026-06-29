@@ -148,16 +148,20 @@ export default function PerformancePage() {
   const hdrs    = { apikey: supaKey, Authorization: `Bearer ${supaKey}` }
   const SEL     = 'id,symbol,pnl,pnl_pct,entry_price,exit_price,closed_at,created_at,strategy,reason,broker,quantity,status,side'
 
+  // Get today's date in US/Eastern so after-8pm UTC doesn't flip to tomorrow
+  const etDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) // YYYY-MM-DD
+
   useEffect(() => {
     setLoading(true)
-    const todayStr = new Date().toISOString().split('T')[0]
-    const fromStr  = new Date(Date.now() - days * 86_400_000).toISOString()
-    const bf       = broker === 'schwab'
+    // Midnight ET = 04:00 UTC (EDT/summer). Safe filter: always before 9:30 AM ET open.
+    const todayFilter = `${etDate}T04:00:00Z`
+    const fromStr     = new Date(Date.now() - days * 86_400_000).toISOString()
+    const bf          = broker === 'schwab'
       ? 'broker=eq.schwab'
       : 'or=(broker.eq.alpaca_paper,broker.is.null)'
 
     Promise.all([
-      fetch(`${supaUrl}/rest/v1/tb_trades?status=eq.CLOSED&${bf}&closed_at=gte.${todayStr}T00:00:00Z&order=closed_at.desc&limit=300&select=${SEL}`, { headers: hdrs }).then(r => r.json()),
+      fetch(`${supaUrl}/rest/v1/tb_trades?status=eq.CLOSED&${bf}&closed_at=gte.${todayFilter}&order=closed_at.desc&limit=300&select=${SEL}`, { headers: hdrs }).then(r => r.json()),
       fetch(`${supaUrl}/rest/v1/tb_trades?status=eq.CLOSED&${bf}&closed_at=gte.${fromStr}&order=closed_at.desc&limit=500&select=${SEL}`, { headers: hdrs }).then(r => r.json()),
     ]).then(([td, hist]) => {
       setTodayTrades(Array.isArray(td)   ? td   : [])
@@ -255,8 +259,6 @@ export default function PerformancePage() {
     return <span style={{ display: 'inline-block', padding: '1px 5px', borderRadius: 3, fontSize: '0.67rem', fontWeight: 600, background: v >= 50 ? 'rgba(19,201,142,0.12)' : 'rgba(239,83,80,0.12)', color: v >= 50 ? 'var(--green)' : 'var(--red)' }}>{v}%</span>
   }
 
-  const todayStr = new Date().toISOString().split('T')[0]
-
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', padding: '0 0 80px' }}>
       <TopNav />
@@ -297,7 +299,7 @@ export default function PerformancePage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {/* Summary stat cards */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
-              <Stat label="Today P&L"   value={dollar(todayPnl)}  color={pnlColor(todayPnl)} sub={todayStr} />
+              <Stat label="Today P&L"   value={dollar(todayPnl)}  color={pnlColor(todayPnl)} sub={etDate} />
               <Stat label="Trades"      value={String(todayTrades.length)} sub="closed today" />
               <Stat label="Win Rate"    value={`${todayWr}%`}     color={todayWr >= 50 ? 'var(--green)' : 'var(--red)'} sub={`${todayWins}W / ${todayLoss}L`} />
               <Stat label="Prof. Factor" value={todayPF >= 99 ? '—' : todayPF.toFixed(2)} color={todayPF >= 1 ? 'var(--green)' : 'var(--fg-3)'} />
@@ -309,7 +311,7 @@ export default function PerformancePage() {
             {/* Today trades table */}
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
               <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Closed Today — {todayStr}</span>
+                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Closed Today — {etDate}</span>
                 <span style={{ fontSize: '0.67rem', color: 'var(--fg-3)' }}>{todayTrades.length} trades</span>
                 <span style={{ marginLeft: 'auto', fontWeight: 700, color: pnlColor(todayPnl) }}>{dollar(todayPnl)}</span>
               </div>
