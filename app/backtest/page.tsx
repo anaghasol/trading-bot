@@ -1,8 +1,6 @@
 'use client'
 import { useState } from 'react'
-import Link from 'next/link'
-
-const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/backtest', '🧪 Backtest'], ['/dashboard', 'Growth'], ['/dashboard', 'Trades'], ['/settings', 'Settings']]
+import TopNav from '@/components/layout/TopNav'
 
 interface Params {
   gap_pct: number
@@ -110,15 +108,7 @@ export default function BacktestPage() {
   return (
     <div style={{ background: 'var(--bg-0)', minHeight: '100vh', color: 'var(--fg-0)', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
 
-      {/* Nav */}
-      <header style={{ background: 'var(--bg-1)', borderBottom: '1px solid var(--border)', padding: '0 20px', display: 'flex', alignItems: 'center', gap: 16, height: 48 }}>
-        <span style={{ fontWeight: 700, color: 'var(--green)', fontSize: 15, fontFamily: 'var(--font-mono)' }}>MyTrade</span>
-        <nav className="desk-nav">
-          {[['/dashboard','Desk'],['/backtest','🧪 Backtest'],['/settings','Settings']].map(([href, label]) => (
-            <Link key={href} href={href} className={href === '/backtest' ? 'on' : ''}>{label}</Link>
-          ))}
-        </nav>
-      </header>
+      <TopNav />
 
       <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 16px' }}>
         <div style={{ marginBottom: 20 }}>

@@ -1,8 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
-
-const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/performance', '📊 Performance'], ['/learning', 'Learning'], ['/discovery', '🔭 Discovery'], ['/backtest', '🧪 Backtest'], ['/fix', '🔧 Fix'], ['/settings', 'Settings']]
+import TopNav from '@/components/layout/TopNav'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface ClosedTrade {
@@ -192,17 +190,7 @@ export default function PerformancePage() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', padding: '0 0 80px' }}>
-      {/* Nav */}
-      <header style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '0 24px', display: 'flex', alignItems: 'center', height: 52, gap: 0, position: 'sticky', top: 0, zIndex: 100 }}>
-        <div style={{ fontWeight: 700, fontSize: '0.95rem', marginRight: 24, color: 'var(--green)' }}>MyTrade</div>
-        <nav style={{ display: 'flex', gap: 2, overflow: 'auto' }}>
-          {NAV.map(([href, label]) => (
-            <Link key={href} href={href} style={{ padding: '6px 12px', borderRadius: 6, fontSize: '0.78rem', fontWeight: 500, textDecoration: 'none', color: href === '/performance' ? 'var(--green)' : 'var(--fg-2)', background: href === '/performance' ? 'rgba(19,201,142,0.1)' : 'none', whiteSpace: 'nowrap' }}>
-              {label}
-            </Link>
-          ))}
-        </nav>
-      </header>
+      <TopNav />
 
       <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 16px' }}>
         {/* Controls */}

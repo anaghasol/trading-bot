@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { money, signed, pnlColor } from '@/components/ui/kit'
 import { PROFILES } from '@/lib/strategy-profiles'
 
-const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/performance', '📊 Performance'], ['/learning', 'Learning'], ['/discovery', '🔭 Discovery'], ['/backtest', '🧪 Backtest'], ['/fix', '🔧 Fix'], ['/settings', 'Settings']]
+const NAV: [string, string][] = [['/dashboard', 'Desk'], ['/live', '⚡ Live'], ['/growth', 'Growth'], ['/sleeves', 'Sleeves'], ['/portfolio', 'Portfolio'], ['/trades', 'Trades'], ['/performance', 'Performance'], ['/learning', 'Learning'], ['/discovery', 'Discovery'], ['/backtest', 'Backtest'], ['/fix', 'Fix'], ['/settings', 'Settings']]
 
 type Broker = 'schwab' | 'alpaca_paper'
 interface Position { symbol: string; quantity: number; avg_cost: number; current_price: number; market_value: number; unrealized_pnl: number; pnl_pct: number; asset_type?: string; option_expiry?: string; raw_symbol?: string; hold_mode?: string; sndk_score?: number; sndk_stage?: number; sndk_rs_spy?: number; sndk_highlights?: string }
@@ -646,8 +646,7 @@ export default function DashboardPage() {
           <div className="bmark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17" /><polyline points="16 7 22 7 22 13" /></svg></div>
           <div><div style={{ fontWeight: 700, fontSize: '0.95rem', lineHeight: 1 }}>MyTrade</div><div className="eyebrow" style={{ marginTop: 2 }}>Live Desk</div></div>
         </div>
-        <nav className="desk-nav">{NAV.map(([href, label]) => <Link key={href} href={href} className={href === '/dashboard' ? 'on' : ''}>{label}</Link>)}</nav>
-        <div className="desk-spacer" />
+        <nav className="desk-nav" style={{ flex: 1, overflowX: 'auto', scrollbarWidth: 'none' }}>{NAV.map(([href, label]) => <Link key={href} href={href} className={href === '/dashboard' ? 'on' : ''}>{label}</Link>)}</nav>
         {/* Indices — compact, tooltip for label */}
         {idx('SPY') && <div className="desk-idx" title="S&P 500 · SPY"><span className="tabular" style={{ fontSize: '0.78rem' }}>{num(idx('SPY')!.price)}</span><span className="tabular" style={{ fontSize: '0.68rem', color: pnlColor(idx('SPY')!.change_pct) }}>{p2(idx('SPY')!.change_pct)}</span></div>}
         {idx('QQQ') && <div className="desk-idx" title="Nasdaq · QQQ"><span className="tabular" style={{ fontSize: '0.78rem', color: 'var(--fg-2)' }}>{num(idx('QQQ')!.price)}</span></div>}
