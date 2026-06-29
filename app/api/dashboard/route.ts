@@ -14,14 +14,15 @@ export async function GET(req: Request) {
 
   // Strict per-broker queries — Schwab and Alpaca NEVER share data.
   // Rows without a broker column (created before broker field existed) go to alpaca_paper.
-  const t = db.from('tb_trades').select('*').order('created_at', { ascending: false }).limit(20)
+  const todayISO = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
+  const t = db.from('tb_trades').select('*').gte('created_at', todayISO).order('created_at', { ascending: false }).limit(60)
   const a = db.from('tb_alerts').select('*').order('created_at', { ascending: false }).limit(15)
   const p = db.from('tb_pnl_snapshots').select('*').eq('date', new Date().toISOString().split('T')[0]).order('hour')
 
   const tradesStrict = broker === 'schwab'
-    ? db.from('tb_trades').select('*').eq('broker', 'schwab').order('created_at', { ascending: false }).limit(20)
+    ? db.from('tb_trades').select('*').eq('broker', 'schwab').gte('created_at', todayISO).order('created_at', { ascending: false }).limit(60)
     : broker === 'alpaca_paper'
-      ? db.from('tb_trades').select('*').or('broker.eq.alpaca_paper,broker.is.null').order('created_at', { ascending: false }).limit(20)
+      ? db.from('tb_trades').select('*').or('broker.eq.alpaca_paper,broker.is.null').gte('created_at', todayISO).order('created_at', { ascending: false }).limit(60)
       : t
 
   const alertsStrict = broker === 'schwab'

@@ -16,7 +16,7 @@ export async function GET() {
       .select('id, type, message, symbol, created_at')
       .or('message.ilike.%SF Essential%,message.ilike.%SF Trades%,type.in.(BUY,SELL,INFO)')
       .order('created_at', { ascending: false })
-      .limit(8),
+      .limit(20),
   ])
 
   const hasSession   = !!(sessionRow.data?.value)

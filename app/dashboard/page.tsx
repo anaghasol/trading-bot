@@ -13,7 +13,7 @@ interface StrategyStats { trades: number; wins: number; win_rate: number; total_
 interface AuthStatus { ok: boolean; refresh_expires_at: string | null; hours_left: number | null }
 interface Summary { account_value: number; cash: number; stock_buying_power: number; option_buying_power: number; day_trade_buying_power: number; day_pnl?: number; day_pnl_pct?: number; daytrade_count?: number; fetched_at?: string; auth_status?: AuthStatus; error?: string; reauth_url?: string }
 interface Quote { symbol: string; price: number; change_pct: number }
-interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; confidence: number; strategy: string; status: string; created_at: string }
+interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; pnl?: number; pnl_pct?: number; closed_at?: string; confidence: number; strategy: string; status: string; created_at: string; reason?: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
 interface TgSignal { id: number; type: string; message: string; symbol?: string; created_at: string }
 interface TgStatus { connected: boolean; cron_alive: boolean; has_session: boolean; last_poll: string | null; last_cron_ping: string | null; minutes_silent: number | null; minutes_since_cron_ping: number | null; tg_status: string | null; last_msg_id: number; signals: TgSignal[] }
@@ -410,7 +410,7 @@ export default function DashboardPage() {
   const [pdt, setPdt] = useState<Pdt | null>(null)
   const [orders, setOrders] = useState<SchwabOrder[]>([])
   const [cats, setCats] = useState<Cat[]>([])
-  const [tab, setTab] = useState<'working' | 'filled' | 'canceled'>('filled')
+  const [tab, setTab] = useState<'working' | 'filled' | 'canceled' | 'pnl'>('filled')
   const [stamp, setStamp] = useState('')
   const [alertOn, setAlertOn] = useState(true)
   const [tg, setTg] = useState<TgStatus | null>(null)
@@ -510,6 +510,14 @@ export default function DashboardPage() {
       fetch('/api/scan-status').then(r => r.json()).then(d => { setScanStatus(d ?? {}) }).catch(() => {})
     }
     const iv = setInterval(refresh, 30000)
+    return () => clearInterval(iv)
+  }, [])
+
+  // TG feed dedicated auto-refresh every 3 minutes — independent of market hours
+  useEffect(() => {
+    const iv = setInterval(() => {
+      fetch('/api/telegram/status').then(r => r.json()).then(setTg).catch(() => {})
+    }, 3 * 60 * 1000)
     return () => clearInterval(iv)
   }, [])
 
@@ -619,6 +627,13 @@ export default function DashboardPage() {
   const working = rows.filter((r) => /WORK|PENDING|QUEUED|ACCEPTED|NEW/i.test(r.status))
   const canceled = rows.filter((r) => /CANCEL|REJECT|EXPIRED/i.test(r.status))
   const tabRows = tab === 'filled' ? filled : tab === 'working' ? working : canceled
+
+  // Today's closed trades from DB (for P&L tab) — already filtered to today by /api/dashboard
+  const todayClosedTrades = (data?.trades ?? []).filter((t) => t.status === 'CLOSED' && t.closed_at)
+    .sort((a, b) => (b.closed_at ?? '').localeCompare(a.closed_at ?? ''))
+  const todayPnl = todayClosedTrades.reduce((s, t) => s + (t.pnl ?? 0), 0)
+  const todayWins = todayClosedTrades.filter((t) => (t.pnl ?? 0) > 0).length
+  const todayLosses = todayClosedTrades.filter((t) => (t.pnl ?? 0) < 0).length
 
   // AI signal queue from open trades
   const signals = (data?.trades ?? []).filter((t) => t.status === 'OPEN').slice(0, 4)
@@ -1556,11 +1571,67 @@ export default function DashboardPage() {
                   <button className={`atab ${tab === 'working' ? 'on' : ''}`} onClick={() => setTab('working')}>Working <span className="cnt">{working.length}</span></button>
                   <button className={`atab ${tab === 'filled' ? 'on' : ''}`} onClick={() => setTab('filled')}>Filled <span className="cnt">{filled.length}</span></button>
                   <button className={`atab ${tab === 'canceled' ? 'on' : ''}`} onClick={() => setTab('canceled')}>Canceled <span className="cnt">{canceled.length}</span></button>
+                  <button className={`atab ${tab === 'pnl' ? 'on' : ''}`} onClick={() => setTab('pnl')} style={{ color: todayPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    P&amp;L <span className="cnt">{todayClosedTrades.length}</span>
+                  </button>
                 </div>
                 <span className="eyebrow">Today's activity</span>
               </div>
               <div className="card-body" style={{ minHeight: 150, paddingTop: 8 }}>
-                {tabRows.length === 0 ? (
+                {tab === 'pnl' ? (
+                  <>
+                    {/* P&L summary bar */}
+                    <div style={{ display: 'flex', gap: 16, marginBottom: 10, padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: '0.72rem' }}>
+                      <span>Total: <b style={{ color: todayPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>{todayPnl >= 0 ? '+' : ''}${todayPnl.toFixed(2)}</b></span>
+                      <span style={{ color: 'var(--green)' }}>▲ {todayWins} wins</span>
+                      <span style={{ color: 'var(--red)' }}>▼ {todayLosses} losses</span>
+                      {todayClosedTrades.length > 0 && <span className="faint">Win rate: {Math.round(todayWins / todayClosedTrades.length * 100)}%</span>}
+                    </div>
+                    {todayClosedTrades.length === 0 ? (
+                      <div className="desk-empty">No closed trades today yet.</div>
+                    ) : (
+                      <table className="ptbl" style={{ width: '100%' }}>
+                        <colgroup>
+                          <col style={{ width: 62 }} />
+                          <col style={{ minWidth: 70 }} />
+                          <col style={{ width: 65 }} />
+                          <col style={{ width: 65 }} />
+                          <col style={{ width: 80 }} />
+                          <col style={{ width: 75 }} />
+                        </colgroup>
+                        <thead>
+                          <tr>
+                            <th className="l">Time</th>
+                            <th className="l">Symbol</th>
+                            <th style={{ textAlign: 'right' }}>Entry</th>
+                            <th style={{ textAlign: 'right' }}>Exit</th>
+                            <th style={{ textAlign: 'right' }}>P&amp;L $</th>
+                            <th style={{ textAlign: 'right' }}>P&amp;L %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {todayClosedTrades.slice(0, 20).map((t) => {
+                            const pnlPos = (t.pnl ?? 0) >= 0
+                            const exitReason = (t.reason ?? '').match(/INITIAL_STOP|TRAIL|PARTIAL|FLAT_RECYCLE|TG_EXIT|MAX_HOLD|EOD/)?.[0] ?? ''
+                            return (
+                              <tr key={t.id}>
+                                <td className="l" style={{ color: 'var(--fg-3)', fontSize: 11 }}>{hhmmss(t.closed_at ?? '')}</td>
+                                <td className="l">
+                                  <b style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{t.symbol}</b>
+                                  {exitReason && <span style={{ marginLeft: 4, fontSize: '0.58rem', color: 'var(--fg-3)' }}>{exitReason}</span>}
+                                </td>
+                                <td style={{ textAlign: 'right', fontSize: '0.72rem' }}>${num(t.entry_price)}</td>
+                                <td style={{ textAlign: 'right', fontSize: '0.72rem' }}>${num(t.exit_price ?? 0)}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 600, color: pnlPos ? 'var(--green)' : 'var(--red)' }}>{pnlPos ? '+' : ''}${(t.pnl ?? 0).toFixed(2)}</td>
+                                <td style={{ textAlign: 'right', color: pnlPos ? 'var(--green)' : 'var(--red)', fontSize: '0.72rem' }}>{pnlPos ? '+' : ''}{(t.pnl_pct ?? 0).toFixed(1)}%</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                ) : tabRows.length === 0 ? (
                   <div className="desk-empty">{tab === 'working' ? <>No working orders.<br /><span className="faint">Bot places a protective stop on every fill.</span></> : tab === 'canceled' ? 'No canceled orders today.' : 'No fills yet today.'}</div>
                 ) : (
                   <table className="ptbl" style={{ width: '100%' }}>
@@ -1609,9 +1680,16 @@ export default function DashboardPage() {
                   <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : 'var(--red)', flexShrink: 0 }} />
                   Telegram · SF Trades
                 </h3>
-                <span className="faint" style={{ fontSize: '0.68rem' }}>
-                  {tg?.last_poll ? `${Math.round((Date.now() - new Date(tg.last_poll).getTime()) / 60000)}m ago` : 'no heartbeat'}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className="faint" style={{ fontSize: '0.68rem' }}>
+                    {tg?.last_poll ? `${Math.round((Date.now() - new Date(tg.last_poll).getTime()) / 60000)}m ago` : 'no heartbeat'}
+                  </span>
+                  <button
+                    onClick={() => fetch('/api/telegram/status').then(r => r.json()).then(setTg).catch(() => {})}
+                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg-3)', fontSize: '0.62rem', padding: '2px 6px', cursor: 'pointer' }}
+                    title="Refresh TG feed"
+                  >↻</button>
+                </div>
               </div>
               <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 100 }}>
                 {tg == null && <div className="desk-empty">Loading…</div>}
@@ -1643,7 +1721,7 @@ export default function DashboardPage() {
                 {tg != null && tg.signals.length === 0 && tg.connected && (
                   <div className="desk-empty">No signals yet — watching channel.</div>
                 )}
-                {(tg?.signals ?? []).slice(0, 6).map((s) => (
+                {(tg?.signals ?? []).slice(0, 15).map((s) => (
                   <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.72rem' }}>
                     <span className={`chip ${s.type === 'BUY' ? 'up' : s.type === 'SELL' ? 'down' : 'mut'}`} style={{ fontSize: '0.6rem', flexShrink: 0 }}>{s.type}</span>
                     {s.symbol && <b style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-mono)' }}>{s.symbol}</b>}
