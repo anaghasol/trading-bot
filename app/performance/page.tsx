@@ -132,55 +132,55 @@ function BarChart({ rows }: { rows: PeriodRow[] }) {
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 export default function PerformancePage() {
-  const [todayTrades, setTodayTrades] = useState<Trade[]>([])
-  const [trades,      setTrades]      = useState<Trade[]>([])
-  const [loading,     setLoading]     = useState(true)
-  const [days,        setDays]        = useState(30)
-  const [broker,      setBroker]      = useState<'alpaca_paper' | 'schwab'>('alpaca_paper')
-  const [view,        setView]        = useState<ViewMode>('today')
-  const [sortKey,     setSortKey]     = useState<SortKey>('total_pnl')
-  const [gran,        setGran]        = useState<'daily' | 'monthly'>('daily')
-  const [hSort,       setHSort]       = useState<HistSort>('period')
-  const [hAsc,        setHAsc]        = useState(false)
+  const [trades,  setTrades]  = useState<Trade[]>([])
+  const [loading, setLoading] = useState(true)
+  const [days,    setDays]    = useState(30)
+  const [broker,  setBroker]  = useState<'alpaca_paper' | 'schwab'>('alpaca_paper')
+  const [view,    setView]    = useState<ViewMode>('today')
+  const [sortKey, setSortKey] = useState<SortKey>('total_pnl')
+  const [gran,    setGran]    = useState<'daily' | 'monthly'>('daily')
+  const [hSort,   setHSort]   = useState<HistSort>('period')
+  const [hAsc,    setHAsc]    = useState(false)
 
   const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
   const supaKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   const hdrs    = { apikey: supaKey, Authorization: `Bearer ${supaKey}` }
   const SEL     = 'id,symbol,pnl,pnl_pct,entry_price,exit_price,closed_at,created_at,strategy,reason,broker,quantity,status,side'
 
-  // Get today's date in US/Eastern so after-8pm UTC doesn't flip to tomorrow
-  const etDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }) // YYYY-MM-DD
+  // ET date for display and client-side today-filtering
+  const etDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date())
 
   useEffect(() => {
     setLoading(true)
-    // Midnight ET = 04:00 UTC (EDT/summer). Safe filter: always before 9:30 AM ET open.
-    const todayFilter = `${etDate}T04:00:00Z`
-    const fromStr     = new Date(Date.now() - days * 86_400_000).toISOString()
-    const bf          = broker === 'schwab'
+    // Single fetch: closed trades within the selected window.
+    // Use created_at as the range filter (always set) and pull enough history.
+    // Today's trades are filtered client-side by closed_at prefix.
+    const fromStr = new Date(Date.now() - Math.max(days, 1) * 86_400_000).toISOString()
+    const bf      = broker === 'schwab'
       ? 'broker=eq.schwab'
       : 'or=(broker.eq.alpaca_paper,broker.is.null)'
 
-    Promise.all([
-      fetch(`${supaUrl}/rest/v1/tb_trades?status=eq.CLOSED&${bf}&closed_at=gte.${todayFilter}&order=closed_at.desc&limit=300&select=${SEL}`, { headers: hdrs }).then(r => r.json()),
-      fetch(`${supaUrl}/rest/v1/tb_trades?status=eq.CLOSED&${bf}&closed_at=gte.${fromStr}&order=closed_at.desc&limit=500&select=${SEL}`, { headers: hdrs }).then(r => r.json()),
-    ]).then(([td, hist]) => {
-      setTodayTrades(Array.isArray(td)   ? td   : [])
-      setTrades(Array.isArray(hist) ? hist : [])
-      setLoading(false)
-    }).catch(() => setLoading(false))
+    fetch(
+      `${supaUrl}/rest/v1/tb_trades?status=eq.CLOSED&${bf}&created_at=gte.${fromStr}&order=closed_at.desc&limit=500&select=${SEL}`,
+      { headers: hdrs }
+    )
+      .then(r => r.json())
+      .then((rows: unknown) => { setTrades(Array.isArray(rows) ? rows : []); setLoading(false) })
+      .catch(() => setLoading(false))
   }, [days, broker])
 
-  // ── Today derived ───────────────────────────────────────────────────────────
-  const todayPnl   = todayTrades.reduce((s, t) => s + (t.pnl ?? 0), 0)
-  const todayWins  = todayTrades.filter(t => (t.pnl ?? 0) > 0).length
-  const todayLoss  = todayTrades.filter(t => (t.pnl ?? 0) < 0).length
-  const todayWr    = todayTrades.length > 0 ? Math.round(todayWins / todayTrades.length * 100) : 0
-  const todayBest  = todayTrades.length > 0 ? Math.max(...todayTrades.map(t => t.pnl ?? 0)) : 0
-  const todayWorst = todayTrades.length > 0 ? Math.min(...todayTrades.map(t => t.pnl ?? 0)) : 0
-  const todayGW    = todayTrades.filter(t => (t.pnl ?? 0) > 0).reduce((s, t) => s + (t.pnl ?? 0), 0)
-  const todayGL    = todayTrades.filter(t => (t.pnl ?? 0) < 0).reduce((s, t) => s + Math.abs(t.pnl ?? 0), 0)
-  const todayPF    = todayGL > 0 ? todayGW / todayGL : todayGW > 0 ? 99 : 0
-  const todayAvg   = todayTrades.length > 0 ? todayPnl / todayTrades.length : 0
+  // ── Today derived (client-side filter from history) ─────────────────────────
+  const todayTrades = trades.filter(t => (t.closed_at ?? t.created_at ?? '').startsWith(etDate))
+  const todayPnl    = todayTrades.reduce((s, t) => s + (t.pnl ?? 0), 0)
+  const todayWins   = todayTrades.filter(t => (t.pnl ?? 0) > 0).length
+  const todayLoss   = todayTrades.filter(t => (t.pnl ?? 0) < 0).length
+  const todayWr     = todayTrades.length > 0 ? Math.round(todayWins / todayTrades.length * 100) : 0
+  const todayBest   = todayTrades.length > 0 ? Math.max(...todayTrades.map(t => t.pnl ?? 0)) : 0
+  const todayWorst  = todayTrades.length > 0 ? Math.min(...todayTrades.map(t => t.pnl ?? 0)) : 0
+  const todayGW     = todayTrades.filter(t => (t.pnl ?? 0) > 0).reduce((s, t) => s + (t.pnl ?? 0), 0)
+  const todayGL     = todayTrades.filter(t => (t.pnl ?? 0) < 0).reduce((s, t) => s + Math.abs(t.pnl ?? 0), 0)
+  const todayPF     = todayGL > 0 ? todayGW / todayGL : todayGW > 0 ? 99 : 0
+  const todayAvg    = todayTrades.length > 0 ? todayPnl / todayTrades.length : 0
 
   // ── History derived ─────────────────────────────────────────────────────────
   const periodRows = buildPeriodRows(trades, gran)
