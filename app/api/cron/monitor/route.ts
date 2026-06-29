@@ -7,7 +7,7 @@ import * as SchwabBroker from '@/lib/schwab'
 import * as AlpacaBroker from '@/lib/alpaca'
 import { checkExitCondition, shouldTakePartial, isMarketOpen, isDailyLossExceeded, INITIAL_STOP_PCT } from '@/lib/risk'
 import { batchEarningsCheck } from '@/lib/earnings'
-import { evaluateOptionsExit } from '@/lib/options-exit'
+import { evaluateOptionsExit, isPartOfSpread, OptionsPosition } from '@/lib/options-exit'
 import { profileFor } from '@/lib/strategy-profiles'
 import { analyzePdtStatus } from '@/lib/pdt'
 import { recordLearning } from '@/lib/learning'
@@ -203,11 +203,19 @@ async function monitorBroker(
   }
 
   // ── Orphan naked short cleanup (paper only) ───────────────────────────────
-  // If any options position has qty < 0 with NO journal entry, close it immediately.
-  // This catches accidental shorts created by TG race conditions or bad order routing.
+  // If any options position has qty < 0 with NO journal entry AND no corresponding long leg,
+  // close it immediately. Skip if it's the short leg of a bull put spread (has a long put below it).
   if (broker === 'alpaca_paper') {
+    const allOptPos: OptionsPosition[] = positions
+      .filter((p) => p.asset_type === 'OPTION')
+      .map((p) => ({ symbol: p.symbol, quantity: p.quantity, pnl_pct: p.pnl_pct ?? 0 }))
+
     for (const pos of positions) {
       if (pos.asset_type === 'OPTION' && pos.quantity < 0 && !tradeMap.has(pos.symbol)) {
+        if (isPartOfSpread(pos.symbol, allOptPos)) {
+          console.log(`[monitor] Spread short leg ${pos.symbol} — skipping orphan cleanup`)
+          continue
+        }
         const order = await AlpacaBroker.closePosition(pos.symbol)
         const msg = `[AUTO] Orphan naked short ${pos.symbol} qty=${pos.quantity} — closed${order.status === 'PLACED' ? ' OK' : ' FAILED'}`
         void db.from('tb_alerts').insert({ type: 'STOP_LOSS', symbol: pos.symbol, broker, message: msg })
@@ -255,11 +263,15 @@ async function monitorBroker(
 
       // Aggressive paper: -10% premium stop (live keeps -25% to allow normal options movement)
       const optStopPct = broker === 'alpaca_paper' ? -10 : -25
+      const allOptPositions: OptionsPosition[] = positions
+        .filter((p) => p.asset_type === 'OPTION')
+        .map((p) => ({ symbol: p.symbol, quantity: p.quantity, pnl_pct: p.pnl_pct ?? 0 }))
       const exitDecision = evaluateOptionsExit(
         { symbol: pos.symbol, quantity: pos.quantity, pnl_pct: premPct, option_expiry: expiry ?? undefined },
         !!meta?.partial_done,
         Date.now(),
-        optStopPct
+        optStopPct,
+        allOptPositions
       )
 
       if (exitDecision.action === 'PARTIAL_CLOSE') {

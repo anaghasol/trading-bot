@@ -5,7 +5,7 @@
 
 export interface OptionsPosition {
   symbol: string
-  quantity: number          // negative = short (MUST close immediately)
+  quantity: number          // negative = short leg of a spread OR naked short
   pnl_pct: number           // % gain/loss on premium paid
   option_expiry?: string    // YYYY-MM-DD
 }
@@ -27,13 +27,18 @@ export interface OptionsExitDecision {
 /**
  * Determine what to do with an options position this monitor cycle.
  * Returns FULL_CLOSE, PARTIAL_CLOSE, or HOLD.
- * @param stopLossPct  Max allowed premium loss (negative). Default -25%; pass -10 for aggressive paper.
+ *
+ * @param stopLossPct    Max allowed premium loss. Default -25%; pass -10 for aggressive paper.
+ * @param allOptPositions All open options positions — used to detect if a short is a spread leg.
+ *                        A short put that has a matching long put (same expiry, lower strike)
+ *                        is the short leg of a bull put spread → must NOT be closed as naked short.
  */
 export function evaluateOptionsExit(
   pos: OptionsPosition,
   partialAlreadyDone: boolean,
   nowMs = Date.now(),
-  stopLossPct = -25
+  stopLossPct = -25,
+  allOptPositions: OptionsPosition[] = []
 ): OptionsExitDecision {
   const premPct = pos.pnl_pct
   const expiry = pos.option_expiry
@@ -41,9 +46,18 @@ export function evaluateOptionsExit(
     ? (new Date(expiry).getTime() - nowMs) / 86_400_000
     : 999
 
-  // Short options must never be held — close immediately
+  // Short position — only close immediately if it's NAKED (no matching long leg below it)
   if (pos.quantity < 0) {
-    return { action: 'FULL_CLOSE', reason: 'SHORT_OPT_CLEANUP' }
+    const isSpreadShortLeg = isPartOfSpread(pos.symbol, allOptPositions)
+    if (!isSpreadShortLeg) {
+      return { action: 'FULL_CLOSE', reason: 'SHORT_OPT_CLEANUP' }
+    }
+    // It's the short leg of a spread — manage by expiry and profit, not immediate cleanup
+    if (dteDays <= 2)  return { action: 'FULL_CLOSE', reason: 'EXPIRY_PROTECTION' }
+    // Spread profit: when short premium has decayed 50% → buy back
+    if (premPct <= -50) return { action: 'FULL_CLOSE', reason: 'OPT_TARGET' }   // neg pnl on short = our gain
+    if (premPct >= 50)  return { action: 'FULL_CLOSE', reason: 'OPT_STOP' }    // pos pnl on short = our loss
+    return { action: 'HOLD', reason: null }
   }
 
   // Near-expiry protection: close 2 days before expiry
@@ -68,6 +82,28 @@ export function evaluateOptionsExit(
   }
 
   return { action: 'HOLD', reason: null }
+}
+
+/**
+ * Returns true if a short options position is the short leg of a spread —
+ * i.e., there's a long position in the same underlying, same expiry, lower/same strike.
+ *
+ * Example: short CRWD260724P00700000 + long CRWD260724P00690000 → spread, don't close naked.
+ */
+export function isPartOfSpread(shortSymbol: string, allPositions: OptionsPosition[]): boolean {
+  const shortParsed = parseOccSymbol(shortSymbol)
+  if (!shortParsed) return false
+  return allPositions.some((p) => {
+    if (p.quantity <= 0) return false     // must be a LONG leg
+    const lp = parseOccSymbol(p.symbol)
+    if (!lp) return false
+    return (
+      lp.ticker === shortParsed.ticker &&
+      lp.expiry === shortParsed.expiry &&
+      lp.type   === shortParsed.type   &&
+      lp.strike < shortParsed.strike    // long put below short put = bull put spread
+    )
+  })
 }
 
 /** Detect whether a symbol is an OCC options symbol */
