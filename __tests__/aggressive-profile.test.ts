@@ -19,11 +19,12 @@ describe('alpaca_paper profile — quality mode (20 positions)', () => {
   it('max hold 3 days — no dead weight', () => expect(p.max_hold_days).toBe(3))
 })
 
-describe('schwab profile — unchanged (real money, protected)', () => {
+describe('schwab profile — tuned 2026-06-30 (real money, protected)', () => {
   const p = PROFILES.schwab
 
-  it('still has 4 max positions', () => expect(p.max_positions).toBe(4))
-  it('still has 4% initial stop', () => expect(p.initial_stop_pct).toBe(0.04))
+  it('has 5 max positions (was 4 — more deployment for compounding)', () => expect(p.max_positions).toBe(5))
+  it('has 2.5% initial stop (was 4% — cut losses faster on live money)', () => expect(p.initial_stop_pct).toBe(0.025))
+  it('has 68% confidence gate (was 72% — allows strong TG + EMA setups)', () => expect(p.min_confidence).toBe(68))
   it('does not allow day trades', () => expect(p.allow_day_trades).toBe(false))
   it('has 5% daily loss breaker', () => expect(p.daily_loss_stop_pct).toBe(0.05))
 })
@@ -33,7 +34,7 @@ describe('profileFor()', () => {
     expect(profileFor('alpaca_paper').max_positions).toBe(20)
   })
   it('returns schwab profile for schwab broker', () => {
-    expect(profileFor('schwab').max_positions).toBe(4)
+    expect(profileFor('schwab').max_positions).toBe(5)
   })
   it('falls back to schwab for unknown broker', () => {
     expect(profileFor('unknown').key).toBe('schwab')
