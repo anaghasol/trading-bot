@@ -181,35 +181,30 @@ export async function GET(req: Request) {
       ? `${sender.firstName}${sender.lastName ? ` ${sender.lastName}` : ''}`
       : sender?.username ?? 'Member'
 
-    // SF Essential Trades (-1002381909837) is already the Buy/Sell channel — not a forum group.
-    // Route via simple keyword matching — zero Groq needed for routing.
-    // Groq only fires when we detect a trade entry to extract symbol/price/stop.
-    // Covers "buying DELL 430 fir a trade" (no "at") AND "buying NBIS at 280" AND "Trade Id :"
-    const isTradeSig = /trade\s*id|buying\s+[a-z]{2,6}(\s+at\s+|\s+\d)|buy\s+[a-z]{2,6}\s+(sl|stop|at\s)/i.test(text)
-    const isExitSig  = /trim|book.?profit|partial.?gain|stop.?hit|stopped.?out|tp.?hit|take.?profit/i.test(text)
-
-    const topic: 'trades' | 'exits' | 'market_info' = isTradeSig
-      ? 'trades'
-      : isExitSig
-      ? 'exits'
-      : 'market_info'
+    // SF Essential Trades IS the Buy/Sell Alerts channel — every message from it
+    // goes to our Buy/Sell Alerts topic. No AI routing needed.
+    // Only exception: explicit exit/profit keywords → route to Exit topic instead.
+    const isExitSig = /trim|book.?profit|partial.?gain|stop.?hit|stopped.?out|tp.?hit|take.?profit/i.test(text)
+    const primaryTopic: 'trades' | 'exits' = isExitSig ? 'exits' : 'trades'
 
     // Skip media-only
     if (!text || text.trim().length < 5) {
-      await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date, senderName)
+      await sendToTopicIfNew(msg.id, '[image/media]', 'trades', db, msg.date, senderName)
       results.push({ id: msg.id, type: 'relay_only' })
       continue
     }
 
-    // Relay as-is — no AI summary, clean format
-    const relayResult = await sendToTopicIfNew(msg.id, text, topic, db, msg.date, senderName)
+    // Mirror as-is to the right topic — no AI summary
+    const relayResult = await sendToTopicIfNew(msg.id, text, primaryTopic, db, msg.date, senderName)
     if (relayResult === 'sent') {
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }
     if (relayResult === 'duplicate') { results.push({ id: msg.id, type: 'duplicate_skip' }); continue }
 
-    // Groq only on trade signals — to extract symbol/price/stop for execution
-    if (!isTradeSig) { results.push({ id: msg.id, type: `${topic}_relayed` }); continue }
+    // Groq only for EXECUTION — extract symbol/price/stop to place actual orders
+    // Only runs if message looks like an entry signal (avoids Groq on pure commentary)
+    const isTradeSig = /trade\s*id|buying\s+[a-z]{2,6}(\s+at\s+|\s+\d)|buy\s+[a-z]{2,6}\s+(sl|stop|at\s)/i.test(text)
+    if (!isTradeSig && !isExitSig) { results.push({ id: msg.id, type: 'trades_relayed' }); continue }
 
     const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
 
