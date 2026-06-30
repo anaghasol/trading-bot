@@ -184,8 +184,9 @@ export async function GET(req: Request) {
     // SF Essential Trades (-1002381909837) is already the Buy/Sell channel — not a forum group.
     // Route via simple keyword matching — zero Groq needed for routing.
     // Groq only fires when we detect a trade entry to extract symbol/price/stop.
-    const isTradeSig = /trade\s*id\s*:|buying\s+\w+\s+at\s+|\bat\s+\$?\d|buy\s+\w+\s+(sl|stop)|entry[:\s]/i.test(text)
-    const isExitSig  = /\b(trim|trimming|book\s+profit|partial\s+gain|stop\s+hit|stopped\s+out|sl\s+hit|close\s+position|take\s+profit|tp\s+hit)\b/i.test(text)
+    // Covers "buying DELL 430 fir a trade" (no "at") AND "buying NBIS at 280" AND "Trade Id :"
+    const isTradeSig = /trade\s*id|buying\s+[a-z]{2,6}(\s+at\s+|\s+\d)|buy\s+[a-z]{2,6}\s+(sl|stop|at\s)/i.test(text)
+    const isExitSig  = /trim|book.?profit|partial.?gain|stop.?hit|stopped.?out|tp.?hit|take.?profit/i.test(text)
 
     const topic: 'trades' | 'exits' | 'market_info' = isTradeSig
       ? 'trades'
