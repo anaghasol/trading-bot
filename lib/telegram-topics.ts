@@ -64,14 +64,13 @@ export async function sendToTopic(
 ): Promise<boolean> {
   if (!BOT_TOKEN || !RELAY_CHAT || !text.trim()) return false
 
-  const header = category === 'trades'
-    ? '🟢 *BUY / SELL ALERT*'
-    : category === 'exits'
-    ? '🔴 *EXIT / PROFIT SIGNAL*'
-    : 'ℹ️ *Market Info*'
+  // Category badge — small label, not a big header
+  const badge = category === 'trades'      ? '🟢 Buy/Sell Alert'
+              : category === 'exits'       ? '🔴 Exit/Profit'
+              :                              'ℹ️ Market Info'
 
-  // Who said it + when
-  const who = senderName ? `👤 *${senderName}* (SF Essential Trades)` : '📢 *SF Essential Trades*'
+  // Who said it + when — mirrors how Pavan's group displays sender
+  const who = senderName ? `👤 *${senderName}*` : '📢 SF Essential Trades'
   let tsLine = ''
   if (originalTs) {
     const d = new Date(originalTs * 1000)
@@ -80,11 +79,11 @@ export async function sendToTopic(
       month: 'short', day: 'numeric',
       hour: 'numeric', minute: '2-digit', hour12: true,
     })
-    tsLine = `\n🕐 ${etStr} ET`
+    tsLine = ` · ${etStr} ET`
   }
 
-  const divider = '─────────────────────'
-  const fullText = `${header}\n${who}${tsLine}\n${divider}\n\n${text}`
+  // Format: sender + time on one line, badge on same line, then message
+  const fullText = `${who}${tsLine}  ${badge}\n\n${text}`
 
   const threadId = await getTopicId(category, db)
 
