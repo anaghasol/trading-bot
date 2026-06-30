@@ -20,7 +20,7 @@ import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal } from '@/lib/telegram-signal'
-import { sendToTopicIfNew, pinMessage } from '@/lib/telegram-topics'
+import { sendToTopicIfNew, mirrorIfNew, getOrCreateMirrorThread, pinMessage } from '@/lib/telegram-topics'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -169,7 +169,26 @@ export async function GET(req: Request) {
   const schwabProfile = PROFILES.schwab
   const equity       = (await getAccountBalance()) ?? 100_000
 
-  // Process messages sequentially to avoid dedup race condition (Promise.all reads same state)
+  // Fetch Pavan's forum topic list — discover on first run, cached in Supabase
+  // Each message's replyTo.replyToTopId tells us which of his topics it came from
+  let pavanTopics: Record<number, string> = {}
+  try {
+    const { data: topicCache } = await db.from('tb_settings').select('value').eq('key', 'pavan_topics_json').single()
+    if (topicCache?.value) {
+      pavanTopics = JSON.parse(topicCache.value)
+    } else {
+      const { Api } = await import('telegram')
+      const entity = await client.getEntity(SF_CHANNEL_ID)
+      const result = await client.invoke(new Api.channels.GetForumTopics({
+        channel: entity as unknown as import('telegram').Api.InputChannel,
+        limit: 100, offsetId: 0, offsetDate: 0, offsetTopic: 0, q: '',
+      })) as { topics: Array<{ id: number; title: string }> }
+      result.topics.forEach(t => { pavanTopics[t.id] = t.title })
+      await db.from('tb_settings').upsert({ key: 'pavan_topics_json', value: JSON.stringify(pavanTopics) })
+    }
+  } catch { /* non-fatal — will mirror to default thread if topic unknown */ }
+
+  // Process messages sequentially to avoid dedup race condition
   const results: { id: number; type: string; symbol?: string; action?: string }[] = []
   for (const msg of newMsgs) {
     const text = msg.text ?? ''
@@ -181,30 +200,34 @@ export async function GET(req: Request) {
       ? `${sender.firstName}${sender.lastName ? ` ${sender.lastName}` : ''}`
       : sender?.username ?? 'Member'
 
-    // SF Essential Trades IS the Buy/Sell Alerts channel — every message from it
-    // goes to our Buy/Sell Alerts topic. No AI routing needed.
-    // Only exception: explicit exit/profit keywords → route to Exit topic instead.
-    const isExitSig = /trim|book.?profit|partial.?gain|stop.?hit|stopped.?out|tp.?hit|take.?profit/i.test(text)
-    const primaryTopic: 'trades' | 'exits' = isExitSig ? 'exits' : 'trades'
+    // Which of Pavan's forum topics did this message come from?
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const srcTopicId: number | null = (msg as any).replyTo?.replyToTopId ?? null
+    const srcTopicName: string = (srcTopicId && pavanTopics[srcTopicId]) ? pavanTopics[srcTopicId] : 'SF Essential Trades'
+
+    // Get or create a matching topic in our relay group
+    const relayThreadId = srcTopicId
+      ? await getOrCreateMirrorThread(srcTopicId, srcTopicName, db)
+      : 6  // default: Buy/Sell Alerts (thread 6)
 
     // Skip media-only
     if (!text || text.trim().length < 5) {
-      await sendToTopicIfNew(msg.id, '[image/media]', 'trades', db, msg.date, senderName)
+      await mirrorIfNew(msg.id, relayThreadId, '[image/media]', db, senderName, msg.date)
       results.push({ id: msg.id, type: 'relay_only' })
       continue
     }
 
-    // Mirror as-is to the right topic — no AI summary
-    const relayResult = await sendToTopicIfNew(msg.id, text, primaryTopic, db, msg.date, senderName)
+    // Mirror as-is — same text, same topic, sender + timestamp in header
+    const relayResult = await mirrorIfNew(msg.id, relayThreadId, text, db, senderName, msg.date)
     if (relayResult === 'sent') {
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }
     if (relayResult === 'duplicate') { results.push({ id: msg.id, type: 'duplicate_skip' }); continue }
 
-    // Groq only for EXECUTION — extract symbol/price/stop to place actual orders
-    // Only runs if message looks like an entry signal (avoids Groq on pure commentary)
+    // Groq only for ORDER EXECUTION — only on entry-signal messages
+    const isExitSig  = /trim|book.?profit|partial.?gain|stop.?hit|stopped.?out|tp.?hit|take.?profit/i.test(text)
     const isTradeSig = /trade\s*id|buying\s+[a-z]{2,6}(\s+at\s+|\s+\d)|buy\s+[a-z]{2,6}\s+(sl|stop|at\s)/i.test(text)
-    if (!isTradeSig && !isExitSig) { results.push({ id: msg.id, type: 'trades_relayed' }); continue }
+    if (!isTradeSig && !isExitSig) { results.push({ id: msg.id, type: `mirrored:${srcTopicName.slice(0,20)}` }); continue }
 
     const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
 
