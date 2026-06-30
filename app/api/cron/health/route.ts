@@ -186,7 +186,44 @@ export async function GET(req: Request) {
     }
   } catch { /* non-fatal */ }
 
-  // ── 5. LOG + SMS ───────────────────────────────────────────────────────────
+  // ── 5. TG POLLER WATCHDOG ─────────────────────────────────────────────────
+  // Checks both pollers. If either has been silent > 5 min, sends SMS (Twilio)
+  // as a fallback — because if TG itself is down, TG alerts won't reach us.
+  // Uses a dedupe key per poller so we alert once per 30-min window.
+  try {
+    const pollers = [
+      { label: '3-channel poller', pingKey: 'tg_cron_ping',    pollKey: 'tg_last_poll',    alertKey: 'tg_watchdog_alerted_at' },
+      { label: 'SF Trades poller', pingKey: 'tg_sf_cron_ping', pollKey: 'tg_sf_last_poll', alertKey: 'tg_sf_watchdog_alerted_at' },
+    ]
+    for (const p of pollers) {
+      const [pingRow, alertRow] = await Promise.all([
+        db.from('tb_settings').select('value').eq('key', p.pingKey).single(),
+        db.from('tb_settings').select('value').eq('key', p.alertKey).single(),
+      ])
+      const lastPing  = pingRow.data?.value  ? new Date(pingRow.data.value).getTime()  : 0
+      const lastAlert = alertRow.data?.value ? new Date(alertRow.data.value).getTime() : 0
+      const silentMin = Math.round((now.getTime() - lastPing) / 60_000)
+      if (lastPing === 0 || silentMin > 5) {
+        if (now.getTime() - lastAlert > 30 * 60_000) {
+          await db.from('tb_settings').upsert({ key: p.alertKey, value: now.toISOString() })
+          issues.push(`TG ${p.label} SILENT ${silentMin === Infinity || lastPing === 0 ? '∞' : silentMin}m — visit /tg-connect to restore`)
+        }
+      }
+    }
+    // Also clear stale poll locks older than 5 minutes to unblock future runs
+    const { data: lockRow } = await db.from('tb_settings').select('value').eq('key', 'tg_poll_lock').single()
+    if (lockRow?.value) {
+      const lockAge = parseInt(lockRow.value.replace('tg_poll_lock_', ''))
+      if (!isNaN(lockAge) && now.getTime() - lockAge > 5 * 60_000) {
+        await db.from('tb_settings').upsert({ key: 'tg_poll_lock', value: 'cleared_by_health' })
+        healed.push('Cleared stale tg_poll_lock (was >5 min old)')
+      }
+    }
+  } catch (e) {
+    issues.push(`TG watchdog check failed: ${String(e).slice(0, 80)}`)
+  }
+
+  // ── 6. LOG + SMS ───────────────────────────────────────────────────────────
   const summary = [
     healed.length ? `Healed: ${healed.join('; ')}` : null,
     issues.length ? `Issues: ${issues.join('; ')}` : null,

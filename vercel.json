@@ -29,6 +29,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/cron/tg-watchdog",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/health",
       "schedule": "0,30 13-20 * * 1-5"
     },

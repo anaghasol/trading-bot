@@ -513,11 +513,11 @@ export default function DashboardPage() {
     return () => clearInterval(iv)
   }, [])
 
-  // TG feed dedicated auto-refresh every 3 minutes — independent of market hours
+  // TG feed dedicated auto-refresh every 60s — relay is 24/7, need fast health updates
   useEffect(() => {
     const iv = setInterval(() => {
       fetch('/api/telegram/status').then(r => r.json()).then(setTg).catch(() => {})
-    }, 3 * 60 * 1000)
+    }, 60_000)
     return () => clearInterval(iv)
   }, [])
 
