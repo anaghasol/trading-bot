@@ -6,12 +6,13 @@ export const runtime = 'nodejs'
 export async function GET() {
   const db = createServiceClient()
 
-  const [sessionRow, lastPollRow, lastMsgRow, statusRow, cronPingRow, signalRows] = await Promise.all([
+  const [sessionRow, lastPollRow, lastMsgRow, statusRow, cronPingRow, relayRow, signalRows] = await Promise.all([
     db.from('tb_settings').select('value').eq('key', 'telegram_session').single(),
     db.from('tb_settings').select('value').eq('key', 'tg_last_poll').single(),
     db.from('tb_settings').select('value').eq('key', 'tg_last_msg_id').single(),
     db.from('tb_settings').select('value').eq('key', 'tg_status').single(),
     db.from('tb_settings').select('value').eq('key', 'tg_cron_ping').single(),
+    db.from('tb_settings').select('value').eq('key', 'tg_relay_last_msg').single(),
     db.from('tb_alerts')
       .select('id, type, message, symbol, created_at')
       .or('message.ilike.%SF Essential%,message.ilike.%SF Trades%,type.in.(BUY,SELL,INFO)')
@@ -19,11 +20,12 @@ export async function GET() {
       .limit(20),
   ])
 
-  const hasSession   = !!(sessionRow.data?.value)
-  const lastPoll     = lastPollRow.data?.value ?? null
-  const lastMsgId    = parseInt(lastMsgRow.data?.value ?? '0')
-  const tgStatus     = statusRow.data?.value ?? null   // 'ok' | 'error:...' | 'no_session' | null
-  const lastCronPing = cronPingRow.data?.value ?? null // updated every cron tick, regardless of TG state
+  const hasSession    = !!(sessionRow.data?.value)
+  const lastPoll      = lastPollRow.data?.value ?? null
+  const lastMsgId     = parseInt(lastMsgRow.data?.value ?? '0')
+  const tgStatus      = statusRow.data?.value ?? null   // 'ok' | 'error:...' | 'no_session' | null
+  const lastCronPing  = cronPingRow.data?.value ?? null // updated every cron tick, regardless of TG state
+  const relayLastMsg  = relayRow.data?.value ?? null    // ISO of last successfully relayed message
 
   const minutesSilent = lastPoll
     ? Math.round((Date.now() - new Date(lastPoll).getTime()) / 60000)
@@ -38,6 +40,10 @@ export async function GET() {
   // Cron alive = cron endpoint was called within last 3 min (regardless of TG state)
   const cron_alive = (minutesSinceCronPing ?? 999) < 3
 
+  const relayMinutesAgo = relayLastMsg
+    ? Math.round((Date.now() - new Date(relayLastMsg).getTime()) / 60000)
+    : null
+
   return NextResponse.json({
     connected,
     cron_alive,
@@ -48,6 +54,8 @@ export async function GET() {
     minutes_since_cron_ping: minutesSinceCronPing,
     tg_status:               tgStatus,
     last_msg_id:             lastMsgId,
+    relay_last_msg:          relayLastMsg,
+    relay_minutes_ago:       relayMinutesAgo,
     signals:                 signalRows.data ?? [],
   }, {
     headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },

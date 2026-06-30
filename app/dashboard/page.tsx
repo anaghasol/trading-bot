@@ -16,7 +16,7 @@ interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; pnl?: number; pnl_pct?: number; closed_at?: string; confidence: number; strategy: string; status: string; created_at: string; reason?: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
 interface TgSignal { id: number; type: string; message: string; symbol?: string; created_at: string }
-interface TgStatus { connected: boolean; cron_alive: boolean; has_session: boolean; last_poll: string | null; last_cron_ping: string | null; minutes_silent: number | null; minutes_since_cron_ping: number | null; tg_status: string | null; last_msg_id: number; signals: TgSignal[] }
+interface TgStatus { connected: boolean; cron_alive: boolean; has_session: boolean; last_poll: string | null; last_cron_ping: string | null; minutes_silent: number | null; minutes_since_cron_ping: number | null; tg_status: string | null; last_msg_id: number; relay_last_msg: string | null; relay_minutes_ago: number | null; signals: TgSignal[] }
 interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string; asset_type?: string }
 interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; market_open: boolean }
 interface Pdt { day_trades_remaining: number; is_pdt_protected: boolean; balance: number }
@@ -719,10 +719,10 @@ export default function DashboardPage() {
         if (tg != null && !tg.has_session) {
           alerts.push({ key: 'tg-nosess', msg: <>🔴 <b>Telegram disconnected</b> — session missing. Go to Settings → Telegram → Re-authenticate.</> })
         }
-        // TG session exists but cron/connection broken during market hours
-        if (tg?.has_session && !tg.connected && !isOffHours) {
+        // TG session exists but cron/connection broken — relay runs 24/7, show always
+        if (tg?.has_session && !tg.connected) {
           const detail = tg.tg_status === 'no_session' ? 'session expired' : tg.tg_status?.startsWith('error:') ? tg.tg_status.replace('error:', '').trim() : `silent ${tg.minutes_since_cron_ping ?? '?'}m`
-          alerts.push({ key: 'tg-down', msg: <>🔴 <b>Telegram disconnected</b> — {detail}. Core trading continues but SF Trades signals paused.</> })
+          alerts.push({ key: 'tg-down', msg: <>🔴 <b>Telegram relay disconnected</b> — {detail}. SF Trades signals + relay paused. <a href="/tg-connect" style={{ color: '#fff', textDecoration: 'underline', fontWeight: 700 }}>Reconnect now →</a></> })
         }
 
         if (alerts.length === 0) return null
@@ -957,13 +957,17 @@ export default function DashboardPage() {
             )
           })()}
 
-          {/* TG disconnection banner — shown during market hours when TG poller is down */}
+          {/* TG relay health banner — 24/7, relay must never go dark */}
           {(() => {
             if (!tg) return null
-            const etHour = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
-            const marketHours = parseInt(etHour) >= 9 && parseInt(etHour) < 16
-            const tgDown = !tg.connected && marketHours
-            if (!tgDown) return null
+            const tgDown = !tg.connected
+            // Show relay-last-seen even when connected (warn if stale > 60 min during daytime)
+            const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
+            const isDaytime = etH >= 8 && etH < 22
+            const relayStale = tg.relay_minutes_ago != null && tg.relay_minutes_ago > 60 && isDaytime
+
+            if (!tgDown && !relayStale) return null
+
             const reason = !tg.has_session
               ? 'Session missing — never authenticated'
               : tg.tg_status === 'no_session'
@@ -974,20 +978,27 @@ export default function DashboardPage() {
             const minutesLost = tg.last_poll
               ? Math.round((Date.now() - new Date(tg.last_poll).getTime()) / 60000)
               : null
+            const relayInfo = tg.relay_last_msg
+              ? `Last relay: ${tg.relay_minutes_ago}m ago`
+              : 'No relay sent yet'
+
             return (
-              <div style={{ background: 'rgba(255,50,50,0.10)', border: '1px solid var(--red)', borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <span style={{ color: 'var(--red)', fontWeight: 700, fontSize: '0.82rem', flexShrink: 0 }}>⚡ TG DISCONNECTED</span>
+              <div style={{ background: tgDown ? 'rgba(255,50,50,0.10)' : 'rgba(255,140,0,0.10)', border: `1px solid ${tgDown ? 'var(--red)' : 'var(--amber)'}`, borderRadius: 8, padding: '10px 14px', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span style={{ color: tgDown ? 'var(--red)' : 'var(--amber)', fontWeight: 700, fontSize: '0.82rem', flexShrink: 0 }}>
+                  {tgDown ? '🔴 TG RELAY DOWN' : '🟠 RELAY STALE'}
+                </span>
                 <span style={{ color: 'var(--fg-2)', fontSize: '0.78rem', flex: 1 }}>
-                  {reason}{minutesLost && minutesLost > 2 ? ` · signals missed for ${minutesLost}m` : ''}
-                  {' — '}US Equities + Jimmy signals not being received
+                  {tgDown
+                    ? <>{reason}{minutesLost && minutesLost > 2 ? ` · down ${minutesLost}m` : ''} · SF Trades relay paused</>
+                    : <>No new messages relayed for {tg.relay_minutes_ago}m — channel may be quiet or relay broken</>
+                  }
+                  {tg.relay_last_msg && <span style={{ color: 'var(--fg-3)', fontSize: '0.7rem', marginLeft: 8 }}>· {relayInfo}</span>}
                 </span>
                 <a
-                  href="/api/telegram/auth"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ background: 'var(--red)', color: '#fff', borderRadius: 5, padding: '4px 12px', fontSize: '0.75rem', fontWeight: 700, textDecoration: 'none', flexShrink: 0 }}
+                  href="/tg-connect"
+                  style={{ background: tgDown ? 'var(--red)' : 'var(--amber)', color: '#fff', borderRadius: 5, padding: '4px 12px', fontSize: '0.75rem', fontWeight: 700, textDecoration: 'none', flexShrink: 0 }}
                 >
-                  Reconnect TG →
+                  Reconnect →
                 </a>
               </div>
             )

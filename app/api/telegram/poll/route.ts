@@ -119,10 +119,11 @@ const CHANNELS: ChannelCfg[] = [
 ]
 
 // Forward raw message text to the relay group — no parsing, no modification
-async function tgRelayRaw(channelName: string, text: string): Promise<void> {
-  if (!RELAY_CHAT || !BOT_TOKEN || !text.trim()) return
+// Returns true on success so callers can track relay health.
+async function tgRelayRaw(channelName: string, text: string): Promise<boolean> {
+  if (!RELAY_CHAT || !BOT_TOKEN || !text.trim()) return false
   try {
-    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -130,8 +131,11 @@ async function tgRelayRaw(channelName: string, text: string): Promise<void> {
         text: `📡 [${channelName}]\n\n${text}`,
       }),
     })
+    const data = await res.json() as { ok: boolean }
+    return data.ok === true
   } catch (e) {
     console.error('[relay]', String(e).slice(0, 80))
+    return false
   }
 }
 
@@ -222,12 +226,37 @@ export async function GET(req: Request) {
   }
 
   let client: TelegramClient | null = null
-  try {
-    client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3, useWSS: true })
-    await client.connect()
-  } catch (e) {
-    await db.from('tb_settings').upsert({ key: 'tg_status', value: `error: ${String(e).slice(0, 100)}` })
-    return NextResponse.json({ ok: false, error: 'TG connect failed', detail: String(e) })
+  let connectErr: string | null = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 2, useWSS: true })
+      await client.connect()
+      connectErr = null
+      break
+    } catch (e) {
+      connectErr = String(e).slice(0, 120)
+      client = null
+      if (attempt < 2) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
+    }
+  }
+  if (!client || connectErr) {
+    await db.from('tb_settings').upsert({ key: 'tg_status', value: `error: ${connectErr}` })
+    // Alert once per 30 min so we don't spam ourselves
+    const { data: lastAlertRow } = await db.from('tb_settings').select('value').eq('key', 'tg_disconnect_alerted_at').single()
+    const lastAlert = lastAlertRow?.value ? new Date(lastAlertRow.value).getTime() : 0
+    if (BOT_TOKEN && GROUP_ID && Date.now() - lastAlert > 30 * 60_000) {
+      await db.from('tb_settings').upsert({ key: 'tg_disconnect_alerted_at', value: new Date().toISOString() })
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: GROUP_ID,
+          text: `🔴 *MyTrade — TG relay disconnected*\n\nFailed to connect after 3 attempts.\nError: ${connectErr}\n\nOpen dashboard → tap *Reconnect TG* to restore.`,
+          parse_mode: 'Markdown',
+        }),
+      }).catch(() => {})
+    }
+    return NextResponse.json({ ok: false, error: 'TG connect failed after 3 retries', detail: connectErr })
   }
 
   try {
@@ -283,7 +312,11 @@ export async function GET(req: Request) {
 
       // Relay raw message to relay group BEFORE any parsing or filtering
       if (ch.relayEnabled && text.trim()) {
-        tgRelayRaw(ch.name, text).catch(() => {})
+        const relayed = await tgRelayRaw(ch.name, text)
+        if (relayed) {
+          // Track health — dashboard uses this to show last relay time
+          await db.from('tb_settings').upsert({ key: 'tg_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
+        }
       }
 
       // Image OCR: run before isWorthClassifying so image-only messages get classified
