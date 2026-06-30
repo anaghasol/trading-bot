@@ -147,12 +147,13 @@ async function monitorBroker(
     : { data: [] }
   const partialSet = new Set((partialRows ?? []).filter((r) => r.value).map((r) => r.key))
 
-  const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string; hold_mode: 'day' | 'swing' | 'trend'; partial_done: boolean; p2_done: boolean }>()
+  const tradeMap = new Map<string, { id: number; entry_price: number; peak_price: number; initial_stop: number; entry_date: string; strategy: string; reason: string; hold_mode: 'day' | 'swing' | 'trend'; partial_done: boolean; p2_done: boolean; isTgTrade: boolean }>()
   for (const t of openTrades ?? []) {
     const ep         = t.entry_price ?? 0
     const peakPnlPct = (t.peak_pnl as number) ?? 0
     const stopMatch  = (t.reason as string)?.match(/stop=\$([0-9.]+)/)
     const holdModeMatch = (t.reason as string)?.match(/hold_mode=(\w+)/)
+    const isTgTrade  = (t.reason as string | null)?.includes('tg_trade=1') ?? false
     tradeMap.set(t.symbol, {
       id:           t.id,
       entry_price:  ep,
@@ -164,6 +165,7 @@ async function monitorBroker(
       hold_mode:    (holdModeMatch?.[1] ?? 'swing') as 'day' | 'swing' | 'trend',
       partial_done: partialSet.has(`p1done_${t.id}`),
       p2_done:      partialSet.has(`p2done_${t.id}`),
+      isTgTrade,
     })
   }
 
@@ -402,6 +404,13 @@ async function monitorBroker(
         statuses.push(`${pos.symbol}: EXIT — Telegram SELL signal reversal | ${pos.pnl_pct.toFixed(1)}%`)
         continue
       }
+    }
+
+    // TG trades follow channel exit signals ONLY — skip ALL our trailing/time exits.
+    // Only the emergency hard stop (-8%/-5%) and the Alpaca stop order are in effect.
+    if (meta.isTgTrade) {
+      statuses.push(`${pos.symbol}: TG trade ${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% — awaiting channel exit signal`)
+      continue
     }
 
     // ── EMERGENCY HARD STOP — uses Alpaca's own pnl_pct, immune to bad tb_trades entry_price ──

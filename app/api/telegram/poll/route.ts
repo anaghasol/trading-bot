@@ -698,7 +698,8 @@ export async function GET(req: Request) {
           stop_loss: stopPrice ?? 0,
           target_price: signal.target ?? null, confidence: signal.confidence,
           status: 'OPEN', order_id: order.order_id ?? null,
-          reason: `TG: ${ch.name}`,
+          // tg_trade=1 → monitor/close/health follow signal's SL only, not internal rules
+          reason: `TG: ${ch.name} | stop=$${stopPrice ?? 0} | hold_mode=swing | tg_trade=1`,
         })
       }
 
@@ -725,7 +726,7 @@ export async function GET(req: Request) {
                 stop_loss: schwabStop ?? 0,
                 target_price: signal.target ?? null, confidence: signal.confidence,
                 status: 'OPEN', order_id: schwabOrder.order_id ?? null,
-                reason: `TG: ${ch.name} (live)`,
+                reason: `TG: ${ch.name} (live) | stop=$${stopPrice ?? 0} | hold_mode=swing | tg_trade=1`,
               })
               schwabNote = `\n💰 *Schwab LIVE: BUY ${schwabQty} ${signal.symbol}* · $${((livePrice ?? 0) * schwabQty).toFixed(0)}`
             }

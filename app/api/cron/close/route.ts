@@ -59,15 +59,17 @@ async function runClose(
     .eq('status', 'OPEN')
     .or(brokerFilter)
 
-  const tradeMap = new Map<string, { id: number; entry_date: string; strategy: string; entry_price: number; hold_mode: 'day' | 'swing' | 'trend' }>()
+  const tradeMap = new Map<string, { id: number; entry_date: string; strategy: string; entry_price: number; hold_mode: 'day' | 'swing' | 'trend'; isTgTrade: boolean }>()
   for (const t of openTrades ?? []) {
     const holdModeMatch = (t.reason as string | null)?.match(/hold_mode=(\w+)/)
+    const isTgTrade = (t.reason as string | null)?.includes('tg_trade=1') ?? false
     tradeMap.set(t.symbol, {
       id: t.id,
       entry_date: (t.created_at as string)?.split('T')[0] ?? today,
       strategy: t.strategy ?? '',
       entry_price: t.entry_price ?? 0,
       hold_mode: (holdModeMatch?.[1] ?? 'swing') as 'day' | 'swing' | 'trend',
+      isTgTrade,
     })
   }
 
@@ -82,6 +84,13 @@ async function runClose(
     const isSameDay = meta.entry_date === today
     const isTrend   = meta.hold_mode === 'trend'
     const isDay     = meta.hold_mode === 'day'
+
+    // TG trades (Pavan SF, US Equities, Jimmy): never force-close via our rules.
+    // They're managed by the channel's own exit signals, not time stops or pre-close cuts.
+    if (meta.isTgTrade) {
+      actions.push(`${pos.symbol}: TG trade — no forced exit (awaiting channel exit signal)`)
+      continue
+    }
 
     let shouldExit = false
     let exitReason = ''

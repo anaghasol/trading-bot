@@ -82,8 +82,10 @@ export async function GET(req: Request) {
         // Options: store raw_symbol + expiry in reason so monitor can close via OCC code
         const reason = isOpt
           ? `raw_symbol=${pos.raw_symbol ?? pos.symbol} | option_expiry=${pos.option_expiry ?? ''} | stop=50%prem | auto-journaled`
-          : `stop=$${(entryPrice * (isSchwab ? 0.975 : 0.965)).toFixed(2)} | auto-journaled by health check`
+          : `stop=$${(entryPrice * (isSchwab ? 0.975 : 0.965)).toFixed(2)} | hold_mode=swing | auto-journaled by health check`
 
+        // Use actual current time, not backdated — backdating makes monitor think position
+        // is old and can fire time-stop exits on trades bought minutes ago.
         const { error } = await db.from('tb_trades').insert({
           symbol:      pos.symbol,
           broker,
@@ -95,7 +97,7 @@ export async function GET(req: Request) {
           confidence:  70,
           reason,
           peak_pnl:    Math.max(0, pos.pnl_pct),
-          created_at:  new Date(now.getTime() - 86_400_000).toISOString(),
+          created_at:  new Date().toISOString(),
         })
 
         if (!error) {

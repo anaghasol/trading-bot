@@ -314,7 +314,8 @@ export async function GET(req: Request) {
         stop_loss: stopPrice ?? 0, target_price: signal.target ?? null,
         confidence: signal.confidence, status: 'OPEN',
         order_id: paperOrder.order_id ?? null,
-        reason: '⭐ SF Trades (Pavan)',
+        // tg_trade=1 → monitor/close/health skip their own rules; follow Pavan's SL/exit only
+        reason: `⭐ SF Trades (Pavan) | stop=$${stopPrice ?? 0} | hold_mode=swing | tg_trade=1`,
       })
     }
 
@@ -338,7 +339,7 @@ export async function GET(req: Request) {
               stop_loss: schwabStop ?? 0, target_price: signal.target ?? null,
               confidence: signal.confidence, status: 'OPEN',
               order_id: schwabOrder.order_id ?? null,
-              reason: '⭐ SF Trades (Pavan) PRIORITY',
+              reason: `⭐ SF Trades (Pavan) PRIORITY | stop=$${schwabStop ?? 0} | hold_mode=swing | tg_trade=1`,
             })
             schwabNote = `\n💰 *Schwab LIVE: BUY ${schwabQty} ${signal.symbol}* · $${((livePrice ?? 0) * schwabQty).toFixed(0)}`
           }
