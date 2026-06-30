@@ -20,7 +20,7 @@ import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal } from '@/lib/telegram-signal'
-import { sendToTopic, pinMessage } from '@/lib/telegram-topics'
+import { sendToTopicIfNew, pinMessage } from '@/lib/telegram-topics'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -174,7 +174,7 @@ export async function GET(req: Request) {
 
     // Skip media-only messages
     if (!text || text.trim().length < 5) {
-      await sendToTopic('[image/media]', 'market_info', db)
+      await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date)
       return { id: msg.id, type: 'relay_only' }
     }
 
@@ -188,12 +188,13 @@ export async function GET(req: Request) {
     const topic = signal.type === 'trade' ? 'trades'
                 : signal.type === 'exit'  ? 'exits'
                 :                           'market_info'
-    const relayed = await sendToTopic(text, topic, db)
-    if (relayed) {
+    // sendToTopicIfNew prevents double-relay on cron retries
+    const relayResult = await sendToTopicIfNew(msg.id, text, topic as 'trades'|'exits'|'market_info', db, msg.date)
+    if (relayResult === 'sent') {
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }
 
-    if (signal.type === 'ignore') return { id: msg.id, type: 'relayed_no_signal' }
+    if (signal.type === 'ignore') return { id: msg.id, type: relayResult === 'duplicate' ? 'duplicate_skip' : 'relayed_no_signal' }
 
     // Log to alerts
     const alertSym = signal.type === 'trade' ? signal.symbol : signal.type === 'learn' ? (signal.symbols?.[0] ?? null) : null

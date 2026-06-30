@@ -1,15 +1,10 @@
 /**
  * Telegram Forum Topics routing for SF Trades Relay group.
  *
- * Topics are created on first use and their IDs stored in tb_settings.
- * If the group does not have Forum mode enabled, all sends fall back to
- * the main chat (no topic) so the relay still works.
- *
- * To enable topics in SF Trades Relay:
- *   1. Open the group → ⋮ menu → Edit → enable "Topics"
- *   2. Give the bot "Manage Topics" admin permission
- *
- * Topic definitions — edit names/icons here to rename them in Telegram.
+ * Topics are cached in tb_settings by thread ID.
+ * sendToTopic() includes the original Pavan timestamp so members know
+ * when the signal was actually posted (not just when we relayed it).
+ * sendToTopicIfNew() deduplicates by message ID — safe to call multiple times.
  */
 
 const BOT_TOKEN  = process.env.TELEGRAM_BOT_TOKEN!
@@ -17,10 +12,10 @@ const RELAY_CHAT = process.env.TELEGRAM_RELAY_CHAT_ID ?? ''
 
 export type TopicCategory = 'trades' | 'exits' | 'market_info'
 
-const TOPIC_DEFS: Record<TopicCategory, { name: string; icon_color: number }> = {
-  trades:      { name: '🟢 Buy/Sell Trades',  icon_color: 0x6FB9F0 },
-  exits:       { name: '🔴 Exit Signals',      icon_color: 0xFF0000 },
-  market_info: { name: 'ℹ️ Market Info',       icon_color: 0xFFD67E },
+const TOPIC_HARDCODED: Record<TopicCategory, number> = {
+  trades:      6,   // Buy/Sell Alerts
+  exits:       7,   // Exit & Profit Taking
+  market_info: 5,   // Market Info & Discussion
 }
 
 async function tgCall(method: string, body: Record<string, unknown>): Promise<unknown> {
@@ -34,57 +29,65 @@ async function tgCall(method: string, body: Record<string, unknown>): Promise<un
   return data.result
 }
 
-/** Get or create a topic thread ID for the given category. */
+/** Get the thread ID for a topic (from hardcoded map or Supabase cache). */
 export async function getTopicId(
   category: TopicCategory,
   db: ReturnType<typeof import('@/lib/supabase-server').createServiceClient>
 ): Promise<number | null> {
   if (!BOT_TOKEN || !RELAY_CHAT) return null
 
+  // Try Supabase cache first
   const settingKey = `tg_relay_topic_${category}`
-
-  // Check cache in Supabase
   const { data } = await db.from('tb_settings').select('value').eq('key', settingKey).single()
-  if (data?.value && data.value !== 'unsupported') {
+  if (data?.value && data.value !== 'unsupported' && !isNaN(parseInt(data.value))) {
     return parseInt(data.value, 10)
   }
-  if (data?.value === 'unsupported') return null
 
-  // Try to create the topic
-  try {
-    const def = TOPIC_DEFS[category]
-    const result = await tgCall('createForumTopic', {
-      chat_id:    RELAY_CHAT,
-      name:       def.name,
-      icon_color: def.icon_color,
-    }) as { message_thread_id: number }
-    const threadId = result.message_thread_id
-    await db.from('tb_settings').upsert({ key: settingKey, value: String(threadId) })
-    return threadId
-  } catch {
-    // Forum not enabled — mark as unsupported so we don't retry every message
-    await db.from('tb_settings').upsert({ key: settingKey, value: 'unsupported' })
-    return null
-  }
+  // Fall back to hardcoded IDs (topics created 2026-06-30)
+  return TOPIC_HARDCODED[category] ?? null
 }
 
-/** Send a message to the appropriate topic (or main chat if topics not enabled). */
+/**
+ * Send a message to the correct topic with original Pavan timestamp in the header.
+ * @param text      Raw Pavan message text
+ * @param category  Which topic to route to
+ * @param db        Supabase client
+ * @param originalTs Unix timestamp (seconds) of Pavan's original post — shown in header
+ */
 export async function sendToTopic(
   text: string,
   category: TopicCategory,
-  db: ReturnType<typeof import('@/lib/supabase-server').createServiceClient>
+  db: ReturnType<typeof import('@/lib/supabase-server').createServiceClient>,
+  originalTs?: number
 ): Promise<boolean> {
   if (!BOT_TOKEN || !RELAY_CHAT || !text.trim()) return false
 
-  const badge = category === 'trades'      ? '🟢 BUY/SELL — IMPORTANT'
-              : category === 'exits'       ? '🔴 EXIT SIGNAL'
-              :                              'ℹ️ INFO'
+  const header = category === 'trades'
+    ? '🟢 *BUY / SELL ALERT*'
+    : category === 'exits'
+    ? '🔴 *EXIT SIGNAL*'
+    : 'ℹ️ *Market Info*'
+
+  // Show original Pavan post time so members know this is NOT from now
+  let tsLine = ''
+  if (originalTs) {
+    const d = new Date(originalTs * 1000)
+    const etStr = d.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true,
+    })
+    tsLine = `\n📅 Posted: ${etStr} ET`
+  }
+
+  const divider = '─────────────────────'
+  const fullText = `${header}\n📢 *SF Essential Trades*${tsLine}\n${divider}\n\n${text}`
 
   const threadId = await getTopicId(category, db)
 
   const body: Record<string, unknown> = {
     chat_id:    RELAY_CHAT,
-    text:       `⭐ [SF Essential Trades] — ${badge}\n\n${text}`,
+    text:       fullText,
     parse_mode: 'Markdown',
   }
   if (threadId) body.message_thread_id = threadId
@@ -97,7 +100,36 @@ export async function sendToTopic(
   }
 }
 
-/** Pin the most recent BUY/SELL message in main chat so it's always visible. */
+/**
+ * Deduplicated relay — checks if this TG message ID was already sent.
+ * Stores relayed IDs as a comma-separated list in tb_settings.
+ * Call this from poll-sf for real-time messages to prevent double-relay on retries.
+ */
+export async function sendToTopicIfNew(
+  msgId: number,
+  text: string,
+  category: TopicCategory,
+  db: ReturnType<typeof import('@/lib/supabase-server').createServiceClient>,
+  originalTs?: number
+): Promise<'sent' | 'duplicate' | 'error'> {
+  const DEDUP_KEY = 'tg_relay_sent_ids'
+  const { data } = await db.from('tb_settings').select('value').eq('key', DEDUP_KEY).single()
+  const sentIds = new Set((data?.value ?? '').split(',').filter(Boolean).map(Number))
+
+  if (sentIds.has(msgId)) return 'duplicate'
+
+  const ok = await sendToTopic(text, category, db, originalTs)
+  if (!ok) return 'error'
+
+  // Keep last 500 IDs to avoid unbounded growth
+  sentIds.add(msgId)
+  const trimmed = Array.from(sentIds).slice(-500).join(',')
+  await db.from('tb_settings').upsert({ key: DEDUP_KEY, value: trimmed })
+
+  return 'sent'
+}
+
+/** Pin the most recent BUY/SELL message in relay group. */
 export async function pinMessage(messageId: number): Promise<void> {
   if (!BOT_TOKEN || !RELAY_CHAT) return
   await tgCall('pinChatMessage', {

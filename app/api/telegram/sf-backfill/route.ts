@@ -16,7 +16,7 @@ import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession } from '@/lib/telegram-client'
 import { parseSignalThread } from '@/lib/telegram-signal'
-import { sendToTopic } from '@/lib/telegram-topics'
+import { sendToTopicIfNew } from '@/lib/telegram-topics'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -107,7 +107,7 @@ export async function GET(req: Request) {
     const text = msg.text ?? ''
 
     if (mediaMsgs.has(msg.id)) {
-      await sendToTopic('[image/media]', 'market_info', db)
+      await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date)
       results.push({ id: msg.id, text: '[media]', topic: 'market_info', signal_type: 'media_only' })
       continue
     }
@@ -118,7 +118,8 @@ export async function GET(req: Request) {
     const topic = signal.type === 'trade' ? 'trades'
                 : signal.type === 'exit'  ? 'exits'
                 :                           'market_info'
-    await sendToTopic(text, topic as 'trades' | 'exits' | 'market_info', db)
+    // sendToTopicIfNew deduplicates so re-running backfill won't create duplicate messages
+    await sendToTopicIfNew(msg.id, text, topic as 'trades' | 'exits' | 'market_info', db, msg.date)
 
     if (signal.type === 'ignore') {
       results.push({ id: msg.id, text: text.slice(0, 80), topic, signal_type: 'no_signal' })
