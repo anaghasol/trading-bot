@@ -178,7 +178,7 @@ export async function GET(req: Request) {
       pavanTopics = JSON.parse(topicCache.value)
     } else {
       const { Api } = await import('telegram')
-      const entity = await client.getEntity(SF_CHANNEL_ID)
+      const entity = await client.getInputEntity(SF_CHANNEL_ID)
       const result = await client.invoke(new Api.channels.GetForumTopics({
         channel: entity as unknown as import('telegram').Api.InputChannel,
         limit: 100, offsetId: 0, offsetDate: 0, offsetTopic: 0, q: '',
@@ -201,14 +201,17 @@ export async function GET(req: Request) {
       : sender?.username ?? 'Member'
 
     // Which of Pavan's forum topics did this message come from?
+    // In GramJS, forum topic messages have forumTopic=true and replyToMsgId = the topic thread ID
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const srcTopicId: number | null = (msg as any).replyTo?.replyToTopId ?? null
+    const replyTo = (msg as any).replyTo
+    const isForumMsg = replyTo?.forumTopic === true
+    const srcTopicId: number | null = isForumMsg ? (replyTo?.replyToTopId ?? replyTo?.replyToMsgId ?? null) : null
     const srcTopicName: string = (srcTopicId && pavanTopics[srcTopicId]) ? pavanTopics[srcTopicId] : 'SF Essential Trades'
 
-    // Get or create a matching topic in our relay group
+    // Look up relay thread ID from cached map — create new topic if not mapped
     const relayThreadId = srcTopicId
       ? await getOrCreateMirrorThread(srcTopicId, srcTopicName, db)
-      : 6  // default: Buy/Sell Alerts (thread 6)
+      : 89  // default: relay thread 89 = "SF Essential Trades( Buy /Sell Alerts)"
 
     // Skip media-only
     if (!text || text.trim().length < 5) {
