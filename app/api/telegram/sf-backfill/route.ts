@@ -1,7 +1,12 @@
 /**
- * GET /api/telegram/sf-backfill?secret=X
- * One-time backfill: fetch all of today's messages from SF Essential Trades,
- * relay them as-is to SF Trades Relay, and process through Groq for trade signals.
+ * GET /api/telegram/sf-backfill?secret=X[&days_back=1]
+ * Backfill SF Essential Trades messages → relay to SF Trades Relay + Groq trade analysis.
+ *
+ * Uses parseSignalThread (single batched Groq call) to avoid rate-limit issues
+ * when processing many historical messages.
+ *
+ * days_back=0 → today only
+ * days_back=1 → yesterday+today (default)
  */
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -10,7 +15,7 @@ import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession } from '@/lib/telegram-client'
-import { parseSignal } from '@/lib/telegram-signal'
+import { parseSignalThread } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -27,10 +32,22 @@ const SF_CHANNEL = -1002381909837   // SF Essential Trades (Pavan)
 
 const SF_SIGNAL_STYLE = `
 Pavan Sailesh's SF Essential Trades — paid membership US equity trade alerts.
-Primary format: "Trade Id : XXXXX, MM/DD: Buying TICKER at PRICE With SL of PRICE"
-Follow-ups: "TICKER TP hit" / "book profits on TICKER" / "TICKER is early trade, alert below PRICE"
-Context: ALAB, CRDO, IBM, MDB type large-cap swing trades.
-Always extract ticker + direction. Trade Id = BUY signal. TP/book = exit signal.
+
+BUY formats Pavan uses:
+  "Trade Id : XXXXX, MM/DD: Buying TICKER at PRICE With SL of PRICE Which has max risk of X%"
+  "buying TICKER at PRICE with PRICE as stop"
+  "Buying TICKER counter trend with PRICE as stop cmp PRICE. Target is PRICE"
+  → All of these are type:trade with action=BUY
+
+EXIT formats:
+  "TICKER TP hit" / "book profits on TICKER" / "TICKER booked" / "TICKER is early trade, alert below PRICE"
+  → type:exit
+
+INFO/LEARN:
+  Macro commentary, ALAB performance updates, member Q&A, "this is a good setup" without an entry price
+  → type:learn or type:ignore
+
+Critical rule: If a message says "buying" or "Buying" with a ticker and a price, it is ALWAYS type:trade even without the word "stop" if a stop-loss price can be inferred. Never classify Pavan's buying messages as ignore.
 `
 
 async function tgSend(text: string) {
@@ -62,73 +79,74 @@ export async function GET(req: Request) {
   const secret = url.searchParams.get('secret') ?? req.headers.get('authorization')?.replace('Bearer ', '')
   if (secret !== process.env.CRON_SECRET) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  // days_back=0 → today only, days_back=1 → yesterday+today (default 1)
   const daysBack  = parseInt(url.searchParams.get('days_back') ?? '1', 10)
 
-  const db = createServiceClient()
+  const db        = createServiceClient()
   const sessionStr = await getStoredSession()
   if (!sessionStr) return NextResponse.json({ error: 'No TG session' }, { status: 500 })
 
   const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3, useWSS: true })
   await client.connect()
 
-  // Calculate start of window in ET (midnight ET, daysBack days ago)
   const nowET       = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date())
   const windowStart = new Date(nowET + 'T04:00:00Z').getTime() / 1000 - daysBack * 86_400
   const windowLabel = daysBack === 0 ? 'today' : daysBack === 1 ? 'yesterday+today' : `last ${daysBack + 1} days`
 
-  // Fetch up to 200 recent messages, filter to window
   const messages = await client.getMessages(SF_CHANNEL, { limit: 200 })
-  const todayMsgs = messages
+  const windowMsgs = messages
     .filter(m => m.date >= windowStart && (m.text?.length > 3 || m.media != null))
-    .sort((a, b) => a.id - b.id)   // oldest first so relay order matches original
+    .sort((a, b) => a.id - b.id)
+
+  // Separate text messages (need Groq) from media-only
+  const textMsgs  = windowMsgs.filter(m => m.text && m.text.trim().length >= 5)
+  const mediaMsgs = new Set(windowMsgs.filter(m => !m.text || m.text.trim().length < 5).map(m => m.id))
+
+  // Single batched Groq call for all text messages (avoids rate-limiting)
+  const classified = await parseSignalThread(
+    textMsgs.map(m => ({ id: m.id, text: m.text ?? '' })),
+    'SF Essential Trades',
+    SF_SIGNAL_STYLE,
+  )
+  const signalMap = new Map(classified.map(r => [r.id, r.signal]))
 
   const profile       = PROFILES.alpaca_paper
   const schwabProfile = PROFILES.schwab
   const equity        = (await getAccountBalance()) ?? 100_000
+  const afterHoursEt  = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
+  const afterHours    = afterHoursEt >= 16 || afterHoursEt < 9
 
-  const results: { id: number; text: string; relay: boolean; signal_type: string; trade?: string }[] = []
+  const results: { id: number; text: string; label: string; signal_type: string; trade?: string }[] = []
 
-  for (const msg of todayMsgs) {
+  for (const msg of windowMsgs) {
     const text = msg.text ?? ''
 
-    if (!text || text.trim().length < 5) {
-      // Media/image only — relay as INFO, no parsing
+    if (mediaMsgs.has(msg.id)) {
       await tgRelay('[image/media]', 'INFO')
-      results.push({ id: msg.id, text: '[media]', relay: true, signal_type: 'media_only' })
+      results.push({ id: msg.id, text: '[media]', label: 'INFO', signal_type: 'media_only' })
       continue
     }
 
-    // 1. Classify with Groq first so we know the label before relaying
-    const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
-
-    // 2. Relay to SF Trades Relay with correct label
+    const signal = signalMap.get(msg.id) ?? { type: 'ignore' as const }
     const relayLabel: RelayLabel =
       signal.type === 'trade' ? 'BUY/SELL' :
       signal.type === 'exit'  ? 'EXIT' : 'INFO'
+
     await tgRelay(text, relayLabel)
 
     if (signal.type === 'ignore') {
-      results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'no_signal' })
+      results.push({ id: msg.id, text: text.slice(0, 80), label: 'INFO', signal_type: 'no_signal' })
       continue
     }
 
-    // Log to alerts
-    await db.from('tb_alerts').insert({
-      type: 'INFO',
-      symbol: signal.type === 'trade' ? signal.symbol : null,
-      message: `⭐ SF Trades backfill: ${signal.type === 'trade' ? `${signal.action} ${signal.symbol}` : signal.summary?.slice(0, 80)}`,
-    }).then(() => {}, () => {})
-
     if (signal.type === 'learn') {
-      await tgSend(`⭐ *SF Trades insight*\n${signal.summary}`)
-      results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'learn' })
+      await tgSend(`⭐ *SF Trades insight*\n${signal.summary}${signal.symbols?.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
+      results.push({ id: msg.id, text: text.slice(0, 80), label: 'INFO', signal_type: 'learn' })
       continue
     }
 
     if (signal.type === 'exit') {
-      const { data: openTrade } = await db.from('tb_trades')
-        .select('id, quantity, broker').eq('symbol', signal.symbol).eq('status', 'OPEN').limit(1).single()
+      await db.from('tb_alerts').insert({ type: 'INFO', symbol: signal.symbol, message: `⭐ SF Trades EXIT: ${signal.symbol} — ${signal.summary}` }).then(() => {}, () => {})
+      const { data: openTrade } = await db.from('tb_trades').select('id, quantity, broker').eq('symbol', signal.symbol).eq('status', 'OPEN').limit(1).single()
       if (openTrade) {
         const broker = openTrade.broker as string
         const sellOrder = broker === 'schwab'
@@ -138,39 +156,36 @@ export async function GET(req: Request) {
           await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString() }).eq('id', openTrade.id)
         }
         await tgSend(`🚨 *SF Trades EXIT: ${signal.symbol}*\n${signal.summary}`)
-        results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'exit', trade: `${signal.symbol} CLOSED` })
+        results.push({ id: msg.id, text: text.slice(0, 80), label: 'EXIT', signal_type: 'exit', trade: `${signal.symbol} CLOSED` })
       } else {
-        results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'exit_not_held' })
+        results.push({ id: msg.id, text: text.slice(0, 80), label: 'EXIT', signal_type: 'exit_not_held' })
       }
       continue
     }
 
     if (signal.type !== 'trade') {
-      results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'other' })
+      results.push({ id: msg.id, text: text.slice(0, 80), label: 'INFO', signal_type: 'other' })
       continue
     }
 
-    // Trade execution
-    const afterHoursEt = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
-    const afterHours   = afterHoursEt >= 16 || afterHoursEt < 9
+    // BUY/SELL trade signal
+    await db.from('tb_alerts').insert({ type: 'INFO', symbol: signal.symbol, message: `⭐ SF Trades backfill: ${signal.action} ${signal.symbol} @ conf ${signal.confidence}%` }).then(() => {}, () => {})
 
-    // Skip if already holding this symbol
     if (signal.action === 'BUY') {
       const { data: existing } = await db.from('tb_trades').select('id').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1)
       if (existing?.length) {
-        results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'skip_already_open', trade: signal.symbol })
+        await tgSend(`⚠️ *SF Trades: skip ${signal.symbol}* — already open`)
+        results.push({ id: msg.id, text: text.slice(0, 80), label: 'BUY/SELL', signal_type: 'skip_already_open', trade: signal.symbol })
         continue
       }
     }
 
     const liveQuote = await Alpaca.getQuote(signal.symbol)
     const livePrice = liveQuote?.price ?? signal.entry_price
-    const qty = livePrice
-      ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCapForConfidence(signal.confidence)).qty
-      : 10
+    const qty       = livePrice ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCapForConfidence(signal.confidence)).qty : 10
     const stopPrice = signal.stop_loss ?? (livePrice ? Math.round(livePrice * (1 - profile.initial_stop_pct) * 100) / 100 : null)
 
-    // Paper trade
+    // Paper (Alpaca)
     const paperOrder = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
     if (paperOrder.status === 'PLACED' && signal.action === 'BUY') {
       if (stopPrice && !afterHours) await placeStopOrder(signal.symbol, qty, stopPrice).catch(() => {})
@@ -183,14 +198,14 @@ export async function GET(req: Request) {
       })
     }
 
-    // Live Schwab — priority execution
-    let schwabNote = 'skipped'
+    // Live Schwab — priority
+    let schwabNote = afterHours ? 'after_hours' : signal.confidence < 68 ? `conf_${signal.confidence}%<68%` : 'skipped'
     if (signal.action === 'BUY' && !afterHours && signal.confidence >= 68) {
       try {
         const [schwabPos, schwabBal] = await Promise.all([Schwab.getPositions(), Schwab.getAccountBalance()])
         const schwabEquity = schwabBal ?? 2000
         if (!schwabPos.some(p => p.symbol === signal.symbol) && schwabPos.length < schwabProfile.max_positions) {
-          const schwabQty = livePrice ? calculatePositionSize(schwabEquity, livePrice, schwabProfile.initial_stop_pct, schwabProfile.risk_pct, 0.25).qty : 1
+          const schwabQty   = livePrice ? calculatePositionSize(schwabEquity, livePrice, schwabProfile.initial_stop_pct, schwabProfile.risk_pct, 0.25).qty : 1
           const schwabOrder = await Schwab.placeOrder(signal.symbol, schwabQty, 'BUY', 'MARKET')
           if (schwabOrder.status === 'PLACED') {
             await db.from('tb_trades').insert({
@@ -205,29 +220,24 @@ export async function GET(req: Request) {
           schwabNote = schwabPos.some(p => p.symbol === signal.symbol) ? 'already_holding' : 'max_positions'
         }
       } catch { schwabNote = 'error' }
-    } else if (afterHours) {
-      schwabNote = 'after_hours'
-    } else if (signal.confidence < 68) {
-      schwabNote = `conf_${signal.confidence}%_<_68%`
     }
 
-    await tgSend(`✅ *SF Trades ⭐ → ${signal.action} ${qty} ${signal.symbol}*\nConf: ${signal.confidence}% | Paper: ${paperOrder.status}\nSchwab: ${schwabNote}`)
-    results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'trade', trade: `${signal.action} ${signal.symbol} paper=${paperOrder.status} schwab=${schwabNote}` })
+    await tgSend(`✅ *SF Trades ⭐ → ${signal.action} ${qty} ${signal.symbol}*\nConf: ${signal.confidence}% | Paper: ${paperOrder.status} | Schwab: ${schwabNote}`)
+    results.push({ id: msg.id, text: text.slice(0, 80), label: 'BUY/SELL', signal_type: 'trade', trade: `${signal.action} ${signal.symbol} paper=${paperOrder.status} schwab=${schwabNote}` })
   }
 
-  // Update watermark to latest processed message
-  if (todayMsgs.length > 0) {
-    const maxId = Math.max(...todayMsgs.map(m => m.id))
+  if (windowMsgs.length > 0) {
+    const maxId = Math.max(...windowMsgs.map(m => m.id))
     await db.from('tb_settings').upsert({ key: 'tg_last_msg_id_sf_trades', value: String(maxId) })
   }
 
   await client.disconnect().catch(() => {})
 
   return NextResponse.json({
-    ok:      true,
-    window:  windowLabel,
-    channel: 'SF Essential Trades',
-    total_in_window: todayMsgs.length,
+    ok:              true,
+    window:          windowLabel,
+    channel:         'SF Essential Trades',
+    total_in_window: windowMsgs.length,
     results,
   })
 }

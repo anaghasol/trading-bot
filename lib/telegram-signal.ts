@@ -145,12 +145,14 @@ function normalizeSignal(p: Record<string, unknown>, raw: string): ParsedSignal 
 
 export async function parseSignalThread(
   messages: Array<{ id: number; text: string }>,
-  channelName = 'Trading Channel'
+  channelName = 'Trading Channel',
+  signalStyle = ''
 ): Promise<Array<{ id: number; signal: ParsedSignal }>> {
   if (messages.length === 0) return []
   try {
     const numbered = messages.map((m, i) => `[${i + 1}] ${m.text}`).join('\n\n')
-    const raw = await groqClassify(`You are reading a THREAD of messages from "${channelName}". Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.
+    const channelContext = signalStyle ? `\nCHANNEL STYLE:\n${signalStyle}\n` : ''
+    const raw = await groqClassify(`You are reading a THREAD of messages from "${channelName}". Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.${channelContext}
 
 ${numbered}
 
@@ -160,10 +162,11 @@ Thread-context rules:
 - If the channel mentions a stock positively across multiple messages, mark actionable:true
 
 Per-message classification rules:
-- type:trade = explicit entry with ticker + price (e.g. "Buy SPIR at 20.5 SL 18.5") OR crypto signal (e.g. "POLUSDT LONG entry 0.077 SL 0.073") — use symbol=POL, action=BUY, stop_loss from message, entry_price=null
-- type:exit = explicit instruction to close NOW
+- type:trade = explicit entry with ticker + price (e.g. "Buy SPIR at 20.5 SL 18.5") OR explicit "buying X at Y with Z as stop" → type:trade
+- type:trade also if message says "Trade Id : XXXXX" with ticker + price + SL
+- type:exit = explicit instruction to close NOW, or "TP hit", "book profits", "stop hit"
 - type:learn = insight, watch zone, position update, macro commentary, "first TP secured" updates
-- type:ignore = noise, greetings, links, admin
+- type:ignore = noise, greetings, links, admin, member Q&A without a clear signal
 
 Return ONLY a JSON array with exactly ${messages.length} objects (one per message, in order):
 [{"msg_index":1,"type":"learn","summary":"...","symbols":["X"],"sentiment":"bullish","sector":null,"watch_zone":"$45-48","actionable":true}, ...]
