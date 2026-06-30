@@ -48,27 +48,30 @@ export async function getTopicId(
 }
 
 /**
- * Send a message to the correct topic with original Pavan timestamp in the header.
- * @param text      Raw Pavan message text
- * @param category  Which topic to route to
- * @param db        Supabase client
- * @param originalTs Unix timestamp (seconds) of Pavan's original post — shown in header
+ * Send a message to the correct topic with original sender + timestamp in the header.
+ * @param text       Raw message text
+ * @param category   Which topic to route to
+ * @param db         Supabase client
+ * @param originalTs Unix timestamp (seconds) of the original post
+ * @param senderName Display name of who sent it (e.g. "Pavan", "Mint", "Captain NK")
  */
 export async function sendToTopic(
   text: string,
   category: TopicCategory,
   db: ReturnType<typeof import('@/lib/supabase-server').createServiceClient>,
-  originalTs?: number
+  originalTs?: number,
+  senderName?: string
 ): Promise<boolean> {
   if (!BOT_TOKEN || !RELAY_CHAT || !text.trim()) return false
 
   const header = category === 'trades'
     ? '🟢 *BUY / SELL ALERT*'
     : category === 'exits'
-    ? '🔴 *EXIT SIGNAL*'
+    ? '🔴 *EXIT / PROFIT SIGNAL*'
     : 'ℹ️ *Market Info*'
 
-  // Show original Pavan post time so members know this is NOT from now
+  // Who said it + when
+  const who = senderName ? `👤 *${senderName}* (SF Essential Trades)` : '📢 *SF Essential Trades*'
   let tsLine = ''
   if (originalTs) {
     const d = new Date(originalTs * 1000)
@@ -77,11 +80,11 @@ export async function sendToTopic(
       month: 'short', day: 'numeric',
       hour: 'numeric', minute: '2-digit', hour12: true,
     })
-    tsLine = `\n📅 Posted: ${etStr} ET`
+    tsLine = `\n🕐 ${etStr} ET`
   }
 
   const divider = '─────────────────────'
-  const fullText = `${header}\n📢 *SF Essential Trades*${tsLine}\n${divider}\n\n${text}`
+  const fullText = `${header}\n${who}${tsLine}\n${divider}\n\n${text}`
 
   const threadId = await getTopicId(category, db)
 
@@ -110,7 +113,8 @@ export async function sendToTopicIfNew(
   text: string,
   category: TopicCategory,
   db: ReturnType<typeof import('@/lib/supabase-server').createServiceClient>,
-  originalTs?: number
+  originalTs?: number,
+  senderName?: string
 ): Promise<'sent' | 'duplicate' | 'error'> {
   const DEDUP_KEY = 'tg_relay_sent_ids'
   const { data } = await db.from('tb_settings').select('value').eq('key', DEDUP_KEY).single()
@@ -118,7 +122,7 @@ export async function sendToTopicIfNew(
 
   if (sentIds.has(msgId)) return 'duplicate'
 
-  const ok = await sendToTopic(text, category, db, originalTs)
+  const ok = await sendToTopic(text, category, db, originalTs, senderName)
   if (!ok) return 'error'
 
   // Keep last 500 IDs to avoid unbounded growth

@@ -106,20 +106,25 @@ export async function GET(req: Request) {
   for (const msg of windowMsgs) {
     const text = msg.text ?? ''
 
+    // Extract sender display name
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const s = (msg as any).sender
+    const senderName: string = s?.firstName
+      ? `${s.firstName}${s.lastName ? ` ${s.lastName}` : ''}`
+      : s?.username ?? 'Member'
+
     if (mediaMsgs.has(msg.id)) {
-      await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date)
+      await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date, senderName)
       results.push({ id: msg.id, text: '[media]', topic: 'market_info', signal_type: 'media_only' })
       continue
     }
 
     const signal = signalMap.get(msg.id) ?? { type: 'ignore' as const }
 
-    // Route to correct topic based on signal type
     const topic = signal.type === 'trade' ? 'trades'
                 : signal.type === 'exit'  ? 'exits'
                 :                           'market_info'
-    // sendToTopicIfNew deduplicates so re-running backfill won't create duplicate messages
-    await sendToTopicIfNew(msg.id, text, topic as 'trades' | 'exits' | 'market_info', db, msg.date)
+    await sendToTopicIfNew(msg.id, text, topic as 'trades' | 'exits' | 'market_info', db, msg.date, senderName)
 
     if (signal.type === 'ignore') {
       results.push({ id: msg.id, text: text.slice(0, 80), topic, signal_type: 'no_signal' })

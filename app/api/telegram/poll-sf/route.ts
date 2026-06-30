@@ -172,9 +172,16 @@ export async function GET(req: Request) {
   const results = await Promise.all(newMsgs.map(async (msg) => {
     const text = msg.text ?? ''
 
+    // Extract sender display name from GramJS message
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sender = (msg as any).sender
+    const senderName: string = sender?.firstName
+      ? `${sender.firstName}${sender.lastName ? ` ${sender.lastName}` : ''}`
+      : sender?.username ?? 'Member'
+
     // Skip media-only messages
     if (!text || text.trim().length < 5) {
-      await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date)
+      await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date, senderName)
       return { id: msg.id, type: 'relay_only' }
     }
 
@@ -182,14 +189,10 @@ export async function GET(req: Request) {
     const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
 
     // 2. Route to the appropriate topic in SF Trades Relay
-    //    trades → 🟢 Buy/Sell Trades topic
-    //    exits  → 🔴 Exit Signals topic
-    //    everything else → ℹ️ Market Info topic
     const topic = signal.type === 'trade' ? 'trades'
                 : signal.type === 'exit'  ? 'exits'
                 :                           'market_info'
-    // sendToTopicIfNew prevents double-relay on cron retries
-    const relayResult = await sendToTopicIfNew(msg.id, text, topic as 'trades'|'exits'|'market_info', db, msg.date)
+    const relayResult = await sendToTopicIfNew(msg.id, text, topic as 'trades'|'exits'|'market_info', db, msg.date, senderName)
     if (relayResult === 'sent') {
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }
