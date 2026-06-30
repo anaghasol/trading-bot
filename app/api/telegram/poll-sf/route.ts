@@ -218,7 +218,7 @@ export async function GET(req: Request) {
       message: `sf_essential_trades msg#${msg.id} → ${signal.type}`,
     }).then(() => {}, () => {})
 
-    if (signal.type === 'ignore') return { id: msg.id, type: 'relayed_no_signal' }
+    if (signal.type === 'ignore') { results.push({ id: msg.id, type: 'relayed_no_signal' }); continue }
 
     // Exit signal — try to close open position
     if (signal.type === 'exit') {
