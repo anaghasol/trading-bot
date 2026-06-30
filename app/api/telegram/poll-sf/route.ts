@@ -20,6 +20,7 @@ import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { parseSignal } from '@/lib/telegram-signal'
+import { sendToTopic, pinMessage } from '@/lib/telegram-topics'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -71,26 +72,6 @@ async function tgSend(text: string) {
   }).catch(() => {})
 }
 
-type RelayLabel = 'BUY/SELL' | 'EXIT' | 'INFO'
-
-async function tgRelay(text: string, label: RelayLabel = 'INFO'): Promise<boolean> {
-  if (!RELAY_CHAT || !BOT_TOKEN || !text.trim()) return false
-  const badge = label === 'BUY/SELL' ? '🟢 BUY/SELL — IMPORTANT'
-              : label === 'EXIT'     ? '🔴 EXIT SIGNAL'
-              :                        'ℹ️ INFO'
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: RELAY_CHAT,
-        text: `⭐ [SF Essential Trades] — ${badge}\n\n${text}`,
-      }),
-    })
-    const data = await res.json() as { ok: boolean }
-    return data.ok === true
-  } catch { return false }
-}
 
 export async function GET(req: Request) {
   const db = createServiceClient()
@@ -191,24 +172,25 @@ export async function GET(req: Request) {
   const results = await Promise.all(newMsgs.map(async (msg) => {
     const text = msg.text ?? ''
 
-    // Skip media-only messages (no text)
+    // Skip media-only messages
     if (!text || text.trim().length < 5) {
-      await tgRelay('[image/media]', 'INFO')
+      await sendToTopic('[image/media]', 'market_info', db)
       return { id: msg.id, type: 'relay_only' }
     }
 
-    // 1. Classify with Groq first — so relay carries the correct label
+    // 1. Classify with Groq — determines which topic to route to
     const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
 
-    // 2. Relay to SF Trades Relay with label (BUY/SELL / EXIT / INFO)
-    const relayLabel: RelayLabel =
-      signal.type === 'trade' ? 'BUY/SELL' :
-      signal.type === 'exit'  ? 'EXIT' : 'INFO'
-    if (text.trim()) {
-      const relayed = await tgRelay(text, relayLabel)
-      if (relayed) {
-        await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
-      }
+    // 2. Route to the appropriate topic in SF Trades Relay
+    //    trades → 🟢 Buy/Sell Trades topic
+    //    exits  → 🔴 Exit Signals topic
+    //    everything else → ℹ️ Market Info topic
+    const topic = signal.type === 'trade' ? 'trades'
+                : signal.type === 'exit'  ? 'exits'
+                :                           'market_info'
+    const relayed = await sendToTopic(text, topic, db)
+    if (relayed) {
+      await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }
 
     if (signal.type === 'ignore') return { id: msg.id, type: 'relayed_no_signal' }
@@ -317,7 +299,14 @@ export async function GET(req: Request) {
     }
 
     const emoji = paperOrder.status === 'PLACED' ? '✅' : '❌'
-    await tgSend(`*${emoji} SF Trades ⭐ → ${signal.action} ${qty} ${signal.symbol}*\nEntry: Market${stopPrice ? `\nSL: $${stopPrice}` : ''}\nConf: ${signal.confidence}%\nPaper: ${paperOrder.status}${afterHoursTag}${schwabNote}`)
+    const summaryText = `*${emoji} SF Trades ⭐ → ${signal.action} ${qty} ${signal.symbol}*\nEntry: Market${stopPrice ? `\nSL: $${stopPrice}` : ''}\nConf: ${signal.confidence}%\nPaper: ${paperOrder.status}${afterHoursTag}${schwabNote}`
+    await tgSend(summaryText)
+
+    // Pin the BUY/SELL relay message in SF Trades Relay so it's always visible
+    // (works in both topic and non-topic groups when bot has pin permission)
+    if (signal.action === 'BUY' && paperOrder.status === 'PLACED' && paperOrder.order_id) {
+      await pinMessage(parseInt(String(paperOrder.order_id))).catch(() => {})
+    }
 
     return { id: msg.id, type: 'trade', symbol: signal.symbol, action: signal.action }
   }))

@@ -12,22 +12,43 @@
 
 const GROQ_KEY = process.env.GROQ_API_KEY ?? ''
 
-async function groqClassify(prompt: string): Promise<string> {
+// Free Groq model fallback chain — try in order on 429/503
+const GROQ_MODELS = [
+  'llama-3.3-70b-versatile',
+  'llama-3.1-70b-versatile',
+  'mixtral-8x7b-32768',
+  'llama-3.1-8b-instant',
+  'gemma2-9b-it',
+]
+
+async function groqClassify(prompt: string, maxTokens = 800): Promise<string> {
   if (!GROQ_KEY) throw new Error('GROQ_API_KEY not set')
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.1,
-      max_tokens: 600,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-    signal: AbortSignal.timeout(15_000),
-  })
-  if (!res.ok) throw new Error(`Groq HTTP ${res.status}`)
-  const data = await res.json() as { choices: { message: { content: string } }[] }
-  return data.choices[0]?.message?.content?.trim() ?? ''
+  let lastErr: Error = new Error('No models tried')
+  for (const model of GROQ_MODELS) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          max_tokens: maxTokens,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      if (res.status === 429 || res.status === 503) {
+        lastErr = new Error(`Groq ${model} HTTP ${res.status}`)
+        continue   // try next model
+      }
+      if (!res.ok) throw new Error(`Groq ${model} HTTP ${res.status}`)
+      const data = await res.json() as { choices: { message: { content: string } }[] }
+      return data.choices[0]?.message?.content?.trim() ?? ''
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e))
+    }
+  }
+  throw lastErr
 }
 
 const TRADE_KEYWORDS = /\b(buy|sell|long|short|entry|sl|stop.?loss|target|t1|t2|t3|breakout|support|resistance|earnings|hold|exit|watchlist|alert|position|setup|hit|stopped|closed)\b/i
@@ -143,48 +164,68 @@ function normalizeSignal(p: Record<string, unknown>, raw: string): ParsedSignal 
   return { type: 'ignore' }
 }
 
+async function classifyChunk(
+  chunk: Array<{ id: number; text: string }>,
+  channelName: string,
+  signalStyle: string,
+  offset: number
+): Promise<Array<{ id: number; signal: ParsedSignal }>> {
+  const numbered = chunk.map((m, i) => `[${offset + i + 1}] ${m.text}`).join('\n\n')
+  const channelContext = signalStyle ? `\nCHANNEL STYLE:\n${signalStyle}\n` : ''
+  // 200 tokens per message to allow full JSON array; cap at 4096
+  const maxTok = Math.min(4096, chunk.length * 200 + 300)
+  const raw = await groqClassify(`You are reading a THREAD of messages from "${channelName}". Classify each message.${channelContext}
+
+${numbered}
+
+Per-message classification rules:
+- type:trade = explicit buy/sell entry with ticker, price AND stop loss
+  Examples: "buying IBM at 275 with 250 as stop" / "Trade Id : XXXXX: Buying CRDO at 215 With SL of 200" / "buying NBIS at 280 for a trade with 260 as Stop"
+  → ALWAYS type:trade when message says "buying X at Y with Z as stop" or has "Trade Id" + ticker + SL
+- type:exit = "trimming", "TP hit", "book profits", "partial gains", "stop hit", exit instruction
+- type:learn = market commentary, performance updates, Q&A, watchlist mentions, no entry price
+- type:ignore = greetings, admin, very short noise, member questions with no signal
+
+Return ONLY a JSON array with exactly ${chunk.length} objects:
+[{"msg_index":${offset + 1},"type":"trade","symbol":"IBM","action":"BUY","entry_price":275,"stop_loss":250,"target":null,"confidence":90}, ...]
+
+For trade: {"msg_index":N,"type":"trade","symbol":"X","action":"BUY","entry_price":275,"stop_loss":250,"target":null,"confidence":90}
+For exit: {"msg_index":N,"type":"exit","symbol":"X","reason":"ADVISOR_EXIT","summary":"one sentence"}
+For learn: {"msg_index":N,"type":"learn","summary":"one sentence","symbols":["X"],"sentiment":"bullish","sector":null,"watch_zone":null,"actionable":true}
+For ignore: {"msg_index":N,"type":"ignore"}`, maxTok)
+  const match = raw.match(/\[[\s\S]*\]/)
+  if (!match) return chunk.map(m => ({ id: m.id, signal: { type: 'ignore' as const } }))
+  try {
+    const parsed = JSON.parse(match[0]) as Array<Record<string, unknown>>
+    return chunk.map((m, i) => {
+      const p = parsed.find(x => (x.msg_index as number) === offset + i + 1) ?? { type: 'ignore' }
+      return { id: m.id, signal: normalizeSignal(p, m.text) }
+    })
+  } catch {
+    return chunk.map(m => ({ id: m.id, signal: { type: 'ignore' as const } }))
+  }
+}
+
 export async function parseSignalThread(
   messages: Array<{ id: number; text: string }>,
   channelName = 'Trading Channel',
   signalStyle = ''
 ): Promise<Array<{ id: number; signal: ParsedSignal }>> {
   if (messages.length === 0) return []
-  try {
-    const numbered = messages.map((m, i) => `[${i + 1}] ${m.text}`).join('\n\n')
-    const channelContext = signalStyle ? `\nCHANNEL STYLE:\n${signalStyle}\n` : ''
-    const raw = await groqClassify(`You are reading a THREAD of messages from "${channelName}". Read ALL messages first, then classify each one with the benefit of thread context. Earlier messages inform later ones.${channelContext}
-
-${numbered}
-
-Thread-context rules:
-- If msg [1] says "watching OKLO near $45" and msg [3] says "entering now" or "buy here" → [3] is type:trade for OKLO at $45
-- If a macro bearish tone builds across messages, later neutral messages inherit that sentiment
-- If the channel mentions a stock positively across multiple messages, mark actionable:true
-
-Per-message classification rules:
-- type:trade = explicit entry with ticker + price (e.g. "Buy SPIR at 20.5 SL 18.5") OR explicit "buying X at Y with Z as stop" → type:trade
-- type:trade also if message says "Trade Id : XXXXX" with ticker + price + SL
-- type:exit = explicit instruction to close NOW, or "TP hit", "book profits", "stop hit"
-- type:learn = insight, watch zone, position update, macro commentary, "first TP secured" updates
-- type:ignore = noise, greetings, links, admin, member Q&A without a clear signal
-
-Return ONLY a JSON array with exactly ${messages.length} objects (one per message, in order):
-[{"msg_index":1,"type":"learn","summary":"...","symbols":["X"],"sentiment":"bullish","sector":null,"watch_zone":"$45-48","actionable":true}, ...]
-
-For trade: {"msg_index":N,"type":"trade","symbol":"X","action":"BUY","entry_price":20.5,"stop_loss":18.5,"target":null,"confidence":95}
-For exit: {"msg_index":N,"type":"exit","symbol":"X","reason":"ADVISOR_EXIT","summary":"..."}
-For ignore: {"msg_index":N,"type":"ignore"}`)
-    const match = raw.match(/\[[\s\S]*\]/)
-    if (!match) return messages.map((m) => ({ id: m.id, signal: { type: 'ignore' as const } }))
-    const parsed = JSON.parse(match[0]) as Array<Record<string, unknown>>
-    return messages.map((m, i) => {
-      const p = parsed.find((x) => (x.msg_index as number) === i + 1) ?? { type: 'ignore' }
-      return { id: m.id, signal: normalizeSignal(p, m.text) }
-    })
-  } catch (e) {
-    console.error('[telegram-signal] thread parse error:', e)
-    return messages.map((m) => ({ id: m.id, signal: { type: 'ignore' as const } }))
+  // Batch into chunks of 10 so Groq never truncates the JSON array
+  const CHUNK = 10
+  const results: Array<{ id: number; signal: ParsedSignal }> = []
+  for (let i = 0; i < messages.length; i += CHUNK) {
+    const chunk = messages.slice(i, i + CHUNK)
+    try {
+      const classified = await classifyChunk(chunk, channelName, signalStyle, i)
+      results.push(...classified)
+    } catch (e) {
+      console.error('[telegram-signal] chunk parse error:', e)
+      results.push(...chunk.map(m => ({ id: m.id, signal: { type: 'ignore' as const } })))
+    }
   }
+  return results
 }
 
 export async function parseSignal(text: string, channelName = 'Trading Channel', signalStyle = ''): Promise<ParsedSignal> {

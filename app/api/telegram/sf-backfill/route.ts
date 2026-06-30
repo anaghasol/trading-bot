@@ -16,6 +16,7 @@ import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession } from '@/lib/telegram-client'
 import { parseSignalThread } from '@/lib/telegram-signal'
+import { sendToTopic } from '@/lib/telegram-topics'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -58,21 +59,6 @@ async function tgSend(text: string) {
   }).catch(() => {})
 }
 
-type RelayLabel = 'BUY/SELL' | 'EXIT' | 'INFO'
-
-async function tgRelay(text: string, label: RelayLabel = 'INFO') {
-  if (!BOT_TOKEN || !RELAY_CHAT || !text.trim()) return
-  const badge = label === 'BUY/SELL' ? '🟢 BUY/SELL — IMPORTANT'
-              : label === 'EXIT'     ? '🔴 EXIT SIGNAL'
-              :                        'ℹ️ INFO'
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: RELAY_CHAT,
-      text: `⭐ [SF Essential Trades] — ${badge}\n\n${text}`,
-    }),
-  }).catch(() => {})
-}
 
 export async function GET(req: Request) {
   const url    = new URL(req.url)
@@ -115,32 +101,33 @@ export async function GET(req: Request) {
   const afterHoursEt  = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
   const afterHours    = afterHoursEt >= 16 || afterHoursEt < 9
 
-  const results: { id: number; text: string; label: string; signal_type: string; trade?: string }[] = []
+  const results: { id: number; text: string; topic: string; signal_type: string; trade?: string }[] = []
 
   for (const msg of windowMsgs) {
     const text = msg.text ?? ''
 
     if (mediaMsgs.has(msg.id)) {
-      await tgRelay('[image/media]', 'INFO')
-      results.push({ id: msg.id, text: '[media]', label: 'INFO', signal_type: 'media_only' })
+      await sendToTopic('[image/media]', 'market_info', db)
+      results.push({ id: msg.id, text: '[media]', topic: 'market_info', signal_type: 'media_only' })
       continue
     }
 
     const signal = signalMap.get(msg.id) ?? { type: 'ignore' as const }
-    const relayLabel: RelayLabel =
-      signal.type === 'trade' ? 'BUY/SELL' :
-      signal.type === 'exit'  ? 'EXIT' : 'INFO'
 
-    await tgRelay(text, relayLabel)
+    // Route to correct topic based on signal type
+    const topic = signal.type === 'trade' ? 'trades'
+                : signal.type === 'exit'  ? 'exits'
+                :                           'market_info'
+    await sendToTopic(text, topic as 'trades' | 'exits' | 'market_info', db)
 
     if (signal.type === 'ignore') {
-      results.push({ id: msg.id, text: text.slice(0, 80), label: 'INFO', signal_type: 'no_signal' })
+      results.push({ id: msg.id, text: text.slice(0, 80), topic, signal_type: 'no_signal' })
       continue
     }
 
     if (signal.type === 'learn') {
       await tgSend(`⭐ *SF Trades insight*\n${signal.summary}${signal.symbols?.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}`)
-      results.push({ id: msg.id, text: text.slice(0, 80), label: 'INFO', signal_type: 'learn' })
+      results.push({ id: msg.id, text: text.slice(0, 80), topic, signal_type: 'learn' })
       continue
     }
 
@@ -156,15 +143,15 @@ export async function GET(req: Request) {
           await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString() }).eq('id', openTrade.id)
         }
         await tgSend(`🚨 *SF Trades EXIT: ${signal.symbol}*\n${signal.summary}`)
-        results.push({ id: msg.id, text: text.slice(0, 80), label: 'EXIT', signal_type: 'exit', trade: `${signal.symbol} CLOSED` })
+        results.push({ id: msg.id, text: text.slice(0, 80), topic: 'exits', signal_type: 'exit', trade: `${signal.symbol} CLOSED` })
       } else {
-        results.push({ id: msg.id, text: text.slice(0, 80), label: 'EXIT', signal_type: 'exit_not_held' })
+        results.push({ id: msg.id, text: text.slice(0, 80), topic: 'exits', signal_type: 'exit_not_held' })
       }
       continue
     }
 
     if (signal.type !== 'trade') {
-      results.push({ id: msg.id, text: text.slice(0, 80), label: 'INFO', signal_type: 'other' })
+      results.push({ id: msg.id, text: text.slice(0, 80), topic, signal_type: 'other' })
       continue
     }
 
@@ -175,7 +162,7 @@ export async function GET(req: Request) {
       const { data: existing } = await db.from('tb_trades').select('id').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1)
       if (existing?.length) {
         await tgSend(`⚠️ *SF Trades: skip ${signal.symbol}* — already open`)
-        results.push({ id: msg.id, text: text.slice(0, 80), label: 'BUY/SELL', signal_type: 'skip_already_open', trade: signal.symbol })
+        results.push({ id: msg.id, text: text.slice(0, 80), topic: 'trades', signal_type: 'skip_already_open', trade: signal.symbol })
         continue
       }
     }
@@ -223,7 +210,7 @@ export async function GET(req: Request) {
     }
 
     await tgSend(`✅ *SF Trades ⭐ → ${signal.action} ${qty} ${signal.symbol}*\nConf: ${signal.confidence}% | Paper: ${paperOrder.status} | Schwab: ${schwabNote}`)
-    results.push({ id: msg.id, text: text.slice(0, 80), label: 'BUY/SELL', signal_type: 'trade', trade: `${signal.action} ${signal.symbol} paper=${paperOrder.status} schwab=${schwabNote}` })
+    results.push({ id: msg.id, text: text.slice(0, 80), topic: 'trades', signal_type: 'trade', trade: `${signal.action} ${signal.symbol} paper=${paperOrder.status} schwab=${schwabNote}` })
   }
 
   if (windowMsgs.length > 0) {
