@@ -25,6 +25,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/telegram/poll-sf",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/health",
       "schedule": "0,30 13-20 * * 1-5"
     },

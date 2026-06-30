@@ -16,7 +16,7 @@ interface Quote { symbol: string; price: number; change_pct: number }
 interface Trade { id: number; symbol: string; action: string; quantity: number; entry_price: number; exit_price?: number; pnl?: number; pnl_pct?: number; closed_at?: string; confidence: number; strategy: string; status: string; created_at: string; reason?: string }
 interface Alert { id: number; type: string; message: string; created_at: string }
 interface TgSignal { id: number; type: string; message: string; symbol?: string; created_at: string }
-interface TgStatus { connected: boolean; cron_alive: boolean; has_session: boolean; last_poll: string | null; last_cron_ping: string | null; minutes_silent: number | null; minutes_since_cron_ping: number | null; tg_status: string | null; last_msg_id: number; relay_last_msg: string | null; relay_minutes_ago: number | null; signals: TgSignal[] }
+interface TgStatus { connected: boolean; cron_alive: boolean; has_session: boolean; last_poll: string | null; last_cron_ping: string | null; minutes_silent: number | null; minutes_since_cron_ping: number | null; tg_status: string | null; last_msg_id: number; relay_last_msg: string | null; relay_minutes_ago: number | null; sf_connected: boolean; sf_cron_alive: boolean; sf_configured: boolean; sf_status: string | null; sf_last_poll: string | null; sf_relay_last_msg: string | null; sf_relay_minutes_ago: number | null; sf_minutes_silent: number | null; signals: TgSignal[] }
 interface SchwabOrder { order_id: string; symbol: string; instruction: string; quantity: number; filled_quantity: number; price: number; status: string; entered_time: string; asset_type?: string }
 interface Dash { account: { balance: number; daily_pnl: number; total_pnl: number } | null; trades: Trade[]; alerts: Alert[]; market_open: boolean }
 interface Pdt { day_trades_remaining: number; is_pdt_protected: boolean; balance: number }
@@ -1687,28 +1687,81 @@ export default function DashboardPage() {
             <div className="card">
               <div className="card-head plain" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <h3 className="card-title neutral" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: tg == null ? 'var(--fg-3)' : tg.connected ? 'var(--green)' : 'var(--red)', flexShrink: 0 }} />
-                  Telegram · SF Trades
+                  📡 Telegram Pollers
                 </h3>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="faint" style={{ fontSize: '0.68rem' }}>
-                    {tg?.last_poll ? `${Math.round((Date.now() - new Date(tg.last_poll).getTime()) / 60000)}m ago` : 'no heartbeat'}
-                  </span>
-                  <button
-                    onClick={() => fetch('/api/telegram/status').then(r => r.json()).then(setTg).catch(() => {})}
-                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg-3)', fontSize: '0.62rem', padding: '2px 6px', cursor: 'pointer' }}
-                    title="Refresh TG feed"
-                  >↻</button>
-                </div>
+                <button
+                  onClick={() => fetch('/api/telegram/status').then(r => r.json()).then(setTg).catch(() => {})}
+                  style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg-3)', fontSize: '0.62rem', padding: '2px 6px', cursor: 'pointer' }}
+                  title="Refresh TG feed"
+                >↻</button>
               </div>
               <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 100 }}>
+
+                {/* ── Dual poller health bars ── */}
+                {tg != null && (() => {
+                  const pollers = [
+                    {
+                      label:      '⭐ SF Trades (Pavan)',
+                      sublabel:   'Priority live · relay → SF Trades Relay',
+                      connected:  tg.sf_connected,
+                      alive:      tg.sf_cron_alive,
+                      status:     tg.sf_status,
+                      lastPoll:   tg.sf_last_poll,
+                      silentMin:  tg.sf_minutes_silent,
+                      relayMin:   tg.sf_relay_minutes_ago,
+                      configured: tg.sf_configured,
+                      priority:   true,
+                    },
+                    {
+                      label:      '📊 3-Channel Poller',
+                      sublabel:   'US Equities · SF Essential · Jimmy',
+                      connected:  tg.connected,
+                      alive:      tg.cron_alive,
+                      status:     tg.tg_status,
+                      lastPoll:   tg.last_poll,
+                      silentMin:  tg.minutes_silent,
+                      relayMin:   tg.relay_minutes_ago,
+                      configured: true,
+                      priority:   false,
+                    },
+                  ]
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {pollers.map(p => {
+                        const dot = !p.configured ? '#64748b' : p.connected ? 'var(--green)' : 'var(--red)'
+                        const statusText = !p.configured
+                          ? 'Not configured — set TELEGRAM_SF_TRADES_CHANNEL_ID in Vercel'
+                          : p.connected
+                            ? `Live · ${p.lastPoll ? Math.round((Date.now() - new Date(p.lastPoll).getTime()) / 60000) : '?'}m ago`
+                            : p.status?.startsWith('error:')
+                              ? `Error: ${p.status.replace('error:', '').trim()}`
+                              : p.status === 'no_session' ? 'Session expired'
+                              : `Silent ${p.silentMin ?? '?'}m`
+                        const relayText = p.relayMin != null ? `Relay: ${p.relayMin}m ago` : 'No relay yet'
+                        return (
+                          <div key={p.label} style={{ background: 'var(--bg-2)', border: `1px solid ${p.connected ? 'rgba(19,201,142,0.2)' : p.configured ? 'rgba(248,113,113,0.3)' : 'var(--border)'}`, borderRadius: 7, padding: '8px 10px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: dot, flexShrink: 0, display: 'inline-block', boxShadow: p.connected ? `0 0 5px ${dot}` : 'none' }} />
+                              <span style={{ fontWeight: 700, fontSize: '0.75rem', color: 'var(--fg-1)', flex: 1 }}>{p.label}</span>
+                              {p.priority && p.connected && <span style={{ fontSize: '0.6rem', background: 'rgba(19,201,142,0.15)', color: 'var(--green)', borderRadius: 3, padding: '1px 5px' }}>PRIORITY</span>}
+                              {!p.connected && p.configured && <a href="/tg-connect" style={{ fontSize: '0.6rem', background: 'var(--red)', color: '#fff', borderRadius: 3, padding: '2px 6px', textDecoration: 'none', fontWeight: 700 }}>Reconnect →</a>}
+                            </div>
+                            <div style={{ fontSize: '0.65rem', color: 'var(--fg-3)', marginTop: 3, paddingLeft: 15 }}>{p.sublabel}</div>
+                            <div style={{ display: 'flex', gap: 10, marginTop: 4, paddingLeft: 15 }}>
+                              <span style={{ fontSize: '0.65rem', color: p.connected ? 'var(--green)' : p.configured ? 'var(--red)' : 'var(--fg-3)' }}>{statusText}</span>
+                              {p.configured && <span style={{ fontSize: '0.65rem', color: 'var(--fg-3)' }}>· {relayText}</span>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
+
                 {tg == null && <div className="desk-empty">Loading…</div>}
                 {tg != null && !tg.has_session && (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--red)' }}>
-                    Not authenticated. Run:<br />
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--fg-3)', wordBreak: 'break-all' }}>
-                      /api/telegram/auth?secret=tradebot-cron-2026-secure&phone=+1XXXXXXXXXX
-                    </span>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--red)', background: 'rgba(248,113,113,0.08)', borderRadius: 6, padding: '8px 10px', marginTop: 4 }}>
+                    🔐 No session — <a href="/tg-connect" style={{ color: 'var(--green)' }}>authenticate at /tg-connect →</a>
                   </div>
                 )}
                 {tg != null && tg.has_session && !tg.connected && (() => {
@@ -1716,9 +1769,9 @@ export default function DashboardPage() {
                   return (
                     <div style={{ fontSize: '0.75rem', color: '#f5a623', background: 'rgba(245,166,35,0.08)', borderRadius: 6, padding: '6px 10px' }}>
                       {tg.tg_status === 'no_session'
-                        ? <>Session expired — re-authenticate via <code>/api/telegram/auth</code></>
+                        ? <>Session expired — <a href="/tg-connect" style={{ color: 'var(--green)' }}>reconnect at /tg-connect</a></>
                         : tg.tg_status?.startsWith('error:')
-                          ? <>Poller error: <b>{tg.tg_status.replace('error:', '').trim()}</b></>
+                          ? <>3-channel poller error: <b>{tg.tg_status.replace('error:', '').trim()}</b></>
                           : tg.cron_alive
                             ? <>Cron running — TG connect failing · check logs</>
                             : <>Cron silent — {cronPingAge != null ? `${cronPingAge}m since last ping` : 'never reached'}</>}
