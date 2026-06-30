@@ -32,12 +32,12 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     label: 'Schwab · Real (Protected)',
     vibe: 'protected',
     risk_pct: 0.02,             // 2% per trade
-    max_positions: 4,           // 4 concurrent PDT-safe swings
-    min_confidence: 72,         // 72% gate — BREAKOUT with ema≥8 now bypasses anyway
+    max_positions: 5,           // 5 concurrent PDT-safe swings (was 4)
+    min_confidence: 68,         // 68% gate (was 72) — allows strong TG + EMA setups
     allow_day_trades: false,    // PDT-safe swing (1–5 day holds)
-    initial_stop_pct: 0.04,     // 4% initial stop — real money needs room
+    initial_stop_pct: 0.025,    // 2.5% tight stop — cut losses faster on live money
     trail_pct: 0.05,
-    daily_loss_stop_pct: 0.05,  // −5% halts the day
+    daily_loss_stop_pct: 0.05,  // −5% halts the day (hard protection)
     max_hold_days: 5,
     scan_universe: 'core',
   },
