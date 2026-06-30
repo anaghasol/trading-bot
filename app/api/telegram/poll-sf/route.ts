@@ -219,31 +219,42 @@ export async function GET(req: Request) {
       ? await getOrCreateMirrorThread(srcTopicId, srcTopicName, db)
       : 89  // default: relay thread 89 = "SF Essential Trades( Buy /Sell Alerts)"
 
-    // Image/media handling — run vision OCR so we don't miss trade signals in images
+    // Image/media handling — download image, run vision OCR, forward actual image to relay
     let effectiveText = text
+    let imageBuffer: Buffer | undefined
+    let imageMime: string | undefined
     if (msg.media) {
       try {
-        const dataUrl = await tgMediaToDataUrl(client, msg)
-        if (dataUrl) {
-          const prompt = `Caption: "${text}"\nThis is from SF Essential Trades (Pavan's trading channel). Extract any trade signal:\nTICKER: XYZ | ACTION: BUY or SELL or TRIM | PRICE: 0 | STOP: 0\nIf options/futures only, add | TYPE: OPTIONS\nIf no trade signal, respond: NONE`
-          const ocrResult = await groqVisionExtract(dataUrl, prompt)
-          if (ocrResult) {
-            effectiveText = effectiveText ? `${effectiveText} | [IMG]: ${ocrResult}` : ocrResult
-            console.log(`[SF_IMG_OCR] msg#${msg.id}: ${ocrResult}`)
+        const media = msg.media as unknown as Record<string, unknown>
+        const isPhoto    = media.className === 'MessageMediaPhoto'
+        const docMime    = String((media.document as Record<string, unknown>)?.mimeType ?? '')
+        const isImageDoc = media.className === 'MessageMediaDocument' && docMime.startsWith('image/')
+        if (isPhoto || isImageDoc) {
+          const buffer = await client.downloadMedia(msg, {}) as Buffer | undefined
+          if (buffer && buffer.length >= 500 && buffer.length < 5_000_000) {
+            imageBuffer = buffer
+            imageMime   = isPhoto ? 'image/jpeg' : docMime
+            const dataUrl   = `data:${imageMime};base64,${buffer.toString('base64')}`
+            const prompt    = `Caption: "${text}"\nThis is from SF Essential Trades (Pavan's trading channel). Extract any trade signal:\nTICKER: XYZ | ACTION: BUY or SELL or TRIM | PRICE: 0 | STOP: 0\nIf options/futures only, add | TYPE: OPTIONS\nIf no trade signal, respond: NONE`
+            const ocrResult = await groqVisionExtract(dataUrl, prompt)
+            if (ocrResult) {
+              effectiveText = effectiveText ? `${effectiveText} | [IMG]: ${ocrResult}` : ocrResult
+              console.log(`[SF_IMG_OCR] msg#${msg.id}: ${ocrResult}`)
+            }
           }
         }
       } catch { /* non-fatal — continue with text-only */ }
     }
 
-    // Mirror image-only messages as "[image]" or with extracted OCR text
+    // Mirror as-is — forward actual image if present, otherwise text
+    // For image-only messages with no OCR result, still send the image
     if (!effectiveText || effectiveText.trim().length < 5) {
-      await mirrorIfNew(msg.id, relayThreadId, '📸 _[image — no text detected]_', db, senderName, msg.date)
+      await mirrorIfNew(msg.id, relayThreadId, text || '📸', db, senderName, msg.date, imageBuffer, imageMime)
       results.push({ id: msg.id, type: 'relay_only' })
       continue
     }
 
-    // Mirror as-is — same text, same topic, sender + timestamp in header
-    const relayResult = await mirrorIfNew(msg.id, relayThreadId, effectiveText, db, senderName, msg.date)
+    const relayResult = await mirrorIfNew(msg.id, relayThreadId, effectiveText, db, senderName, msg.date, imageBuffer, imageMime)
     if (relayResult === 'sent') {
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }

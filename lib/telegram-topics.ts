@@ -134,6 +134,50 @@ export async function sendToThread(
   }
 }
 
+/**
+ * Send an image (Buffer) to a relay topic thread via Bot API multipart upload.
+ * Caption gets the sender + timestamp header prepended (truncated to 1024 chars).
+ */
+export async function sendImageToThread(
+  threadId: number | null,
+  imageBuffer: Buffer,
+  mimeType: string,
+  caption: string,
+  senderName?: string,
+  originalTs?: number
+): Promise<boolean> {
+  if (!BOT_TOKEN || !RELAY_CHAT) return false
+
+  const header = buildHeader(senderName, originalTs)
+  const fullCaption = `${header}\n\n${caption}`.slice(0, 1024)
+  const isPhoto = mimeType.startsWith('image/')
+
+  const form = new FormData()
+  form.append('chat_id', RELAY_CHAT)
+  if (threadId) form.append('message_thread_id', String(threadId))
+  form.append('caption', fullCaption)
+  form.append('parse_mode', 'Markdown')
+
+  const blob = new Blob([new Uint8Array(imageBuffer)], { type: mimeType })
+  const filename = isPhoto ? 'photo.jpg' : 'file'
+  const method   = isPhoto ? 'sendPhoto'    : 'sendDocument'
+  const field    = isPhoto ? 'photo'        : 'document'
+  form.append(field, blob, filename)
+
+  try {
+    const res  = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, { method: 'POST', body: form })
+    const data = await res.json() as { ok: boolean; description?: string }
+    if (!data.ok) {
+      console.error(`[relay] sendImageToThread FAILED thread=${threadId}: ${data.description}`)
+      return false
+    }
+    return true
+  } catch (e) {
+    console.error(`[relay] sendImageToThread EXCEPTION thread=${threadId}: ${String(e).slice(0, 120)}`)
+    return false
+  }
+}
+
 /** Dedup check then mirror. Returns 'sent' | 'duplicate' | 'error'. */
 export async function mirrorIfNew(
   msgId: number,
@@ -141,7 +185,9 @@ export async function mirrorIfNew(
   text: string,
   db: DB,
   senderName?: string,
-  originalTs?: number
+  originalTs?: number,
+  imageBuffer?: Buffer,
+  imageMime?: string,
 ): Promise<'sent' | 'duplicate' | 'error'> {
   const DEDUP_KEY = 'tg_relay_sent_ids'
   const { data } = await db.from('tb_settings').select('value').eq('key', DEDUP_KEY).single()
@@ -149,7 +195,18 @@ export async function mirrorIfNew(
 
   if (sentIds.has(msgId)) return 'duplicate'
 
-  const ok = await sendToThread(threadId, text, senderName, originalTs)
+  let ok: boolean
+  if (imageBuffer && imageMime) {
+    // Send image with caption — richer than text-only mirror
+    ok = await sendImageToThread(threadId, imageBuffer, imageMime, text || '📸', senderName, originalTs)
+    // Also send text separately if there's substantial text beyond just the OCR tag
+    const pureText = text.replace(/\s*\|\s*\[IMG\]:.*$/, '').trim()
+    if (ok && pureText && pureText.length > 5) {
+      await sendToThread(threadId, pureText, senderName, originalTs).catch(() => {})
+    }
+  } else {
+    ok = await sendToThread(threadId, text, senderName, originalTs)
+  }
   if (!ok) return 'error'
 
   sentIds.add(msgId)
