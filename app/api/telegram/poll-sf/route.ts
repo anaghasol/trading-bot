@@ -43,13 +43,23 @@ const SF_CHANNEL_ID: string | number = (() => {
 // Priority live settings — Pavan's channel is curated, lower bar for Schwab
 const SF_SCHWAB_MIN_CONF = 68  // vs 78% for the 3-channel poller
 const SF_SIGNAL_STYLE = `
-Pavan's SF Trades channel — curated US equity trading signals from a paid membership channel.
-Formats:
-  - "Buy TICKER at PRICE SL PRICE target PRICE" or "TICKER Long entry X SL Y TP Z"
-  - Watchlist alerts: "Watch TICKER near PRICE support"
-  - Updates: "TICKER TP hit" / "TICKER SL hit — exit" / "Partial exit TICKER"
-These are high-conviction, actionable signals — treat as PRIORITY for trade execution.
-Always extract ticker, direction, and price levels. Never classify as ignore unless pure non-trade content.
+Pavan Sailesh's SF Essential Trades — paid membership channel with structured US equity trade alerts.
+
+Primary format:
+  "Trade Id : XXXXX, MM/DD: Buying TICKER at PRICE With SL of PRICE Which has max risk of X.XX% for purchase type as: Trade."
+  → Extract: action=BUY, symbol=TICKER, entry_price=PRICE, stop_loss=SL
+
+Follow-up messages (same Trade Id):
+  "TICKER is an early trade cmp is PRICE... keep a buy order or alert below PRICE"
+  "TICKER TP hit" / "TICKER booked" / "book profits on TICKER"
+  → These are exit/update signals — classify as exit or learn.
+
+Other formats:
+  "ALAB 450$ now. My profit shares are up almost 400%..." → learn/context
+  "If you have to De-prioritize from 3 names, IBM moves slow..." → learn/context
+
+Always extract ticker + direction. Trade Id messages are always BUY signals unless stated otherwise.
+Never classify a Trade Id message as ignore.
 `
 
 async function tgSend(text: string) {
