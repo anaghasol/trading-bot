@@ -960,11 +960,16 @@ export default function DashboardPage() {
           {/* TG relay health banner — 24/7, relay must never go dark */}
           {(() => {
             if (!tg) return null
-            const tgDown = !tg.connected
-            // Show relay-last-seen even when connected (warn if stale > 60 min during daytime)
+            // Relay is DOWN only if NEITHER poller is currently connected.
+            // Channels can be legitimately quiet for hours — don't flag that as stale.
+            const tgDown = !tg.connected && !tg.sf_connected
             const etH = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
             const isDaytime = etH >= 8 && etH < 22
-            const relayStale = tg.relay_minutes_ago != null && tg.relay_minutes_ago > 60 && isDaytime
+            // Stale only if no poller running AND no relay at all today
+            const bestRelayMin = [tg.relay_minutes_ago, tg.sf_relay_minutes_ago]
+              .filter((n): n is number => n != null)
+              .reduce((a, b) => Math.min(a, b), 9999)
+            const relayStale = !tg.sf_connected && !tg.connected && bestRelayMin > 120 && isDaytime
 
             if (!tgDown && !relayStale) return null
 

@@ -512,8 +512,13 @@ export async function GET(req: Request) {
 
         const sentimentTag = signal.sentiment === 'bearish' ? '🔴' : signal.sentiment === 'bullish' ? '🟢' : '⚪'
         const watchTag = signal.watch_zone ? `\n👁 Watch zone: ${signal.watch_zone}` : ''
-        const mutedTag = !ch.tradeEnabled ? ' _(muted)_' : ''
-        await tgSend(`📚 *${ch.name} insight*${mutedTag} ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}${watchTag}`)
+        // Muted channel + actionable signal with a ticker → surface as 💡 Suggestion (not muted noise)
+        if (!ch.tradeEnabled && signal.actionable && signal.symbols.length > 0) {
+          await tgSend(`💡 *SF Trades Suggestion* ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}${watchTag}\n_(watch manually — IPO/setup not auto-traded)_`)
+        } else {
+          const mutedTag = !ch.tradeEnabled ? ' _(muted)_' : ''
+          await tgSend(`📚 *${ch.name} insight*${mutedTag} ${sentimentTag}\n${signal.summary}${signal.symbols.length ? `\nTickers: ${signal.symbols.join(', ')}` : ''}${watchTag}`)
+        }
 
         // Only trigger AI scanner for active (non-muted) channels
         if (ch.tradeEnabled) {
@@ -649,7 +654,12 @@ export async function GET(req: Request) {
       }
 
       const liveQuote = await Alpaca.getQuote(signal.symbol)
-      const livePrice = liveQuote?.price ?? signal.entry_price
+      // Skip if Alpaca doesn't know this symbol — crypto ticker, UK stock, bad parse, etc.
+      if (!liveQuote) {
+        await tgSend(`⚠️ *Skip ${signal.symbol}* (${ch.name}) — not found in Alpaca, may not be a US equity`)
+        return { id: msg.id, type: 'skip_invalid_symbol', symbol: signal.symbol }
+      }
+      const livePrice = liveQuote.price ?? signal.entry_price
       const exposureCap = exposureCapForConfidence(signal.confidence)
       const sizing = livePrice
         ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCap)

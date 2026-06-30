@@ -260,7 +260,13 @@ export async function GET(req: Request) {
       results.push({ id: msg.id, type: 'exit_not_held', symbol: signal.symbol }); continue
     }
 
-    if (signal.type === 'learn') { results.push({ id: msg.id, type: 'learn' }); continue }
+    if (signal.type === 'learn') {
+      // Actionable learn signals (IPOs, setups) → surface as suggestion, not muted
+      if (signal.actionable && signal.symbols?.length) {
+        await tgSend(`💡 *SF Trades Suggestion* 🟢\n${signal.summary}\nTickers: ${signal.symbols.join(', ')}\n_(watch manually — not auto-traded)_`)
+      }
+      results.push({ id: msg.id, type: 'learn' }); continue
+    }
     if (signal.type !== 'trade') { results.push({ id: msg.id, type: 'other' }); continue }
 
     // Trade signal — execute on both brokers
@@ -276,8 +282,23 @@ export async function GET(req: Request) {
       }
     }
 
+    // SELL guard — never short sell. Only sell if we actually hold the position.
+    if (signal.action === 'SELL') {
+      const { data: openTrade } = await db.from('tb_trades')
+        .select('id, quantity').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1).single()
+      if (!openTrade) {
+        await tgSend(`📌 *SF Trades SELL skip ${signal.symbol}* — not held, no short selling`)
+        results.push({ id: msg.id, type: 'sell_skip_not_held', symbol: signal.symbol }); continue
+      }
+    }
+
+    // Ticker validation — skip if Alpaca can't find the symbol (crypto, UK stock, bad parse)
     const liveQuote = await Alpaca.getQuote(signal.symbol)
-    const livePrice = liveQuote?.price ?? signal.entry_price
+    if (!liveQuote) {
+      await tgSend(`⚠️ *SF Trades skip ${signal.symbol}* — not found in Alpaca (may be crypto or non-US equity)`)
+      results.push({ id: msg.id, type: 'skip_invalid_symbol', symbol: signal.symbol }); continue
+    }
+    const livePrice = liveQuote.price ?? signal.entry_price
     const exposureCap = exposureCapForConfidence(signal.confidence)
     const qty = livePrice
       ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCap).qty
