@@ -71,15 +71,20 @@ async function tgSend(text: string) {
   }).catch(() => {})
 }
 
-async function tgRelay(text: string): Promise<boolean> {
+type RelayLabel = 'BUY/SELL' | 'EXIT' | 'INFO'
+
+async function tgRelay(text: string, label: RelayLabel = 'INFO'): Promise<boolean> {
   if (!RELAY_CHAT || !BOT_TOKEN || !text.trim()) return false
+  const badge = label === 'BUY/SELL' ? '🟢 BUY/SELL — IMPORTANT'
+              : label === 'EXIT'     ? '🔴 EXIT SIGNAL'
+              :                        'ℹ️ INFO'
   try {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: RELAY_CHAT,
-        text: `⭐ [SF Trades]\n\n${text}`,  // ⭐ marks it as priority / Pavan's channel
+        text: `⭐ [SF Essential Trades] — ${badge}\n\n${text}`,
       }),
     })
     const data = await res.json() as { ok: boolean }
@@ -186,19 +191,26 @@ export async function GET(req: Request) {
   const results = await Promise.all(newMsgs.map(async (msg) => {
     const text = msg.text ?? ''
 
-    // 1. Relay as-is to SF Trades Relay group (ALWAYS — before any parsing)
+    // Skip media-only messages (no text)
+    if (!text || text.trim().length < 5) {
+      await tgRelay('[image/media]', 'INFO')
+      return { id: msg.id, type: 'relay_only' }
+    }
+
+    // 1. Classify with Groq first — so relay carries the correct label
+    const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
+
+    // 2. Relay to SF Trades Relay with label (BUY/SELL / EXIT / INFO)
+    const relayLabel: RelayLabel =
+      signal.type === 'trade' ? 'BUY/SELL' :
+      signal.type === 'exit'  ? 'EXIT' : 'INFO'
     if (text.trim()) {
-      const relayed = await tgRelay(text)
+      const relayed = await tgRelay(text, relayLabel)
       if (relayed) {
         await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
       }
     }
 
-    // 2. Parse signal — skip pre-filter for Pavan's curated channel, always send to Groq
-    // (isWorthClassifying is too conservative for structured Trade Id messages)
-    if (!text || text.trim().length < 5) return { id: msg.id, type: 'relay_only' }
-
-    const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
     if (signal.type === 'ignore') return { id: msg.id, type: 'relayed_no_signal' }
 
     // Log to alerts

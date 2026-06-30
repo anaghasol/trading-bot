@@ -41,20 +41,29 @@ async function tgSend(text: string) {
   }).catch(() => {})
 }
 
-async function tgRelay(text: string) {
+type RelayLabel = 'BUY/SELL' | 'EXIT' | 'INFO'
+
+async function tgRelay(text: string, label: RelayLabel = 'INFO') {
   if (!BOT_TOKEN || !RELAY_CHAT || !text.trim()) return
+  const badge = label === 'BUY/SELL' ? '🟢 BUY/SELL — IMPORTANT'
+              : label === 'EXIT'     ? '🔴 EXIT SIGNAL'
+              :                        'ℹ️ INFO'
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: RELAY_CHAT,
-      text: `⭐ [SF Essential Trades]\n\n${text}`,
+      text: `⭐ [SF Essential Trades] — ${badge}\n\n${text}`,
     }),
   }).catch(() => {})
 }
 
 export async function GET(req: Request) {
-  const secret = new URL(req.url).searchParams.get('secret') ?? req.headers.get('authorization')?.replace('Bearer ', '')
+  const url    = new URL(req.url)
+  const secret = url.searchParams.get('secret') ?? req.headers.get('authorization')?.replace('Bearer ', '')
   if (secret !== process.env.CRON_SECRET) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // days_back=0 → today only, days_back=1 → yesterday+today (default 1)
+  const daysBack  = parseInt(url.searchParams.get('days_back') ?? '1', 10)
 
   const db = createServiceClient()
   const sessionStr = await getStoredSession()
@@ -63,14 +72,15 @@ export async function GET(req: Request) {
   const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 3, useWSS: true })
   await client.connect()
 
-  // Today in ET
-  const todayET = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date())
-  const todayStartUTC = new Date(todayET + 'T04:00:00Z').getTime() / 1000  // ~midnight ET in Unix
+  // Calculate start of window in ET (midnight ET, daysBack days ago)
+  const nowET       = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date())
+  const windowStart = new Date(nowET + 'T04:00:00Z').getTime() / 1000 - daysBack * 86_400
+  const windowLabel = daysBack === 0 ? 'today' : daysBack === 1 ? 'yesterday+today' : `last ${daysBack + 1} days`
 
-  // Fetch up to 100 recent messages, filter to today only
-  const messages = await client.getMessages(SF_CHANNEL, { limit: 100 })
+  // Fetch up to 200 recent messages, filter to window
+  const messages = await client.getMessages(SF_CHANNEL, { limit: 200 })
   const todayMsgs = messages
-    .filter(m => m.date >= todayStartUTC && (m.text?.length > 3 || m.media != null))
+    .filter(m => m.date >= windowStart && (m.text?.length > 3 || m.media != null))
     .sort((a, b) => a.id - b.id)   // oldest first so relay order matches original
 
   const profile       = PROFILES.alpaca_paper
@@ -82,16 +92,22 @@ export async function GET(req: Request) {
   for (const msg of todayMsgs) {
     const text = msg.text ?? ''
 
-    // 1. Relay as-is to SF Trades Relay (no parsing, no intelligence)
-    await tgRelay(text || '[image/media]')
-
     if (!text || text.trim().length < 5) {
+      // Media/image only — relay as INFO, no parsing
+      await tgRelay('[image/media]', 'INFO')
       results.push({ id: msg.id, text: '[media]', relay: true, signal_type: 'media_only' })
       continue
     }
 
-    // 2. Parse through Groq for trade signals
+    // 1. Classify with Groq first so we know the label before relaying
     const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
+
+    // 2. Relay to SF Trades Relay with correct label
+    const relayLabel: RelayLabel =
+      signal.type === 'trade' ? 'BUY/SELL' :
+      signal.type === 'exit'  ? 'EXIT' : 'INFO'
+    await tgRelay(text, relayLabel)
+
     if (signal.type === 'ignore') {
       results.push({ id: msg.id, text: text.slice(0, 80), relay: true, signal_type: 'no_signal' })
       continue
@@ -209,9 +225,9 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     ok:      true,
-    date:    todayET,
+    window:  windowLabel,
     channel: 'SF Essential Trades',
-    total_today: todayMsgs.length,
+    total_in_window: todayMsgs.length,
     results,
   })
 }
