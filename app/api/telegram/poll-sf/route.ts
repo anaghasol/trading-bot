@@ -19,7 +19,7 @@ import { NextResponse } from 'next/server'
 import { TelegramClient } from 'telegram'
 import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
-import { parseSignal, isWorthClassifying } from '@/lib/telegram-signal'
+import { parseSignal } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import * as Schwab from '@/lib/schwab'
@@ -194,11 +194,12 @@ export async function GET(req: Request) {
       }
     }
 
-    // 2. Parse signal
-    if (!isWorthClassifying(text)) return { id: msg.id, type: 'relay_only' }
+    // 2. Parse signal — skip pre-filter for Pavan's curated channel, always send to Groq
+    // (isWorthClassifying is too conservative for structured Trade Id messages)
+    if (!text || text.trim().length < 5) return { id: msg.id, type: 'relay_only' }
 
     const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
-    if (signal.type === 'ignore') return { id: msg.id, type: 'relayed_ignored' }
+    if (signal.type === 'ignore') return { id: msg.id, type: 'relayed_no_signal' }
 
     // Log to alerts
     const alertSym = signal.type === 'trade' ? signal.symbol : signal.type === 'learn' ? (signal.symbols?.[0] ?? null) : null
