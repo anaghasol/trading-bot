@@ -5,16 +5,14 @@
  * Saves output to tb_research_reports for review in the Research Lab UI.
  */
 import { NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
 import { getPrompt, QUANT_PROMPTS } from '@/lib/quant-prompts'
 import { getMarketRegime } from '@/lib/market-data'
 import { getPositions, getAccountBalance } from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
+import { groqTextComplete } from '@/lib/groq-text'
 
 export const runtime   = 'nodejs'
 export const maxDuration = 120  // research calls are long — allow up to 2 min
-
-const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
 export async function GET() {
   return NextResponse.json({ prompts: QUANT_PROMPTS.map(({ key, name, firm, focus, emoji }) => ({ key, name, firm, focus, emoji })) })
@@ -75,39 +73,10 @@ ${userNotes ? `\nAdditional context from user:\n${userNotes}` : ''}
 
     const fullPrompt = `${promptDef.prompt}\n\n${context}`
 
-    let output = ''
-    let modelUsed = 'claude-sonnet-4-6'
-
-    try {
-      const message = await claude.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 4096,
-        messages: [{ role: 'user', content: fullPrompt }],
-      })
-      output = message.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-    } catch (claudeErr) {
-      console.warn('[research] Claude failed, trying Groq fallback:', claudeErr)
-      // Groq fallback — OpenAI-compatible API, llama3-70b
-      const groqKey = process.env.GROQ_API_KEY
-      if (!groqKey) throw new Error('Claude failed and no GROQ_API_KEY set')
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'llama3-70b-8192',
-          max_tokens: 4096,
-          messages: [{ role: 'user', content: fullPrompt }],
-        }),
-        signal: AbortSignal.timeout(60_000),
-      })
-      if (!res.ok) throw new Error(`Groq HTTP ${res.status}`)
-      const data = await res.json() as { choices: { message: { content: string } }[] }
-      output = data.choices[0]?.message?.content ?? ''
-      modelUsed = 'groq/llama3-70b-8192'
-    }
+    const groqResult = await groqTextComplete(fullPrompt, 4096)
+    if (!groqResult) throw new Error('all Groq models failed')
+    const output    = groqResult.text
+    const modelUsed = groqResult.model
 
     // Persist to Supabase for history
     try {

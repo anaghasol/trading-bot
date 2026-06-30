@@ -445,17 +445,14 @@ export async function runSNDKScreener(): Promise<SNDKCandidate[]> {
   // Sort quantitative scores descending
   results.sort((a, b) => b.sndkScore - a.sndkScore)
 
-  // ── Claude narrative validation ────────────────────────────────────────────
-  // Quantitative scoring catches the numbers; Claude catches the story.
-  // One API call on top Stage 1 candidates — not per-stock, so cost is minimal.
-  // Claude evaluates: "Is there a multi-month narrative shift driving this?"
+  // ── Groq narrative validation ──────────────────────────────────────────────
+  // Quantitative scoring catches the numbers; the LLM catches the story.
+  // One free Groq call on top Stage 1 candidates — not per-stock.
+  // Evaluates: "Is there a multi-month narrative shift driving this?"
   // Returns a confidence boost (-5 to +10) and a narrative reason.
   const stage1Top = results.filter((c) => c.stage === 1 && c.sndkScore >= 30).slice(0, 12)
-  if (stage1Top.length > 0 && process.env.ANTHROPIC_API_KEY) {
+  if (stage1Top.length > 0 && process.env.GROQ_API_KEY) {
     try {
-      const Anthropic = (await import('@anthropic-ai/sdk')).default
-      const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
       const stockList = stage1Top.map((c) =>
         `${c.symbol} (${c.sector.replace(/_/g, ' ')}): ` +
         `RevGrowth=${c.revenueGrowthPct.toFixed(0)}% GM=${c.grossMarginPct.toFixed(0)}% ` +
@@ -463,12 +460,7 @@ export async function runSNDKScreener(): Promise<SNDKCandidate[]> {
         `Stage=${c.stage} Dev200DMA=${c.deviationPct.toFixed(0)}%`
       ).join('\n')
 
-      const msg = await ai.messages.create({
-        model:      'claude-sonnet-4-6',
-        max_tokens: 1024,
-        messages:   [{
-          role:    'user',
-          content: `You are a professional growth stock analyst specializing in identifying multi-bagger opportunities before they become obvious.
+      const prompt = `You are a professional growth stock analyst specializing in identifying multi-bagger opportunities before they become obvious.
 
 For each stock below, evaluate: Is there evidence of a multi-month narrative shift similar to historical compounders (revenue acceleration + institutional attention + sector tailwind + product cycle)?
 
@@ -480,12 +472,11 @@ Return JSON only, no explanation outside the JSON:
   "SYMBOL": { "narrative": true/false, "reason": "1 sentence max", "boost": number between -5 and 10 }
 }
 
-Boost guide: 10=clear narrative catalyst (spinoff, AI pivot, contract win, new product cycle), 5=sector tailwind but no specific catalyst, 0=unclear, -5=no narrative (just a cheap stock).`,
-        }],
-      })
+Boost guide: 10=clear narrative catalyst (spinoff, AI pivot, contract win, new product cycle), 5=sector tailwind but no specific catalyst, 0=unclear, -5=no narrative (just a cheap stock).`
 
-      const raw = msg.content[0].type === 'text' ? msg.content[0].text : ''
-      const jsonMatch = raw.match(/\{[\s\S]*\}/)
+      const { groqTextComplete } = await import('./groq-text')
+      const result = await groqTextComplete(prompt, 1024)
+      const jsonMatch = result?.text.match(/\{[\s\S]*\}/)
       if (jsonMatch) {
         const boosts = JSON.parse(jsonMatch[0]) as Record<string, { narrative: boolean; reason: string; boost: number }>
         for (const c of results) {
@@ -497,12 +488,12 @@ Boost guide: 10=clear narrative catalyst (spinoff, AI pivot, contract win, new p
             c.highlights.unshift(`🧠 ${b.reason}`)  // prepend — most important signal
           }
         }
-        // Re-sort after Claude adjustments
+        // Re-sort after narrative adjustments
         results.sort((a, b) => b.sndkScore - a.sndkScore)
-        console.log(`[screener] Claude narrative pass done: boosted ${Object.keys(boosts).length} stocks`)
+        console.log(`[screener] ${result?.model} narrative pass done: boosted ${Object.keys(boosts).length} stocks`)
       }
     } catch (e) {
-      console.warn('[screener] Claude narrative pass failed (non-fatal):', e)
+      console.warn('[screener] narrative pass failed (non-fatal):', e)
     }
   }
 

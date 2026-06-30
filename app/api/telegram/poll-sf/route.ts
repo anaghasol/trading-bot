@@ -27,6 +27,7 @@ import * as Schwab from '@/lib/schwab'
 import { createServiceClient } from '@/lib/supabase-server'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
+import { groqVisionExtract, tgMediaToDataUrl } from '@/lib/groq-vision'
 
 const API_ID     = parseInt(process.env.TELEGRAM_API_ID ?? '0')
 const API_HASH   = process.env.TELEGRAM_API_HASH ?? ''
@@ -213,26 +214,42 @@ export async function GET(req: Request) {
       ? await getOrCreateMirrorThread(srcTopicId, srcTopicName, db)
       : 89  // default: relay thread 89 = "SF Essential Trades( Buy /Sell Alerts)"
 
-    // Skip media-only
-    if (!text || text.trim().length < 5) {
-      await mirrorIfNew(msg.id, relayThreadId, '[image/media]', db, senderName, msg.date)
+    // Image/media handling — run vision OCR so we don't miss trade signals in images
+    let effectiveText = text
+    if (msg.media) {
+      try {
+        const dataUrl = await tgMediaToDataUrl(client, msg)
+        if (dataUrl) {
+          const prompt = `Caption: "${text}"\nThis is from SF Essential Trades (Pavan's trading channel). Extract any trade signal:\nTICKER: XYZ | ACTION: BUY or SELL or TRIM | PRICE: 0 | STOP: 0\nIf options/futures only, add | TYPE: OPTIONS\nIf no trade signal, respond: NONE`
+          const ocrResult = await groqVisionExtract(dataUrl, prompt)
+          if (ocrResult) {
+            effectiveText = effectiveText ? `${effectiveText} | [IMG]: ${ocrResult}` : ocrResult
+            console.log(`[SF_IMG_OCR] msg#${msg.id}: ${ocrResult}`)
+          }
+        }
+      } catch { /* non-fatal — continue with text-only */ }
+    }
+
+    // Mirror image-only messages as "[image]" or with extracted OCR text
+    if (!effectiveText || effectiveText.trim().length < 5) {
+      await mirrorIfNew(msg.id, relayThreadId, '📸 _[image — no text detected]_', db, senderName, msg.date)
       results.push({ id: msg.id, type: 'relay_only' })
       continue
     }
 
     // Mirror as-is — same text, same topic, sender + timestamp in header
-    const relayResult = await mirrorIfNew(msg.id, relayThreadId, text, db, senderName, msg.date)
+    const relayResult = await mirrorIfNew(msg.id, relayThreadId, effectiveText, db, senderName, msg.date)
     if (relayResult === 'sent') {
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }
     if (relayResult === 'duplicate') { results.push({ id: msg.id, type: 'duplicate_skip' }); continue }
 
     // Groq only for ORDER EXECUTION — only on entry-signal messages
-    const isExitSig  = /trim|book.?profit|partial.?gain|stop.?hit|stopped.?out|tp.?hit|take.?profit/i.test(text)
-    const isTradeSig = /trade\s*id|buying\s+[a-z]{2,6}(\s+at\s+|\s+\d)|buy\s+[a-z]{2,6}\s+(sl|stop|at\s)/i.test(text)
+    const isExitSig  = /trim|book.?profit|partial.?gain|stop.?hit|stopped.?out|tp.?hit|take.?profit/i.test(effectiveText)
+    const isTradeSig = /trade\s*id|buying\s+[a-z]{2,6}(\s+at\s+|\s+\d)|buy\s+[a-z]{2,6}\s+(sl|stop|at\s)/i.test(effectiveText)
     if (!isTradeSig && !isExitSig) { results.push({ id: msg.id, type: `mirrored:${srcTopicName.slice(0,20)}` }); continue }
 
-    const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
+    const signal = await parseSignal(effectiveText, 'SF Trades', SF_SIGNAL_STYLE)
 
     await db.from('tb_alerts').insert({
       type: 'INFO',

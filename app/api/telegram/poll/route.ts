@@ -24,6 +24,7 @@ import * as Schwab from '@/lib/schwab'
 import { createServiceClient } from '@/lib/supabase-server'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
+import { groqVisionExtract, tgMediaToDataUrl } from '@/lib/groq-vision'
 
 const API_ID       = parseInt(process.env.TELEGRAM_API_ID ?? '0')
 const API_HASH     = process.env.TELEGRAM_API_HASH ?? ''
@@ -139,11 +140,12 @@ async function tgRelayRaw(channelName: string, text: string): Promise<boolean> {
   }
 }
 
+const IMG_PROMPT = (caption: string) =>
+  `Caption: "${caption}"\nLook at this trading signal image. If it shows a trade setup or brokerage order, respond ONLY with:\nTICKER: XYZ | ACTION: BUY or SELL or TRIM | PRICE: 0 | TARGET: 0\nIf options/futures (not US equity), add | TYPE: OPTIONS\nIf no clear ticker + action visible, respond: NONE`
+
 /**
  * Extract a trade signal from an image attached to a Telegram message.
- * Uses Claude Haiku vision — ~$0.0013/image (10 images/day ≈ $0.40/month).
- * Returns a compact signal string like "TICKER: INTC | ACTION: BUY | PRICE: 28"
- * or null if the image contains no actionable trade signal.
+ * Groq vision only (free tier) — llama-4-scout, falls back to llama-4-maverick.
  */
 async function extractImageOCR(
   client: TelegramClient,
@@ -151,46 +153,10 @@ async function extractImageOCR(
   msg: any,
   caption: string,
 ): Promise<string | null> {
-  if (!msg?.media) return null
-
-  const media = msg.media as Record<string, unknown>
-  const isPhoto    = media.className === 'MessageMediaPhoto'
-  const docMime    = String((media.document as Record<string, unknown>)?.mimeType ?? '')
-  const isImageDoc = media.className === 'MessageMediaDocument' && docMime.startsWith('image/')
-  if (!isPhoto && !isImageDoc) return null
-
   try {
-    const buffer = await client.downloadMedia(msg, {}) as Buffer | undefined
-    if (!buffer || buffer.length < 500) return null
-    if (buffer.length > 4_000_000) return null   // skip > 4 MB
-
-    const mimeType = isPhoto ? 'image/jpeg' : (docMime || 'image/jpeg')
-    const base64   = buffer.toString('base64')
-
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key':         process.env.ANTHROPIC_API_KEY!,
-        'anthropic-version': '2023-06-01',
-        'content-type':      'application/json',
-      },
-      body: JSON.stringify({
-        model:      'claude-haiku-4-5-20251001',
-        max_tokens: 120,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
-            { type: 'text',  text: `Caption: "${caption}"\nLook at this trading signal image. If it contains a trade setup, respond ONLY with:\nTICKER: XYZ | ACTION: BUY or SELL or TRIM | PRICE: 0 | TARGET: 0\nIf no clear ticker + trade action visible, respond: NONE` },
-          ],
-        }],
-      }),
-    })
-
-    if (!resp.ok) return null
-    const data = await resp.json() as { content?: { type: string; text: string }[] }
-    const out = data.content?.find((c) => c.type === 'text')?.text?.trim() ?? 'NONE'
-    return out === 'NONE' || !out.includes('TICKER') ? null : out
+    const dataUrl = await tgMediaToDataUrl(client, msg)
+    if (!dataUrl) return null
+    return await groqVisionExtract(dataUrl, IMG_PROMPT(caption))
   } catch (e) {
     console.error('[IMG_OCR]', String(e).slice(0, 80))
     return null
