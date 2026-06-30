@@ -145,23 +145,21 @@ export default function PerformancePage() {
   const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
   const supaKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   const hdrs    = { apikey: supaKey, Authorization: `Bearer ${supaKey}` }
-  const SEL     = 'id,symbol,pnl,pnl_pct,entry_price,exit_price,closed_at,created_at,strategy,reason,broker,quantity,status,side'
+  const SEL     = 'id,symbol,pnl,pnl_pct,entry_price,exit_price,closed_at,created_at,strategy,reason,broker,quantity'
 
-  // ET date for display and client-side today-filtering
+  // ET date string for client-side today filtering (YYYY-MM-DD in America/New_York)
   const etDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date())
 
   useEffect(() => {
     setLoading(true)
-    // Single fetch: closed trades within the selected window.
-    // Use created_at as the range filter (always set) and pull enough history.
-    // Today's trades are filtered client-side by closed_at prefix.
     const fromStr = new Date(Date.now() - Math.max(days, 1) * 86_400_000).toISOString()
     const bf      = broker === 'schwab'
       ? 'broker=eq.schwab'
       : 'or=(broker.eq.alpaca_paper,broker.is.null)'
 
+    // Use closed_at filter — same as original working code. No status filter to avoid missing rows.
     fetch(
-      `${supaUrl}/rest/v1/tb_trades?status=eq.CLOSED&${bf}&created_at=gte.${fromStr}&order=closed_at.desc&limit=500&select=${SEL}`,
+      `${supaUrl}/rest/v1/tb_trades?${bf}&closed_at=gte.${fromStr}&order=closed_at.desc&limit=500&select=${SEL}`,
       { headers: hdrs }
     )
       .then(r => r.json())

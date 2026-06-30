@@ -25,10 +25,11 @@ import { createServiceClient } from '@/lib/supabase-server'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
 
-const API_ID    = parseInt(process.env.TELEGRAM_API_ID ?? '0')
-const API_HASH  = process.env.TELEGRAM_API_HASH ?? ''
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!
-const GROUP_ID  = parseInt(process.env.TELEGRAM_ALLOWED_CHAT_ID ?? '0')
+const API_ID       = parseInt(process.env.TELEGRAM_API_ID ?? '0')
+const API_HASH     = process.env.TELEGRAM_API_HASH ?? ''
+const BOT_TOKEN    = process.env.TELEGRAM_BOT_TOKEN!
+const GROUP_ID     = parseInt(process.env.TELEGRAM_ALLOWED_CHAT_ID ?? '0')
+const RELAY_CHAT   = process.env.TELEGRAM_RELAY_CHAT_ID ?? ''   // new relay group chat ID
 
 interface ChannelCfg {
   id: number | string   // numeric ID or '@username'
@@ -38,6 +39,7 @@ interface ChannelCfg {
   tradeEnabled: boolean // false = learn/log only, no order execution
   skipSpamFilter: boolean // trusted curated channels — don't apply generic spam regex
   signalStyle: string   // injected into AI prompt so Groq knows the channel's signal format
+  relayEnabled: boolean // true = forward every raw message to TELEGRAM_RELAY_CHAT_ID as-is
 }
 
 // Index + commodity/forex → tradeable ETF equivalents
@@ -92,6 +94,7 @@ const CHANNELS: ChannelCfg[] = [
     tradeEnabled:    false,   // muted — macro/learn context only
     skipSpamFilter:  false,
     signalStyle:     'General US equity and macro commentary. May contain watchlists, sector views, earnings previews.',
+    relayEnabled:    false,
   },
   {
     id:              '@OptionT1',
@@ -101,6 +104,7 @@ const CHANNELS: ChannelCfg[] = [
     tradeEnabled:    true,
     skipSpamFilter:  true,    // curated channel — skip generic spam regex, trust every message
     signalStyle:     'US equity trading signals. Format: "Buy TICKER at PRICE SL PRICE target PRICE" or "Watch TICKER near PRICE" or momentum callouts like "INTC AMD moving — entry near X". Also posts earnings previews, watchlists, and "X% up today" momentum alerts. Act on explicit BUY/SELL entries; learn from watchlist and momentum callouts.',
+    relayEnabled:    true,   // forward every raw message to relay group as-is
   },
   {
     id:              '@JimmyLeshTrades',
@@ -110,8 +114,26 @@ const CHANNELS: ChannelCfg[] = [
     tradeEnabled:    true,    // crypto signals → equity proxies via INDEX_MAP (XRP→COIN, BTC→MSTR, etc.)
     skipSpamFilter:  true,    // curated channel — skip generic spam regex
     signalStyle:     'Crypto futures signals, occasionally US equities. Crypto format: "XRPUSDT LONG entry 0.22 SL 0.21 TP 0.25" or "XRP long, entry X SL Y". Equity format: "Buy TICKER at X SL Y". Also posts "if you entered the trade, TP hit" updates — classify those as exit or learn. Always extract the ticker and direction; the system maps crypto → equity proxies automatically.',
+    relayEnabled:    false,
   },
 ]
+
+// Forward raw message text to the relay group — no parsing, no modification
+async function tgRelayRaw(channelName: string, text: string): Promise<void> {
+  if (!RELAY_CHAT || !BOT_TOKEN || !text.trim()) return
+  try {
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: RELAY_CHAT,
+        text: `📡 [${channelName}]\n\n${text}`,
+      }),
+    })
+  } catch (e) {
+    console.error('[relay]', String(e).slice(0, 80))
+  }
+}
 
 /**
  * Extract a trade signal from an image attached to a Telegram message.
@@ -258,6 +280,11 @@ export async function GET(req: Request) {
 
     const chResults = await Promise.all(newMsgs.map(async (msg) => {
       let text = msg.text ?? ''
+
+      // Relay raw message to relay group BEFORE any parsing or filtering
+      if (ch.relayEnabled && text.trim()) {
+        tgRelayRaw(ch.name, text).catch(() => {})
+      }
 
       // Image OCR: run before isWorthClassifying so image-only messages get classified
       if (msg.media && ch.tradeEnabled) {
