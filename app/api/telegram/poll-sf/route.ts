@@ -169,36 +169,9 @@ export async function GET(req: Request) {
   const schwabProfile = PROFILES.schwab
   const equity       = (await getAccountBalance()) ?? 100_000
 
-  // Discover Pavan's Buy/Sell Alerts topic ID — cached in Supabase as 'pavan_buysell_topic_id'
-  // Any message with msg.replyTo.replyToTopId === this ID = Buy/Sell signal
-  // All other messages go to Market Info (no Groq routing)
-  let pavanBuySellTopicId: number | null = null
-  const { data: topicCache } = await db.from('tb_settings').select('value').eq('key', 'pavan_buysell_topic_id').single()
-  if (topicCache?.value && topicCache.value !== 'unknown') {
-    pavanBuySellTopicId = parseInt(topicCache.value)
-  } else {
-    // Try to discover via GramJS GetForumTopics
-    try {
-      const { Api } = await import('telegram')
-      const entity = await client.getEntity(SF_CHANNEL_ID)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const topicsResult = await client.invoke(new Api.channels.GetForumTopics({
-        channel: entity as unknown as import('telegram').Api.InputChannel,
-        limit: 50, offsetId: 0, offsetDate: 0, offsetTopic: 0, q: '',
-      })) as { topics: Array<{ id: number; title: string }> }
-      const buyTopic = topicsResult.topics.find(t =>
-        /buy|sell|alert|trade/i.test(t.title) && !/discuss|info|webinar|education|referral|joiner/i.test(t.title)
-      )
-      if (buyTopic) {
-        pavanBuySellTopicId = buyTopic.id
-        await db.from('tb_settings').upsert({ key: 'pavan_buysell_topic_id', value: String(buyTopic.id) })
-      } else {
-        await db.from('tb_settings').upsert({ key: 'pavan_buysell_topic_id', value: 'unknown' })
-      }
-    } catch { /* non-fatal — fall back to Groq routing */ }
-  }
-
-  const results = await Promise.all(newMsgs.map(async (msg) => {
+  // Process messages sequentially to avoid dedup race condition (Promise.all reads same state)
+  const results: { id: number; type: string; symbol?: string; action?: string }[] = []
+  for (const msg of newMsgs) {
     const text = msg.text ?? ''
 
     // Sender display name
@@ -208,37 +181,35 @@ export async function GET(req: Request) {
       ? `${sender.firstName}${sender.lastName ? ` ${sender.lastName}` : ''}`
       : sender?.username ?? 'Member'
 
-    // Which of Pavan's topics did this come from?
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const srcTopicId: number | null = (msg as any).replyTo?.replyToTopId ?? null
+    // SF Essential Trades (-1002381909837) is already the Buy/Sell channel — not a forum group.
+    // Route via simple keyword matching — zero Groq needed for routing.
+    // Groq only fires when we detect a trade entry to extract symbol/price/stop.
+    const isTradeSig = /trade\s*id\s*:|buying\s+\w+\s+at\s+|\bat\s+\$?\d|buy\s+\w+\s+(sl|stop)|entry[:\s]/i.test(text)
+    const isExitSig  = /\b(trim|trimming|book\s+profit|partial\s+gain|stop\s+hit|stopped\s+out|sl\s+hit|close\s+position|take\s+profit|tp\s+hit)\b/i.test(text)
 
-    // Route to our topic based on SOURCE topic — NO Groq needed for routing
-    // Buy/Sell topic in Pavan's group → our Buy/Sell Alerts (thread 6)
-    // All others → Market Info (thread 5) unless exit keywords present
-    const isBuySellSrc = pavanBuySellTopicId !== null && srcTopicId === pavanBuySellTopicId
-    const isExitKeyword = /\b(trim|trimming|book profits?|partial gain|stop hit|stopped out|sl hit|exit|close position)\b/i.test(text)
-
-    const topic: 'trades' | 'exits' | 'market_info' = isBuySellSrc
-      ? (isExitKeyword ? 'exits' : 'trades')
-      : (isExitKeyword ? 'exits' : 'market_info')
+    const topic: 'trades' | 'exits' | 'market_info' = isTradeSig
+      ? 'trades'
+      : isExitSig
+      ? 'exits'
+      : 'market_info'
 
     // Skip media-only
     if (!text || text.trim().length < 5) {
       await sendToTopicIfNew(msg.id, '[image/media]', 'market_info', db, msg.date, senderName)
-      return { id: msg.id, type: 'relay_only' }
+      results.push({ id: msg.id, type: 'relay_only' })
+      continue
     }
 
-    // Relay as-is — clean format, no AI summary
+    // Relay as-is — no AI summary, clean format
     const relayResult = await sendToTopicIfNew(msg.id, text, topic, db, msg.date, senderName)
     if (relayResult === 'sent') {
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
     }
-    if (relayResult === 'duplicate') return { id: msg.id, type: 'duplicate_skip' }
+    if (relayResult === 'duplicate') { results.push({ id: msg.id, type: 'duplicate_skip' }); continue }
 
-    // Only run Groq for trade execution — and only on Buy/Sell topic messages
-    if (!isBuySellSrc) return { id: msg.id, type: 'market_info_relayed' }
+    // Groq only on trade signals — to extract symbol/price/stop for execution
+    if (!isTradeSig) { results.push({ id: msg.id, type: `${topic}_relayed` }); continue }
 
-    // Groq to extract symbol/price/stop for trade execution (not routing)
     const signal = await parseSignal(text, 'SF Trades', SF_SIGNAL_STYLE)
 
     await db.from('tb_alerts').insert({
@@ -249,7 +220,7 @@ export async function GET(req: Request) {
 
     if (signal.type === 'ignore') return { id: msg.id, type: 'relayed_no_signal' }
 
-    // Exit signal
+    // Exit signal — try to close open position
     if (signal.type === 'exit') {
       const { data: openTrade } = await db.from('tb_trades')
         .select('id, quantity, broker').eq('symbol', signal.symbol).eq('status', 'OPEN').limit(1).single()
@@ -262,29 +233,24 @@ export async function GET(req: Request) {
           await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString(), reason: `⭐ SF Trades exit: ${signal.summary}` }).eq('id', openTrade.id)
         }
         await tgSend(`🚨 *SF Trades EXIT: ${signal.symbol}*\n${signal.summary}\nStatus: ${sellOrder.status} · ${broker}`)
-        return { id: msg.id, type: 'exit', symbol: signal.symbol }
+        results.push({ id: msg.id, type: 'exit', symbol: signal.symbol }); continue
       }
-      return { id: msg.id, type: 'exit_not_held', symbol: signal.symbol }
+      results.push({ id: msg.id, type: 'exit_not_held', symbol: signal.symbol }); continue
     }
 
-    // Learn signal — no trade execution
-    if (signal.type === 'learn') {
-      return { id: msg.id, type: 'learn' }
-    }
+    if (signal.type === 'learn') { results.push({ id: msg.id, type: 'learn' }); continue }
+    if (signal.type !== 'trade') { results.push({ id: msg.id, type: 'other' }); continue }
 
     // Trade signal — execute on both brokers
-    if (signal.type !== 'trade') return { id: msg.id, type: 'other' }
-
     const afterHoursEt = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
     const afterHours   = afterHoursEt >= 16 || afterHoursEt < 9
     const afterHoursTag = afterHours ? ' [FILLS AT OPEN]' : ''
 
-    // Guard: already holding
     if (signal.action === 'BUY') {
       const { data: existing } = await db.from('tb_trades').select('id').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1)
       if (existing?.length) {
         await tgSend(`⚠️ *SF Trades: skip ${signal.symbol}* — already open`)
-        return { id: msg.id, type: 'skip', reason: 'already_open' }
+        results.push({ id: msg.id, type: 'skip' }); continue
       }
     }
 
@@ -296,9 +262,7 @@ export async function GET(req: Request) {
       : 10
     const stopPrice = signal.stop_loss ?? (livePrice ? Math.round(livePrice * (1 - profile.initial_stop_pct) * 100) / 100 : null)
 
-    // Paper trade (Alpaca)
     const paperOrder = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
-
     if (paperOrder.status === 'PLACED' && signal.action === 'BUY') {
       if (stopPrice && !afterHours) await placeStopOrder(signal.symbol, qty, stopPrice).catch(() => {})
       await db.from('tb_trades').insert({
@@ -311,7 +275,6 @@ export async function GET(req: Request) {
       })
     }
 
-    // Live trade (Schwab) — PRIORITY: lower confidence bar, always attempt
     let schwabNote = ''
     if (signal.action === 'BUY' && !afterHours && signal.confidence >= SF_SCHWAB_MIN_CONF) {
       try {
@@ -319,13 +282,11 @@ export async function GET(req: Request) {
         const schwabEquity = schwabBalance ?? 2000
         const alreadyOpen  = schwabPositions.some(p => p.symbol === signal.symbol)
         const atMax        = schwabPositions.length >= schwabProfile.max_positions
-
         if (!alreadyOpen && !atMax) {
           const schwabQty = livePrice
             ? calculatePositionSize(schwabEquity, livePrice, schwabProfile.initial_stop_pct, schwabProfile.risk_pct, 0.25).qty
             : 1
           const schwabOrder = await Schwab.placeOrder(signal.symbol, schwabQty, 'BUY', 'MARKET')
-
           if (schwabOrder.status === 'PLACED') {
             const schwabStop = stopPrice ?? (livePrice ? Math.round(livePrice * (1 - schwabProfile.initial_stop_pct) * 100) / 100 : null)
             await db.from('tb_trades').insert({
@@ -347,17 +308,10 @@ export async function GET(req: Request) {
     }
 
     const emoji = paperOrder.status === 'PLACED' ? '✅' : '❌'
-    const summaryText = `*${emoji} SF Trades ⭐ → ${signal.action} ${qty} ${signal.symbol}*\nEntry: Market${stopPrice ? `\nSL: $${stopPrice}` : ''}\nConf: ${signal.confidence}%\nPaper: ${paperOrder.status}${afterHoursTag}${schwabNote}`
-    await tgSend(summaryText)
+    await tgSend(`*${emoji} SF Trades ⭐ → ${signal.action} ${qty} ${signal.symbol}*\nEntry: Market${stopPrice ? `\nSL: $${stopPrice}` : ''}\nConf: ${signal.confidence}%\nPaper: ${paperOrder.status}${afterHoursTag}${schwabNote}`)
 
-    // Pin the BUY/SELL relay message in SF Trades Relay so it's always visible
-    // (works in both topic and non-topic groups when bot has pin permission)
-    if (signal.action === 'BUY' && paperOrder.status === 'PLACED' && paperOrder.order_id) {
-      await pinMessage(parseInt(String(paperOrder.order_id))).catch(() => {})
-    }
-
-    return { id: msg.id, type: 'trade', symbol: signal.symbol, action: signal.action }
-  }))
+    results.push({ id: msg.id, type: 'trade', symbol: signal.symbol, action: signal.action })
+  }
 
   await client.disconnect().catch(() => {})
   return NextResponse.json({ ok: true, channel: 'SF Trades', processed: newMsgs.length, results })
