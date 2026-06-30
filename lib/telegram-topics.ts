@@ -124,8 +124,14 @@ export async function sendToThread(
   }
   if (threadId) body.message_thread_id = threadId
 
-  try { await tgCall('sendMessage', body); return true }
-  catch { return false }
+  try {
+    await tgCall('sendMessage', body)
+    return true
+  } catch (e) {
+    // tgCall throws on Telegram API errors — log so we can see failures in Vercel logs
+    console.error(`[relay] sendToThread FAILED thread=${threadId ?? 'default'}: ${String(e).slice(0, 150)}`)
+    return false
+  }
 }
 
 /** Dedup check then mirror. Returns 'sent' | 'duplicate' | 'error'. */

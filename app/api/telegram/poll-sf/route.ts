@@ -202,11 +202,16 @@ export async function GET(req: Request) {
       : sender?.username ?? 'Member'
 
     // Which of Pavan's forum topics did this message come from?
-    // In GramJS, forum topic messages have forumTopic=true and replyToMsgId = the topic thread ID
+    // Two cases in GramJS MTProto:
+    //   1. First message directly in a topic: replyTo.forumTopic=true, replyToMsgId = topic root ID
+    //   2. Replies within a topic: forumTopic=false, replyToTopId = topic root, replyToMsgId = specific replied msg
+    // We must check replyToTopId first so nested replies are routed to the right thread.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const replyTo = (msg as any).replyTo
-    const isForumMsg = replyTo?.forumTopic === true
-    const srcTopicId: number | null = isForumMsg ? (replyTo?.replyToTopId ?? replyTo?.replyToMsgId ?? null) : null
+    const srcTopicId: number | null =
+      replyTo?.replyToTopId                                        // nested reply — always points to topic root
+      ?? (replyTo?.forumTopic ? replyTo?.replyToMsgId : null)     // topic opener — forumTopic=true
+      ?? null
     const srcTopicName: string = (srcTopicId && pavanTopics[srcTopicId]) ? pavanTopics[srcTopicId] : 'SF Essential Trades'
 
     // Look up relay thread ID from cached map — create new topic if not mapped
