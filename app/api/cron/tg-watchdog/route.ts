@@ -50,11 +50,27 @@ export async function GET(req: Request) {
   }
 
   if (down.length > 0) {
-    // SMS via Twilio — works even when TG itself is down
+    // SMS via Twilio — independent of TG, works even when TG itself is down
     await sendHealthAlert(
       down.map(d => `🔴 TG relay down: ${d}. Visit /tg-connect to restore.`),
       [],
     ).catch(() => {})
+
+    // Also post to SF Trades Relay group so members see relay is paused
+    const bot      = process.env.TELEGRAM_BOT_TOKEN
+    const relayCht = process.env.TELEGRAM_RELAY_CHAT_ID
+    if (bot && relayCht) {
+      const lines = down.map(d => `• ${d}`)
+      await fetch(`https://api.telegram.org/bot${bot}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: relayCht,
+          text: `⚠️ *MyTrade relay paused*\n\n${lines.join('\n')}\n\nMessages from source channels will not appear here until reconnected. Visit /tg-connect to restore.`,
+          parse_mode: 'Markdown',
+        }),
+      }).catch(() => {})
+    }
   }
 
   return NextResponse.json({ ok: true, checked: POLLERS.length, down })

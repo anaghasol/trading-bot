@@ -122,17 +122,17 @@ export async function GET(req: Request) {
     // Phone alert on disconnect — 30-min dedupe, separate key from main poller
     const { data: lastAlertRow } = await db.from('tb_settings').select('value').eq('key', 'tg_sf_disconnect_alerted_at').single()
     const lastAlert = lastAlertRow?.value ? new Date(lastAlertRow.value).getTime() : 0
-    if (BOT_TOKEN && GROUP_ID && Date.now() - lastAlert > 30 * 60_000) {
+    if (BOT_TOKEN && Date.now() - lastAlert > 30 * 60_000) {
       await db.from('tb_settings').upsert({ key: 'tg_sf_disconnect_alerted_at', value: new Date().toISOString() })
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: GROUP_ID,
-          text: `🔴 *SF Trades Poller disconnected*\nError: ${connectErr}\nOpen /tg-connect to restore.`,
-          parse_mode: 'Markdown',
-        }),
-      }).catch(() => {})
+      const alertText = `🔴 *SF Trades Poller — Connection Lost*\n\nRelay from Pavan's channel to this group is paused.\nFailed to connect after 3 attempts.\n\nError: ${connectErr}\n\nVisit /tg-connect to restore.`
+      // Alert in both Akhil & myapp AND SF Trades Relay group
+      for (const chatId of [GROUP_ID, RELAY_CHAT].filter(Boolean)) {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text: alertText, parse_mode: 'Markdown' }),
+        }).catch(() => {})
+      }
     }
     return NextResponse.json({ ok: false, error: 'TG connect failed after 3 retries', detail: connectErr })
   }
