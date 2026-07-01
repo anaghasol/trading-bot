@@ -380,6 +380,9 @@ export async function GET(req: Request) {
         if (resolved !== signal.symbol) {
           console.log(`[tg-poll] ${ch.name}: mapped ${signal.symbol} → ${resolved}`)
           ;(signal as unknown as Record<string, unknown>).symbol = resolved
+          // Crypto SL is in crypto price units — invalid for the equity proxy.
+          // Null it so the equity SL is auto-calculated from livePrice below.
+          ;(signal as unknown as Record<string, unknown>).stop_loss = null
         }
       }
 
