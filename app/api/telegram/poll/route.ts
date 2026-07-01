@@ -40,6 +40,7 @@ interface ChannelCfg {
   watermarkKey: string  // key in tb_settings for last-seen message ID
   source: string        // written to tb_learning.source
   tradeEnabled: boolean // false = learn/log only, no order execution
+  schwabEnabled: boolean // true = also execute on Schwab live; false = paper only
   skipSpamFilter: boolean // trusted curated channels — don't apply generic spam regex
   signalStyle: string   // injected into AI prompt so Groq knows the channel's signal format
   relayEnabled: boolean // true = forward every raw message to TELEGRAM_RELAY_CHAT_ID as-is
@@ -103,8 +104,9 @@ const CHANNELS: ChannelCfg[] = [
     name:            'SF Trades (Pavan)',
     watermarkKey:    'tg_last_trade_id_sf_pavan',
     source:          'sf_pavan',
-    tradeEnabled:    true,   // HIGHEST PRIORITY — curated paid signals, execute always
-    skipSpamFilter:  true,   // trusted paid channel — never spam-filter
+    tradeEnabled:    true,    // HIGHEST PRIORITY — curated paid signals, execute always
+    schwabEnabled:   false,   // paper-only for now — observe pattern before risking real money
+    skipSpamFilter:  true,    // trusted paid channel — never spam-filter
     signalStyle:     `Pavan Sailesh's SF Essential Trades — exclusive paid US equity alerts.
 
 Primary entry format:
@@ -117,7 +119,7 @@ Follow-up / update messages (same Trade Id):
   "ALAB 450$ now. My profit shares are up almost 400%..."  → learn (context)
 
 Always extract ticker + direction. 'Trade Id' messages are ALWAYS BUY signals (confidence=90) unless message says sell/trim/exit. Never classify a Trade Id message as ignore.`,
-    relayEnabled:    false,  // poll-sf handles relay separately
+    relayEnabled:    false,   // poll-sf handles relay separately — no duplication here
   }] : []),
   // ── Public SF Essential Trades (macro context, learn only) ───────────────────
   {
@@ -126,6 +128,7 @@ Always extract ticker + direction. 'Trade Id' messages are ALWAYS BUY signals (c
     watermarkKey:    'tg_last_msg_id',
     source:          'sf_essential_trades',
     tradeEnabled:    false,   // muted — macro/learn context only
+    schwabEnabled:   false,
     skipSpamFilter:  false,
     signalStyle:     'General US equity and macro commentary. May contain watchlists, sector views, earnings previews.',
     relayEnabled:    false,
@@ -136,6 +139,7 @@ Always extract ticker + direction. 'Trade Id' messages are ALWAYS BUY signals (c
     watermarkKey:    'tg_last_msg_id_us_equities',
     source:          'us_equities',
     tradeEnabled:    true,
+    schwabEnabled:   true,    // US Equities: execute on Schwab live when confidence >= gate
     skipSpamFilter:  true,    // curated channel — skip generic spam regex, trust every message
     signalStyle:     'US equity trading signals. Format: "Buy TICKER at PRICE SL PRICE target PRICE" or "Watch TICKER near PRICE" or momentum callouts like "INTC AMD moving — entry near X". Also posts earnings previews, watchlists, and "X% up today" momentum alerts. Act on explicit BUY/SELL entries; learn from watchlist and momentum callouts.',
     relayEnabled:    true,   // forward every raw message to relay group as-is
@@ -146,6 +150,7 @@ Always extract ticker + direction. 'Trade Id' messages are ALWAYS BUY signals (c
     watermarkKey:    'tg_last_msg_id_jimmy_trades',
     source:          'jimmy_trades',
     tradeEnabled:    true,    // crypto signals → equity proxies via INDEX_MAP (XRP→COIN, BTC→MSTR, etc.)
+    schwabEnabled:   true,
     skipSpamFilter:  true,    // curated channel — skip generic spam regex
     signalStyle:     'Crypto futures signals, occasionally US equities. Crypto format: "XRPUSDT LONG entry 0.22 SL 0.21 TP 0.25" or "XRP long, entry X SL Y". Equity format: "Buy TICKER at X SL Y". Also posts "if you entered the trade, TP hit" updates — classify those as exit or learn. Always extract the ticker and direction; the system maps crypto → equity proxies automatically.',
     relayEnabled:    false,
@@ -702,9 +707,10 @@ export async function GET(req: Request) {
         })
       }
 
-      // ── SCHWAB LIVE (parallel, active channels only) ──────────────────────────
+      // ── SCHWAB LIVE (only if channel has schwabEnabled=true) ─────────────────
+      // SF Pavan is paper-only until pattern is proven. US Equities + Jimmy → Schwab enabled.
       let schwabNote = ''
-      if (signal.action === 'BUY' && !afterHours && signal.confidence >= schwabProfile.min_confidence) {
+      if (ch.schwabEnabled && signal.action === 'BUY' && !afterHours && signal.confidence >= schwabProfile.min_confidence) {
         try {
           const [schwabPositions, schwabBalance] = await Promise.all([Schwab.getPositions(), Schwab.getAccountBalance()])
           const schwabEquity = schwabBalance ?? 2000
