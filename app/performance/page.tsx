@@ -67,6 +67,7 @@ function inferSource(strategy: string | null, reason: string | null): string {
   const s = strategy?.toUpperCase() ?? ''
   const r = reason?.toLowerCase() ?? ''
   if (s.includes('OPTION') || s.includes('SPREAD') || s.includes('BULL_PUT')) return 'Options'
+  if (r.includes('sf trades (pavan)') || r.includes('sf_pavan') || r.includes('sf pavan')) return 'SF Trades (Pavan)'
   if (r.includes('tg') || r.includes('telegram') || s.includes('TG_')) return 'Telegram'
   if (s.includes('SURGE') || s.includes('MOMENTUM')) return 'Momentum Surge'
   if (s.includes('EMA') || s.includes('BOUNCE') || s.includes('PULLBACK')) return 'EMA Scanner'
@@ -77,6 +78,7 @@ function inferSource(strategy: string | null, reason: string | null): string {
 }
 
 const SOURCE_COLOR: Record<string, string> = {
+  'SF Trades (Pavan)': '#ffd600',  // gold — highest priority channel
   'Telegram':       '#29b6f6',
   'Momentum Surge': '#ab47bc',
   'EMA Scanner':    '#13c98e',

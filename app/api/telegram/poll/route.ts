@@ -3,9 +3,11 @@
  * through the signal parser → Alpaca Paper + Schwab Live execution.
  * Called by Vercel cron every minute, 24/7 — signals logged for learning any time.
  *
- * Channels:
- *  - SF Essential Trades (-1002381909837): LEARN ONLY — muted, no trade execution
- *  - US Equities (@OptionT1):              ACTIVE — full trade execution
+ * Channels (in priority order):
+ *  - SF Trades (Pavan exclusive paid): HIGHEST PRIORITY — full trade execution
+ *  - US Equities (@OptionT1):          ACTIVE — full trade execution
+ *  - Jimmy Trader's Life:              ACTIVE — crypto-mapped execution
+ *  - SF Essential Trades (public):     LEARN ONLY — muted, no trade execution
  */
 
 export const runtime = 'nodejs'
@@ -86,7 +88,38 @@ function resolveSymbol(sym: string): string {
   return INDEX_MAP[sym.toUpperCase()] ?? sym.toUpperCase()
 }
 
+const SF_PAVAN_ID: string | number = (() => {
+  const raw = process.env.TELEGRAM_SF_TRADES_CHANNEL_ID ?? ''
+  const n = parseInt(raw)
+  return isNaN(n) ? raw : n
+})()
+
 const CHANNELS: ChannelCfg[] = [
+  // ── HIGHEST PRIORITY: Pavan's exclusive paid channel ─────────────────────────
+  // Separate watermark from poll-sf relay (tg_last_msg_id_sf_trades) so the two
+  // pollers are fully independent — relay copies everything, this one trades.
+  ...(SF_PAVAN_ID ? [{
+    id:              SF_PAVAN_ID,
+    name:            'SF Trades (Pavan)',
+    watermarkKey:    'tg_last_trade_id_sf_pavan',
+    source:          'sf_pavan',
+    tradeEnabled:    true,   // HIGHEST PRIORITY — curated paid signals, execute always
+    skipSpamFilter:  true,   // trusted paid channel — never spam-filter
+    signalStyle:     `Pavan Sailesh's SF Essential Trades — exclusive paid US equity alerts.
+
+Primary entry format:
+  "Trade Id : XXXXX, MM/DD: Buying TICKER at PRICE With SL of PRICE Which has max risk of X.XX% for purchase type as: Trade."
+  → Extract: action=BUY, symbol=TICKER, entry_price=PRICE, stop_loss=SL, confidence=90
+
+Follow-up / update messages (same Trade Id):
+  "TICKER is an early trade cmp is PRICE... keep a buy order or alert below PRICE"  → classify as learn
+  "TICKER TP hit" / "TICKER booked" / "book profits on TICKER" / "TICKER stop hit"  → classify as exit
+  "ALAB 450$ now. My profit shares are up almost 400%..."  → learn (context)
+
+Always extract ticker + direction. 'Trade Id' messages are ALWAYS BUY signals (confidence=90) unless message says sell/trim/exit. Never classify a Trade Id message as ignore.`,
+    relayEnabled:    false,  // poll-sf handles relay separately
+  }] : []),
+  // ── Public SF Essential Trades (macro context, learn only) ───────────────────
   {
     id:              parseInt(process.env.TELEGRAM_CHANNEL_ID ?? '-1002381909837'),
     name:            'SF Essential Trades',
