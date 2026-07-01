@@ -107,9 +107,9 @@ async function runClose(
         shouldExit = true
         exitReason = `DAY EXIT (overnight hold not intended)`
       }
-      // Flat recycler: stuck between -2% and +2.5% for 2+ days — dead capital
+      // Flat recycler: stuck between -2% and +2.5% for 3+ days — dead capital
       // SKIP for trend positions — they may be basing before next leg up
-      if (!shouldExit && !isTrend && !isSameDay && holdDays >= 2 && pos.pnl_pct > -2 && pos.pnl_pct < 2.5) {
+      if (!shouldExit && !isTrend && !isSameDay && holdDays >= 3 && pos.pnl_pct > -2 && pos.pnl_pct < 2.5) {
         shouldExit = true
         exitReason = `FLAT RECYCLE (${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% after ${holdDays}d — redeploying capital)`
       }
@@ -117,11 +117,16 @@ async function runClose(
 
     if (isPreClose) {
       // Cut losers held 3+ days — these aren't recovering.
-      // Trend positions get a wider loss bar (-5%) before we cut them — they need more room.
-      const lossBar = isTrend ? -5 : -2
+      // Trend positions: graduated loss bar so SNDK runners get room to consolidate.
+      //   - Days 3-6 (new trend): -5% — catch bad entries quickly
+      //   - Days 7+  (established): -8% — allow normal pullback before next leg
+      // Swing positions: -2% after 3 days (tight, fast recycling)
+      const lossBar = isTrend
+        ? (holdDays >= 7 ? -8 : -5)
+        : -2
       if (!isSameDay && holdDays >= 3 && pos.pnl_pct < lossBar) {
         shouldExit = true
-        exitReason = `PRE-CLOSE CUT: ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d${isTrend ? ' [trend -5% bar]' : ''}`
+        exitReason = `PRE-CLOSE CUT: ${pos.pnl_pct.toFixed(1)}% after ${holdDays}d${isTrend ? ` [trend ${lossBar}% bar, ${holdDays}d]` : ''}`
       }
       // Winners of any size: let trailing stop manage the exit.
       // No arbitrary cap — a +22% position with a tight trail could go to +40%.
