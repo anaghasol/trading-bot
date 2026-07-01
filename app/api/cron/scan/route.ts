@@ -113,6 +113,34 @@ async function runScan(
   // take effect next scan cycle without a code deploy
   const runtimeCfg = await getRuntimeConfig(broker)
 
+  // AI trading stance — Groq intelligence cron writes every 20 min.
+  // Provides dynamic confidence delta, risk delta, focus/avoid symbols.
+  // Stale after 45 min to prevent a frozen stance from blocking trading all day.
+  let aiStance: {
+    stance?: string
+    confidence_delta?: number
+    risk_delta?: number
+    max_positions_cap?: number | null
+    focus_symbols?: string[]
+    avoid_symbols?: string[]
+    reasoning?: string
+    set_at?: string
+  } | null = null
+  try {
+    const { data: stanceRow } = await db.from('tb_settings').select('value').eq('key', 'ai_trading_stance').single()
+    if (stanceRow?.value) {
+      const parsed = JSON.parse(stanceRow.value)
+      const ageMin = (Date.now() - new Date(parsed.set_at ?? 0).getTime()) / 60_000
+      if (ageMin < 45) {
+        aiStance = parsed
+        if (aiStance?.stance === 'pause') {
+          return { trades_made: 0, message: `[${broker}] AI intelligence: PAUSE — ${aiStance.reasoning ?? 'risk too high'}` }
+        }
+        console.log(`[${broker}] AI stance: ${aiStance?.stance} | Δconf=${aiStance?.confidence_delta ?? 0} | Δrisk=${aiStance?.risk_delta ?? 0} | avoid=${aiStance?.avoid_symbols?.join(',') ?? 'none'}`)
+      }
+    }
+  } catch { /* non-fatal — trade without stance if Supabase hiccup */ }
+
   // Strategy boost: Growth page can temporarily boost one strategy for 48h.
   // Reads tb_settings 'strategy_boost' → { name, mult, expires_at }
   let stratBoost: { name: string; mult: number } | null = null
@@ -380,6 +408,14 @@ async function runScan(
     console.log(`[${broker}] Recovery caps applied: maxPos=${dynamicMaxPos} gate=${dynamicMinConf}%`)
   }
 
+  // Apply AI stance adjustments — confidence_delta RAISES or LOWERS the gate,
+  // risk_delta is saved for sizing. Applied after recovery caps so safety floors hold.
+  if (aiStance?.confidence_delta) {
+    // Negative delta = more selective (raise gate). Positive = more permissive.
+    dynamicMinConf = Math.max(isSchwab ? 55 : 18, dynamicMinConf - aiStance.confidence_delta)
+    console.log(`[${broker}] AI stance '${aiStance.stance}': gate adjusted by ${aiStance.confidence_delta > 0 ? '+' : ''}${aiStance.confidence_delta} → ${dynamicMinConf}%`)
+  }
+
   // Optional position cap from dashboard settings (set schwab_max_pos=2 for cautious first-week start).
   // Applies on top of the regime cap — never overrides downward protection, only adds a tighter ceiling.
   if (isSchwab) {
@@ -461,11 +497,19 @@ async function runScan(
     'DPST','DRN','DRV','NAIL','WEBL','WEBS',
   ])
 
+  // AI stance: avoid list + position cap override (applied before ranking)
+  const aiAvoidSymbols = new Set(aiStance?.avoid_symbols ?? [])
+  const aiFocusSymbols = new Set(aiStance?.focus_symbols ?? [])
+  if (aiStance?.max_positions_cap != null) {
+    dynamicMaxPos = Math.min(dynamicMaxPos, aiStance.max_positions_cap)
+  }
+
   const rankedPre = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
     .filter((r) => !avoidSymbols.has(r.symbol))    // channel said avoid — never enter
     .filter((r) => !BANNED_TICKERS.has(r.symbol))  // leveraged/inverse ETFs — permanently banned
     .filter((r) => !churnedToday.has(r.symbol))    // already bought 2× today — daily re-entry cap
+    .filter((r) => !aiAvoidSymbols.has(r.symbol))  // AI stance: losing/churning symbols blocked
     .map((r) => {
       const rawBias = biasForSymbol(r.symbol, rotation)
       const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias
@@ -487,8 +531,9 @@ async function runScan(
       const supercycleBoost = supercycleSymbols.has(r.symbol) ? 12 : 0  // strong: weekly RS+200MA confirmed
       const hotlistBoost    = hotlistSymbols.has(r.symbol)    ? 12 : 0  // strong: today's hot mover by volume
       const reentryBoost    = recentStopSymbols.has(r.symbol) ? 5 : 0   // re-entry bump
+      const aiFocusBoost    = aiFocusSymbols.has(r.symbol)    ? 10 : 0  // AI stance: today's winners showing momentum
 
-      const totalBoost = intentBoost + supercycleBoost + hotlistBoost + reentryBoost
+      const totalBoost = intentBoost + supercycleBoost + hotlistBoost + reentryBoost + aiFocusBoost
       const finalConf  = Math.min(100, r.confidence + totalBoost)
       if (totalBoost > 0 || tgSymbols.has(r.symbol) || tgWatchSymbols.has(r.symbol) || supercycleSymbols.has(r.symbol)) {
         const sigLabels = [
@@ -496,6 +541,7 @@ async function runScan(
           supercycleSymbols.has(r.symbol) ? 'SC✓' : '',
           hotlistSymbols.has(r.symbol) ? 'HL✓' : '',
           recentStopSymbols.has(r.symbol) ? 'RE✓' : '',
+          aiFocusSymbols.has(r.symbol)    ? 'AI🎯+10' : '',
           intent ? `INTENT(${intent.type})` : '',
         ].filter(Boolean).join(' ')
         console.log(`[SIGNALS] ${r.symbol}: ${sigLabels || 'none'} | claude=${r.confidence}% boost=+${totalBoost} → final=${finalConf}%`)
@@ -766,10 +812,14 @@ async function runScan(
     const trendMult = rec.hold_mode === 'trend' ? 1.5 : 1.0
     const combinedMult = Math.min(convictionMult * boostMult * trendMult, 2.0)
     // Recovery mode: reduce risk per trade to preserve remaining capital.
+    // AI stance risk_delta further adjusts (negative = reduce, positive = expand).
     // Use a shrunken profile copy — don't mutate the real profile object.
+    const stanceRiskAdj = aiStance?.risk_delta ?? 0
     const activeProfile = (recoveryMode && !isSchwab)
-      ? { ...profile, risk_pct: deepRecovery ? profile.risk_pct * 0.5 : profile.risk_pct * 0.67 }
-      : profile
+      ? { ...profile, risk_pct: Math.max(0.3, (deepRecovery ? profile.risk_pct * 0.5 : profile.risk_pct * 0.67) + stanceRiskAdj) }
+      : stanceRiskAdj !== 0
+        ? { ...profile, risk_pct: Math.max(0.3, profile.risk_pct + stanceRiskAdj) }
+        : profile
     const sizing = sleeveSizing(sleeve, activeProfile, equity, quote.price, alloc, bias, combinedMult)
     if (sizing.qty < 1) {
       skipReasons.push(`${rec.symbol}: qty=0 (${sizing.note})`)

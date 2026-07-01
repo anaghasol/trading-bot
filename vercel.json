@@ -61,6 +61,10 @@
       "schedule": "0 11 * * 0"
     },
     {
+      "path": "/api/cron/intelligence",
+      "schedule": "*/20 13-20 * * 1-5"
+    },
+    {
       "path": "/api/cron/hotlist",
       "schedule": "0,30 13-20 * * 1-5"
     },
