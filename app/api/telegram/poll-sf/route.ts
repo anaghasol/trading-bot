@@ -20,7 +20,6 @@ import { StringSession } from 'telegram/sessions'
 import { getStoredSession, saveSession } from '@/lib/telegram-client'
 import { mirrorIfNew, getOrCreateMirrorThread } from '@/lib/telegram-topics'
 import { createServiceClient } from '@/lib/supabase-server'
-import { groqVisionExtract } from '@/lib/groq-vision'
 
 const API_ID     = parseInt(process.env.TELEGRAM_API_ID ?? '0')
 const API_HASH   = process.env.TELEGRAM_API_HASH ?? ''
@@ -162,8 +161,7 @@ export async function GET(req: Request) {
       ? await getOrCreateMirrorThread(srcTopicId, srcTopicName, db)
       : 89  // default: "SF Essential Trades( Buy /Sell Alerts)"
 
-    // Download image, run Groq vision OCR, forward actual image to relay
-    let effectiveText = text
+    // Download image and forward as-is — no OCR, pure mirror
     let imageBuffer: Buffer | undefined
     let imageMime: string | undefined
     if (msg.media) {
@@ -177,13 +175,6 @@ export async function GET(req: Request) {
           if (buffer && buffer.length >= 500 && buffer.length < 5_000_000) {
             imageBuffer = buffer
             imageMime   = isPhoto ? 'image/jpeg' : docMime
-            const dataUrl   = `data:${imageMime};base64,${buffer.toString('base64')}`
-            const prompt    = `Caption: "${text}"\nThis is from SF Essential Trades. Extract any trade signal:\nTICKER: XYZ | ACTION: BUY or SELL or TRIM | PRICE: 0 | STOP: 0\nIf no trade signal, respond: NONE`
-            const ocrResult = await groqVisionExtract(dataUrl, prompt)
-            if (ocrResult && ocrResult !== 'NONE') {
-              effectiveText = effectiveText ? `${effectiveText} | [IMG]: ${ocrResult}` : ocrResult
-              console.log(`[SF_IMG_OCR] msg#${msg.id}: ${ocrResult}`)
-            }
           }
         }
       } catch { /* non-fatal — continue with text-only */ }
@@ -191,7 +182,7 @@ export async function GET(req: Request) {
 
     const relayResult = await mirrorIfNew(
       msg.id, relayThreadId,
-      effectiveText || text || '📸',
+      text || '📸',
       db, senderName, msg.date, imageBuffer, imageMime,
     )
 
