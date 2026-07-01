@@ -116,9 +116,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, channel: 'SF Trades', new: 0, checked: messages.length })
   }
 
-  const maxId = Math.max(...newMsgs.map(m => m.id))
-  await db.from('tb_settings').upsert({ key: WATERMARK_KEY, value: String(maxId) })
-
   // Discover Pavan's forum topics on first run, cache in Supabase
   let pavanTopics: Record<number, string> = {}
   try {
@@ -138,6 +135,7 @@ export async function GET(req: Request) {
   } catch { /* non-fatal — defaults to thread 89 */ }
 
   const results: { id: number; type: string }[] = []
+  let maxDeliveredId = lastId  // only advance watermark for confirmed deliveries
 
   for (const msg of newMsgs) {
     const text = msg.text ?? ''
@@ -187,13 +185,22 @@ export async function GET(req: Request) {
     )
 
     if (relayResult === 'sent') {
+      maxDeliveredId = Math.max(maxDeliveredId, msg.id)
       await db.from('tb_settings').upsert({ key: 'tg_sf_relay_last_msg', value: new Date().toISOString() }).then(() => {}, () => {})
+    } else if (relayResult === 'duplicate') {
+      maxDeliveredId = Math.max(maxDeliveredId, msg.id)  // already sent, safe to advance
     }
+    // 'error' → do NOT advance watermark — will retry next run
 
     results.push({
       id:   msg.id,
-      type: relayResult === 'duplicate' ? 'duplicate_skip' : `mirrored:${srcTopicName.slice(0, 20)}`,
+      type: relayResult === 'duplicate' ? 'duplicate_skip' : relayResult === 'error' ? `error:${srcTopicName.slice(0, 15)}` : `mirrored:${srcTopicName.slice(0, 20)}`,
     })
+  }
+
+  // Write watermark only up to the last successfully delivered message
+  if (maxDeliveredId > lastId) {
+    await db.from('tb_settings').upsert({ key: WATERMARK_KEY, value: String(maxDeliveredId) })
   }
 
   await client.disconnect().catch(() => {})
