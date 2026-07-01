@@ -137,7 +137,7 @@ export async function GET(req: Request) {
     const minutesPastOpen = (h - 9) * 60 + parseInt(etMin, 10)
     // Only alert if we're at least 20 min into the trading day — first health tick of
     // the day fires at 9:00 AM ET before the crons have had a chance to run.
-    const isMarketHours = h >= 9 && h < 16 && minutesPastOpen >= 20
+    const isMarketHours = h >= 9 && h < 16 && minutesPastOpen >= 35
 
     if (isMarketHours && scanAgeMin > 25) {
       issues.push(`SCAN CRON SILENT: last fired ${scanAgeMin}m ago (expected every 10m)`)

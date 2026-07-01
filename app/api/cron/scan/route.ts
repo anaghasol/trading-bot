@@ -915,7 +915,11 @@ async function runScan(
 
 export async function GET(req: Request) {
   if (!authorized(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  if (!isMarketOpen()) return NextResponse.json({ status: 'skipped', reason: 'market_closed' })
+  if (!isMarketOpen()) {
+    const db = createServiceClient()
+    await db.from('tb_cron_log').insert({ job: 'scan', status: 'skipped', trades_made: 0, message: 'market_closed' }).then(() => {}, () => {})
+    return NextResponse.json({ status: 'skipped', reason: 'market_closed' })
+  }
 
   const db = createServiceClient()
   const engines = await getEngineStatus(db)
