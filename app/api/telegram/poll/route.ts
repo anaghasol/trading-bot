@@ -374,6 +374,22 @@ export async function GET(req: Request) {
       const signal = await parseSignal(text, ch.name, ch.signalStyle)
       if (signal.type === 'ignore') return { id: msg.id, type: 'ignore' }
 
+      // Normalize LONG→BUY and SHORT→SELL (some channels use futures-style language)
+      if ('action' in signal && signal.action) {
+        const a = String(signal.action).toUpperCase()
+        if (a === 'LONG')  (signal as unknown as Record<string, unknown>).action = 'BUY'
+        if (a === 'SHORT') (signal as unknown as Record<string, unknown>).action = 'SELL'
+      }
+
+      // Reject symbols that can't be valid US equity tickers (numbers, spaces, too long)
+      if ((signal.type === 'trade' || signal.type === 'exit') && 'symbol' in signal && signal.symbol) {
+        const sym = String(signal.symbol)
+        if (!/^[A-Z]{1,6}$/.test(sym)) {
+          await tgSend(`⚠️ *Skip ${sym}* (${ch.name}) — invalid ticker format, ignoring signal`)
+          return { id: msg.id, type: 'skip_bad_symbol', symbol: sym }
+        }
+      }
+
       // Resolve index/commodity symbols → ETF for TRADE and EXIT signals
       if ((signal.type === 'trade' || signal.type === 'exit') && 'symbol' in signal && signal.symbol) {
         const resolved = resolveSymbol(signal.symbol)
@@ -699,15 +715,15 @@ export async function GET(req: Request) {
           await placeStopOrder(signal.symbol, qty, stopPrice).catch(() => {})
         }
 
-        await db.from('tb_trades').insert({
+        const { error: insertErr } = await db.from('tb_trades').insert({
           symbol: signal.symbol, broker: 'alpaca_paper', action: 'BUY',
           quantity: qty, entry_price: livePrice ?? 0,
-          stop_loss: stopPrice ?? 0,
           target_price: signal.target ?? null, confidence: signal.confidence,
           status: 'OPEN', order_id: order.order_id ?? null,
           // tg_trade=1 → monitor/close/health follow signal's SL only, not internal rules
           reason: `TG: ${ch.name} | stop=$${stopPrice ?? 0} | hold_mode=swing | tg_trade=1`,
         })
+        if (insertErr) console.error(`[TG] tb_trades insert failed for ${signal.symbol}: ${insertErr.message}`)
       }
 
       // ── SCHWAB LIVE (only if channel has schwabEnabled=true) ─────────────────
@@ -728,14 +744,14 @@ export async function GET(req: Request) {
 
             if (schwabOrder.status === 'PLACED') {
               const schwabStop = stopPrice ?? (livePrice ? Math.round(livePrice * (1 - schwabProfile.initial_stop_pct) * 100) / 100 : null)
-              await db.from('tb_trades').insert({
+              const { error: schwabInsertErr } = await db.from('tb_trades').insert({
                 symbol: signal.symbol, broker: 'schwab', action: 'BUY',
                 quantity: schwabQty, entry_price: livePrice ?? 0,
-                stop_loss: schwabStop ?? 0,
                 target_price: signal.target ?? null, confidence: signal.confidence,
                 status: 'OPEN', order_id: schwabOrder.order_id ?? null,
-                reason: `TG: ${ch.name} (live) | stop=$${stopPrice ?? 0} | hold_mode=swing | tg_trade=1`,
+                reason: `TG: ${ch.name} (live) | stop=$${schwabStop ?? 0} | hold_mode=swing | tg_trade=1`,
               })
+              if (schwabInsertErr) console.error(`[TG] schwab tb_trades insert failed for ${signal.symbol}: ${schwabInsertErr.message}`)
               schwabNote = `\n💰 *Schwab LIVE: BUY ${schwabQty} ${signal.symbol}* · $${((livePrice ?? 0) * schwabQty).toFixed(0)}`
             }
           } else {

@@ -197,13 +197,8 @@ export async function mirrorIfNew(
 
   let ok: boolean
   if (imageBuffer && imageMime) {
-    // Send image with caption — richer than text-only mirror
+    // Send image — caption is the full message text (pure mirror, no OCR appended)
     ok = await sendImageToThread(threadId, imageBuffer, imageMime, text || '📸', senderName, originalTs)
-    // Also send text separately if there's substantial text beyond just the OCR tag
-    const pureText = text.replace(/\s*\|\s*\[IMG\]:.*$/, '').trim()
-    if (ok && pureText && pureText.length > 5) {
-      await sendToThread(threadId, pureText, senderName, originalTs).catch(() => {})
-    }
   } else {
     ok = await sendToThread(threadId, text, senderName, originalTs)
   }
