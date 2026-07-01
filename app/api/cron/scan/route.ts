@@ -177,15 +177,48 @@ async function runScan(
   const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
   const { data: todayClosedRows } = await db
     .from('tb_trades')
-    .select('pnl')
+    .select('pnl, symbol')
     .eq('status', 'CLOSED')
     .gte('closed_at', todayStart)
     .or(isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper')
   const dailyPnl = (todayClosedRows ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
 
-  // Daily-loss breaker: enforced on real money (Schwab); paper lab runs looser.
+  // Daily-loss breaker: Schwab uses standard risk.ts threshold.
+  // Paper uses mode-aware threshold: -8% in deep recovery, -10% in recovery, -12% normal.
+  // Catches runaway loss days before they compound — today's -14% loss day was the trigger.
   if (isSchwab && isDailyLossExceeded(dailyPnl, equity)) {
     return { trades_made: 0, message: `[${broker}] Daily loss limit hit (realized today: $${dailyPnl.toFixed(2)})` }
+  }
+  if (!isSchwab) {
+    const paperLossPct = deepRecovery ? 0.08 : recoveryMode ? 0.10 : 0.12
+    if (dailyPnl / equity <= -paperLossPct) {
+      return { trades_made: 0, message: `[${broker}] Paper daily loss breaker: ${(dailyPnl / equity * 100).toFixed(1)}% (limit −${(paperLossPct * 100).toFixed(0)}%)` }
+    }
+  }
+
+  // Per-symbol daily re-entry cap: max 2 buys of the same symbol per day.
+  // Prevents SURGE churn loops (PLTR 12×, BE 13× in one session = death by a thousand cuts).
+  const { data: todayBuyRows } = await db
+    .from('tb_trades')
+    .select('symbol')
+    .eq('action', 'BUY')
+    .gte('created_at', todayStart)
+    .or(isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper')
+  const todayBuyCount = new Map<string, number>()
+  for (const r of todayBuyRows ?? []) {
+    const sym = r.symbol as string
+    todayBuyCount.set(sym, (todayBuyCount.get(sym) ?? 0) + 1)
+  }
+  const churnedToday = new Set<string>(
+    Array.from(todayBuyCount.entries()).filter(([, n]) => n >= 2).map(([s]) => s)
+  )
+
+  // Max daily new-position cap: paper max 20 buys/day; Schwab max 5.
+  // 80 entries in one day (today's incident) is never acceptable.
+  const maxDailyBuys = isSchwab ? 5 : 20
+  const totalBuysToday = Array.from(todayBuyCount.values()).reduce((a, b) => a + b, 0)
+  if (totalBuysToday >= maxDailyBuys) {
+    return { trades_made: 0, message: `[${broker}] Daily trade cap reached (${totalBuysToday}/${maxDailyBuys} buys today)` }
   }
 
   // Macro bearish gate: if channel advisor said "hold off on new purchases" within last 18h, pause entries
@@ -430,8 +463,9 @@ async function runScan(
 
   const rankedPre = recommendations
     .filter((r) => !heldSymbols.includes(r.symbol))
-    .filter((r) => !avoidSymbols.has(r.symbol))   // channel said avoid — never enter
-    .filter((r) => !BANNED_TICKERS.has(r.symbol)) // leveraged/inverse ETFs — permanently banned
+    .filter((r) => !avoidSymbols.has(r.symbol))    // channel said avoid — never enter
+    .filter((r) => !BANNED_TICKERS.has(r.symbol))  // leveraged/inverse ETFs — permanently banned
+    .filter((r) => !churnedToday.has(r.symbol))    // already bought 2× today — daily re-entry cap
     .map((r) => {
       const rawBias = biasForSymbol(r.symbol, rotation)
       const bias = !isSchwab && rawBias === 0 ? 0.4 : rawBias
