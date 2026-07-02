@@ -236,28 +236,47 @@ async function analyzeBroker(
   const patch: Partial<RuntimeConfig> = {}
   const changes: string[] = []
 
-  const minConf  = profile.min_confidence  // floor (integer scale: 36 = 36%)
-  const maxConf  = 85                      // ceiling 85% — was 0.85 (fraction/integer mismatch bug)
+  const minConf = profile.min_confidence  // floor (e.g. 42 for paper)
+  // Paper ceiling 55%: quality gate is RS/research/volume filters, not AI confidence.
+  // At 85% the tuner kills all entries (<5/day) then oscillates — today's exact failure.
+  // Schwab ceiling stays at 85% (real money needs tighter AI gate).
+  const maxConf = broker === 'alpaca_paper' ? 55 : 85
 
   // Each handler must read from patch (accumulated) not config (original).
-  // Without this, POOR_WIN_RATE writes 41, then LOW_PROFIT_FACTOR reads 36 and
-  // overwrites with 46 — the +5pp WR correction is silently discarded.
   const curConf  = () => patch.min_confidence ?? config.min_confidence
   const curStop  = () => patch.stop_pct       ?? config.stop_pct
   const curTrail = () => patch.trail_pct      ?? config.trail_pct
   const curMax   = () => patch.max_positions  ?? config.max_positions
 
+  // Track conflicting signals — if both LOW_ENTRY_RATE and LOW_PROFIT_FACTOR fire,
+  // they fight each other and the gate never moves. Skip confidence adjustment in that
+  // case and let the AI intelligence cron handle quality via avoid/focus lists instead.
+  const hasLowEntries = issues.some(i => i.code === 'LOW_ENTRY_RATE' || i.code === 'ZERO_ENTRIES')
+  const hasBadPF      = issues.some(i => i.code === 'LOW_PROFIT_FACTOR' || i.code === 'POOR_WIN_RATE')
+  const conflicting   = hasLowEntries && hasBadPF
+
   for (const issue of issues) {
     if (issue.code === 'LOW_ENTRY_RATE') {
-      const before = curConf()
-      const newConf = Math.max(minConf, Math.min(maxConf, before - 5))
-      if (newConf !== before) {
-        patch.min_confidence = newConf
-        changes.push(`min_confidence ${before}% → ${newConf}% (too few entries)`)
+      if (conflicting) {
+        // Conflicting signal: gate is already too high AND PF is bad.
+        // Don't oscillate — lower stop_pct slightly so positions risk less per trade.
+        const before = curStop()
+        const newStop = Math.min(0.05, before + 0.003)  // widen stop (fewer premature fires)
+        if (newStop !== before) {
+          patch.stop_pct = newStop
+          changes.push(`stop_pct ${(before * 100).toFixed(1)}% → ${(newStop * 100).toFixed(1)}% (conflicting: low entries + bad PF → widen stop)`)
+        }
+      } else {
+        const before = curConf()
+        const newConf = Math.max(minConf, Math.min(maxConf, before - 5))
+        if (newConf !== before) {
+          patch.min_confidence = newConf
+          changes.push(`min_confidence ${before}% → ${newConf}% (too few entries)`)
+        }
       }
     }
 
-    if (issue.code === 'POOR_WIN_RATE') {
+    if (issue.code === 'POOR_WIN_RATE' && !conflicting) {
       const before = curConf()
       const newConf = Math.max(minConf, Math.min(maxConf, before + 5))
       if (newConf !== before) {
@@ -284,11 +303,13 @@ async function analyzeBroker(
       }
     }
 
-    if (issue.code === 'LOW_PROFIT_FACTOR') {
+    if (issue.code === 'LOW_PROFIT_FACTOR' && !conflicting) {
+      // Only raise gate if we have enough entries to draw conclusions (not starved for data).
       const beforeConf = curConf()
       const beforeStop = curStop()
-      const newConf = Math.max(minConf, Math.min(maxConf, beforeConf + 10))
-      const newStop = Math.max(0.015, Math.min(0.05, beforeStop - 0.003))
+      // Smaller step (+5pp not +10pp) — large jumps cause oscillation
+      const newConf = Math.max(minConf, Math.min(maxConf, beforeConf + 5))
+      const newStop = Math.max(0.015, Math.min(0.05, beforeStop - 0.002))
       if (newConf !== beforeConf) {
         patch.min_confidence = newConf
         changes.push(`min_confidence ${beforeConf}% → ${newConf}% (PF=${profitFactor.toFixed(2)})`)
