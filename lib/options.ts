@@ -348,3 +348,241 @@ export async function closeOptionPosition(symbol: string, qty: number, side: 'bu
     return false
   }
 }
+
+// ── Wheel Strategy ────────────────────────────────────────────────────────────
+// Phase 1: Sell Cash-Secured Puts (CSP) — collect premium + potentially buy stock cheap
+// Phase 2: If assigned / simulated assignment → sell Covered Calls (CC)
+// Phase 3: If called away → restart CSP cycle
+//
+// PAPER ONLY. Tracked in tb_trades with strategy='WHEEL_CSP' | 'WHEEL_CC' | 'WHEEL_STOCK'
+
+export interface CashSecuredPut {
+  underlying: string
+  current_price: number
+  contract: OptionsContract
+  strike: number
+  expiration: string
+  dte: number
+  premium: number          // per share
+  premium_pct: number      // premium / strike
+  max_risk_dollars: number // strike × 100 × contracts (cash secured)
+  contracts: number
+  breakeven: number        // strike − premium
+  cash_required: number    // strike × 100 × contracts
+}
+
+export interface CoveredCall {
+  underlying: string
+  current_price: number
+  contract: OptionsContract
+  strike: number
+  expiration: string
+  dte: number
+  premium: number          // per share
+  premium_pct: number      // premium / current_price
+  contracts: number        // matches shares / 100
+}
+
+/**
+ * Fetch OTM call options 21-45 DTE for covered call selling.
+ * Filters to strikes 100-115% of current price (0-15% OTM).
+ */
+export async function getCallChain(symbol: string, currentPrice: number): Promise<OptionsContract[]> {
+  try {
+    const today  = new Date()
+    const minExp = new Date(today.getTime() + 21 * 86_400_000).toISOString().split('T')[0]
+    const maxExp = new Date(today.getTime() + 45 * 86_400_000).toISOString().split('T')[0]
+    const minStrike = (currentPrice * 1.00).toFixed(2)
+    const maxStrike = (currentPrice * 1.15).toFixed(2)
+
+    const url  = `${PAPER_BASE}/options/contracts?underlying_symbols=${symbol}&type=call`
+             + `&expiration_date_gte=${minExp}&expiration_date_lte=${maxExp}`
+             + `&strike_price_gte=${minStrike}&strike_price_lte=${maxStrike}&limit=100`
+    const res = await fetch(url, { headers: hdr(), signal: AbortSignal.timeout(8000) })
+    if (!res.ok) return []
+    const data = await res.json() as { option_contracts: OptionsContract[] }
+    return (data.option_contracts ?? []).sort((a, b) =>
+      new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime()
+    )
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Select the best Cash-Secured Put for the Wheel.
+ * Target: 5-8% OTM, 21-45 DTE, premium ≥ 0.5% of strike per month.
+ * cashAvailable: how much free cash is in the account.
+ */
+export function buildCashSecuredPut(
+  symbol: string,
+  currentPrice: number,
+  chain: OptionsContract[],
+  cashAvailable: number,
+  maxCashPct = 0.15,   // max 15% of account cash per position
+  hv30 = 40,
+): CashSecuredPut | null {
+  if (chain.length === 0) return null
+
+  const seen = new Set<string>()
+  const expiries = chain.map((c) => c.expiration_date)
+    .filter((d) => { if (seen.has(d)) return false; seen.add(d); return true }).sort()
+
+  for (const expiry of expiries) {
+    const dte = Math.round((new Date(expiry + 'T16:00:00-05:00').getTime() - Date.now()) / 86_400_000)
+    if (dte < 21 || dte > 45) continue
+
+    const slice = chain.filter((c) => c.expiration_date === expiry)
+
+    // Target 5-8% OTM (92-95% of price)
+    const targetStrike = currentPrice * 0.935
+    const candidates = slice
+      .filter((c) => c.strike_price >= currentPrice * 0.90 && c.strike_price <= currentPrice * 0.95)
+      .filter((c) => (c.open_interest ?? 0) > 5)
+      .sort((a, b) => Math.abs(a.strike_price - targetStrike) - Math.abs(b.strike_price - targetStrike))
+
+    if (!candidates.length) continue
+    const contract = candidates[0]
+
+    const premium = contract.bid_price != null
+      ? (contract.bid_price + (contract.ask_price ?? contract.bid_price)) / 2
+      : (contract.close_price ?? bsEstimatePut(currentPrice, contract.strike_price, dte, hv30 / 100))
+
+    if (premium <= 0) continue
+
+    const premiumPct = premium / contract.strike_price
+    // Require at least 0.4% per month (annualized ~5%) — enough to justify the capital tie-up
+    if (premiumPct * (30 / dte) < 0.004) continue
+
+    const cashPerContract = contract.strike_price * 100
+    const maxCash = cashAvailable * maxCashPct
+    const contracts = Math.max(1, Math.floor(maxCash / cashPerContract))
+
+    // Never tie up more than maxCashPct of available cash
+    if (cashPerContract > cashAvailable * 0.20) continue
+
+    return {
+      underlying:      symbol,
+      current_price:   currentPrice,
+      contract,
+      strike:          contract.strike_price,
+      expiration:      expiry,
+      dte,
+      premium,
+      premium_pct:     premiumPct,
+      max_risk_dollars: (contract.strike_price - premium) * 100 * contracts,
+      contracts,
+      breakeven:       contract.strike_price - premium,
+      cash_required:   cashPerContract * contracts,
+    }
+  }
+
+  return null
+}
+
+/**
+ * Select the best Covered Call for post-assignment stock.
+ * Target: 5-10% OTM, 21-30 DTE — generate income while holding stock.
+ * sharesOwned: number of shares held (contracts = floor(shares / 100))
+ */
+export function buildCoveredCall(
+  symbol: string,
+  currentPrice: number,
+  chain: OptionsContract[],
+  sharesOwned: number,
+  hv30 = 40,
+): CoveredCall | null {
+  const contracts = Math.floor(sharesOwned / 100)
+  if (contracts === 0 || chain.length === 0) return null
+
+  const seen = new Set<string>()
+  const expiries = chain.map((c) => c.expiration_date)
+    .filter((d) => { if (seen.has(d)) return false; seen.add(d); return true }).sort()
+
+  for (const expiry of expiries) {
+    const dte = Math.round((new Date(expiry + 'T16:00:00-05:00').getTime() - Date.now()) / 86_400_000)
+    if (dte < 14 || dte > 35) continue
+
+    const slice = chain.filter((c) => c.expiration_date === expiry)
+
+    // Target 5-8% OTM for calls (105-108% of price)
+    const targetStrike = currentPrice * 1.065
+    const candidates = slice
+      .filter((c) => c.strike_price >= currentPrice * 1.03 && c.strike_price <= currentPrice * 1.12)
+      .filter((c) => (c.open_interest ?? 0) > 5)
+      .sort((a, b) => Math.abs(a.strike_price - targetStrike) - Math.abs(b.strike_price - targetStrike))
+
+    if (!candidates.length) continue
+    const contract = candidates[0]
+
+    const bsEstCall = (S: number, K: number, d: number, sigma: number) => {
+      if (sigma <= 0 || d <= 0) return 0
+      const T = d / 365, r = 0.04
+      const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T))
+      const d2 = d1 - sigma * Math.sqrt(T)
+      return Math.max(0, S * normalCDF(d1) - K * Math.exp(-r * T) * normalCDF(d2))
+    }
+
+    const premium = contract.bid_price != null
+      ? (contract.bid_price + (contract.ask_price ?? contract.bid_price)) / 2
+      : (contract.close_price ?? bsEstCall(currentPrice, contract.strike_price, dte, hv30 / 100))
+
+    if (premium <= 0) continue
+
+    return {
+      underlying:    symbol,
+      current_price: currentPrice,
+      contract,
+      strike:        contract.strike_price,
+      expiration:    expiry,
+      dte,
+      premium,
+      premium_pct:   premium / currentPrice,
+      contracts,
+    }
+  }
+
+  return null
+}
+
+/** Place a single-leg options order (sell put or sell call). */
+export async function executeSingleLegSell(
+  occSymbol: string,
+  contracts: number,
+  limitPrice: number,
+): Promise<{ ok: boolean; order_id?: string; error?: string }> {
+  try {
+    const body = {
+      symbol:         occSymbol,
+      qty:            String(contracts),
+      side:           'sell',
+      type:           'limit',
+      limit_price:    limitPrice.toFixed(2),
+      time_in_force:  'day',
+    }
+    const res = await fetch(`${PAPER_BASE}/orders`, {
+      method: 'POST', headers: hdr(), body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      return { ok: false, error: `${res.status}: ${err.slice(0, 120)}` }
+    }
+    const data = await res.json() as { id: string }
+    return { ok: true, order_id: data.id }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+/** Parse DTE from OCC symbol (e.g. NVDA260815P00130000 → 39 days). */
+export function parseDTEFromOCC(occ: string): number {
+  try {
+    const m = occ.match(/[A-Z]+(\d{6})[CP]/)
+    if (!m) return 999
+    const [yy, mm, dd] = [m[1].slice(0, 2), m[1].slice(2, 4), m[1].slice(4, 6)]
+    const expDate = new Date(`20${yy}-${mm}-${dd}T16:00:00-05:00`)
+    return Math.round((expDate.getTime() - Date.now()) / 86_400_000)
+  } catch {
+    return 999
+  }
+}

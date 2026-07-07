@@ -71,6 +71,10 @@
     {
       "path": "/api/cron/fast",
       "schedule": "* 13-20 * * 1-5"
+    },
+    {
+      "path": "/api/cron/wheel",
+      "schedule": "30 15,18 * * 1-5"
     }
   ]
 }
