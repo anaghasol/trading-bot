@@ -311,7 +311,7 @@ export async function GET(req: Request) {
       s.rsi >= 45 &&
       s.change_5d >= -2 &&   // not in hard downtrend
       !s.earnings_soon &&
-      s.price > 15 &&
+      s.price > 20 &&        // need meaningful premium; sub-$20 options have wide spreads
       !existingSymbols.has(s.symbol),
     )
     .sort((a, b) => b.pullback_score - a.pullback_score)

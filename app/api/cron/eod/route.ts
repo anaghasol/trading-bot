@@ -478,6 +478,66 @@ export async function GET(req: Request) {
     }
   }
 
+  // ── Wheel Strategy EOD Summary ───────────────────────────────────────────────
+  if (tgBot && tgChat) {
+    try {
+      const dayStart = today() + 'T00:00:00Z'
+
+      const [closedWheelRes, openWheelRes] = await Promise.all([
+        db.from('tb_trades').select('symbol,strategy,pnl,reason,closed_at')
+          .eq('broker', 'alpaca_paper').eq('status', 'CLOSED')
+          .in('strategy', ['WHEEL_CSP', 'WHEEL_CC'])
+          .gte('closed_at', dayStart),
+        db.from('tb_trades').select('symbol,strategy,entry_price,quantity,created_at,reason')
+          .eq('broker', 'alpaca_paper').eq('status', 'OPEN')
+          .in('strategy', ['WHEEL_CSP', 'WHEEL_CC', 'WHEEL_STOCK']),
+      ])
+
+      const closedWheel = closedWheelRes.data ?? []
+      const openWheel   = openWheelRes.data   ?? []
+
+      // Only send Wheel section if there's any wheel activity
+      if (closedWheel.length > 0 || openWheel.length > 0) {
+        const closedCSPs  = closedWheel.filter((t) => t.strategy === 'WHEEL_CSP')
+        const closedCCs   = closedWheel.filter((t) => t.strategy === 'WHEEL_CC')
+        const assignments = closedWheel.filter((t) =>
+          typeof t.reason === 'string' && t.reason.includes('HARD STOP')
+        )
+
+        const premiumCSP  = closedCSPs.reduce((s, t) => s + Math.abs((t.pnl as number) ?? 0), 0)
+        const premiumCC   = closedCCs.reduce((s, t) => s + Math.abs((t.pnl as number) ?? 0), 0)
+        const totalYield  = premiumCSP + premiumCC
+
+        const openCSPs    = openWheel.filter((t) => t.strategy === 'WHEEL_CSP')
+        const openCCs     = openWheel.filter((t) => t.strategy === 'WHEEL_CC')
+        const stockHolds  = openWheel.filter((t) => t.strategy === 'WHEEL_STOCK')
+
+        const wheelLines: string[] = [
+          ``,
+          `🎡 *Wheel Strategy — ${today()}*`,
+          `Premium collected today: *$${totalYield.toFixed(0)}* (CSP $${premiumCSP.toFixed(0)} + CC $${premiumCC.toFixed(0)})`,
+          `Closed: ${closedCSPs.length} CSP | ${closedCCs.length} CC | ${assignments.length} assignments`,
+          `Open: ${openCSPs.length} CSPs | ${stockHolds.length} stock holds | ${openCCs.length} CCs running`,
+        ]
+
+        if (openCSPs.length > 0) {
+          wheelLines.push(`Active CSPs: ${openCSPs.map((t) => `${t.symbol} $${t.entry_price}`).join(', ')}`)
+        }
+        if (stockHolds.length > 0) {
+          wheelLines.push(`Assigned positions: ${stockHolds.map((t) => `${t.symbol} ×${t.quantity}`).join(', ')}`)
+        }
+
+        await fetch(`https://api.telegram.org/bot${tgBot}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: tgChat, text: wheelLines.join('\n'), parse_mode: 'Markdown' }),
+        }).catch(() => {})
+      }
+    } catch (e) {
+      console.error('[eod] wheel summary error:', e)
+    }
+  }
+
   // ── Mid-week decay scan (Wednesdays) — early warning for critically weak theses ──
   // Friday does the full rebalance. Wednesday catches anything that collapsed fast
   // (score < 30) so there's time to act before the weekend.
