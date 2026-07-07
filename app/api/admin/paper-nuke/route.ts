@@ -54,13 +54,13 @@ export async function POST(req: Request) {
   // 3. Mark all OPEN alpaca_paper trades as CLOSED in tb_trades with a nuke reason
   const db = createServiceClient()
   const now = new Date().toISOString()
-  const { count, error: dbErr } = await db
+  const { data: closedRows, error: dbErr } = await db
     .from('tb_trades')
     .update({ status: 'CLOSED', closed_at: now, pnl: 0, pnl_pct: 0, reason: 'NUKED: manual paper reset' })
     .eq('broker', 'alpaca_paper')
     .eq('status', 'OPEN')
-    .select('*', { count: 'exact', head: true })
-  results.db_closed = dbErr ? `error: ${dbErr.message}` : `${count} rows closed`
+    .select('id')
+  results.db_closed = dbErr ? `error: ${dbErr.message}` : `${closedRows?.length ?? 0} rows closed`
 
   // 4. Reset runtime config so tuner starts fresh
   await db.from('tb_settings').upsert({ key: 'paper_runtime_config', value: JSON.stringify({
