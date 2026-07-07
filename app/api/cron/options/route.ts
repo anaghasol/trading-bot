@@ -49,6 +49,17 @@ export async function GET(req: Request) {
   let newSpreads = 0
   let closedSpreads = 0
 
+  // Daily options loss circuit breaker — if options lost > $400 today, no new spreads
+  const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
+  const { data: todayOptTrades } = await db.from('tb_trades')
+    .select('pnl').eq('broker', 'alpaca_paper').eq('strategy', 'OPTION')
+    .eq('status', 'CLOSED').gte('closed_at', todayStart)
+  const todayOptPnl = (todayOptTrades ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
+  if (todayOptPnl <= -400) {
+    await db.from('tb_cron_log').insert({ job: 'options', status: 'skipped', message: `Daily options circuit breaker: $${todayOptPnl.toFixed(0)} loss today` })
+    return NextResponse.json({ status: 'skipped', reason: 'options_daily_loss_breaker', pnl: todayOptPnl })
+  }
+
   try {
     // ── 1. Monitor existing option positions ─────────────────────────────────
     const optPositions = await getOptionPositions()
@@ -98,7 +109,7 @@ export async function GET(req: Request) {
 
     // ── 2. Check how many option positions are open + total exposure cap ────
     const openOptionCount = optPositions.filter((p) => p.qty < 0).length  // short legs = open spreads
-    const MAX_SPREADS = 3
+    const MAX_SPREADS = 2
     // Total options exposure cap: sum of max risk across all open spreads ≤ 15% of equity
     // Approximated from market_value of option positions (negative = short premium collected)
     const totalOptionsExposure = optPositions.reduce((s, p) => s + Math.abs(p.unrealized_pl + (p.avg_entry_price * Math.abs(p.qty) * 100)), 0)
@@ -132,10 +143,9 @@ export async function GET(req: Request) {
     const eligibleSyms = Array.from(eligibleSet)
     const setups = await scanForEMAPullback(eligibleSyms, { loose: true })
 
-    // Score ≥ 5 (was 8 — large-caps rarely score 8+, leaving 0 candidates every day)
-    // Trend must be bullish over 5d even if down today
+    // Score ≥ 7 for quality gates — lower threshold caused too many bad entries
     const candidates = setups
-      .filter((s) => s.pullback_score >= 5 && s.rsi >= 45 && s.change_5d >= 0 && !s.earnings_soon)
+      .filter((s) => s.pullback_score >= 7 && s.rsi >= 48 && s.change_5d >= 0 && !s.earnings_soon)
       .sort((a, b) => b.pullback_score - a.pullback_score)
       .slice(0, 6)
 

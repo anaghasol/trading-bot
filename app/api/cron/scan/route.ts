@@ -212,13 +212,12 @@ async function runScan(
   const dailyPnl = (todayClosedRows ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
 
   // Daily-loss breaker: Schwab uses standard risk.ts threshold.
-  // Paper uses mode-aware threshold: -8% in deep recovery, -10% in recovery, -12% normal.
-  // Catches runaway loss days before they compound — today's -14% loss day was the trigger.
+  // Paper uses tighter mode-aware threshold: -6% deep recovery, -8% recovery, -10% normal.
   if (isSchwab && isDailyLossExceeded(dailyPnl, equity)) {
     return { trades_made: 0, message: `[${broker}] Daily loss limit hit (realized today: $${dailyPnl.toFixed(2)})` }
   }
   if (!isSchwab) {
-    const paperLossPct = deepRecovery ? 0.08 : recoveryMode ? 0.10 : 0.12
+    const paperLossPct = deepRecovery ? 0.06 : recoveryMode ? 0.08 : 0.10
     if (dailyPnl / equity <= -paperLossPct) {
       return { trades_made: 0, message: `[${broker}] Paper daily loss breaker: ${(dailyPnl / equity * 100).toFixed(1)}% (limit −${(paperLossPct * 100).toFixed(0)}%)` }
     }

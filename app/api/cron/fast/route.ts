@@ -17,7 +17,7 @@ import { createServiceClient } from '@/lib/supabase-server'
 export const runtime = 'nodejs'
 export const maxDuration = 30
 
-// Wide momentum universe — scanned every minute for volume surges
+// Surge universe — quality names only, no leveraged ETFs (too volatile, decay badly)
 const SURGE_UNIVERSE = [
   // Mega-cap momentum
   'NVDA', 'AMD', 'TSLA', 'META', 'AMZN', 'MSFT', 'GOOGL', 'AAPL', 'NFLX', 'ORCL',
@@ -25,22 +25,20 @@ const SURGE_UNIVERSE = [
   'CRM', 'SNOW', 'PLTR', 'ARM', 'SMCI', 'CRWD', 'PANW', 'ZS', 'DDOG', 'NET',
   'APP', 'RDDT', 'RKLB', 'SOUN', 'MELI', 'SHOP', 'SQ', 'PYPL', 'UBER', 'LYFT',
   'ABNB', 'DASH', 'SNAP', 'PINS', 'TTD', 'ROKU', 'SPOT',
-  // Crypto proxy
+  // Crypto proxy (NOT leveraged ETFs)
   'COIN', 'HOOD', 'MSTR', 'RIOT', 'MARA', 'CLSK', 'IREN', 'CIFR', 'HUT', 'BTBT',
   // Biotech momentum
   'MRNA', 'BNTX', 'NVAX', 'SAVA', 'RXRX', 'SRPT', 'RARE', 'BEAM', 'EDIT',
   // EV / clean energy
-  'RIVN', 'LCID', 'NIO', 'CHPT', 'PLUG', 'BE', 'BLNK', 'EVGO', 'FSR',
+  'RIVN', 'LCID', 'NIO', 'CHPT', 'PLUG', 'BE', 'BLNK', 'EVGO',
   // Finance / fintech
-  'SOFI', 'UPST', 'AFRM', 'NU', 'ALLY', 'LC', 'OPEN', 'NRDS',
+  'SOFI', 'UPST', 'AFRM', 'NU', 'ALLY', 'LC',
   // Semiconductors
-  'AVGO', 'QCOM', 'MRVL', 'AMAT', 'LRCX', 'KLAC', 'ENTG', 'ON', 'WOLF', 'AXTI',
-  // ETFs with options (leveraged = fast moves)
-  'TQQQ', 'SOXL', 'LABU', 'FNGU', 'TECL',
-  // Momentum wildcards + meme potential
-  'GME', 'BBAI', 'JOBY', 'ACHR', 'LUNR', 'RCAT', 'OKLO', 'SMR', 'VSST',
-  // Large-cap RS leaders (often dip-buyable)
-  'GS', 'JPM', 'MS', 'V', 'MA', 'PYPL', 'IBKR',
+  'AVGO', 'QCOM', 'MRVL', 'AMAT', 'LRCX', 'KLAC', 'ENTG', 'ON',
+  // Momentum wildcards
+  'GME', 'BBAI', 'JOBY', 'ACHR', 'LUNR', 'OKLO', 'SMR',
+  // Large-cap RS leaders
+  'GS', 'JPM', 'MS', 'V', 'MA', 'IBKR',
 ]
 
 interface QueueItem {
@@ -97,9 +95,8 @@ async function getVolumeSurgeCandidates(
       const todayLast = snap.dailyBar.c ?? snap.latestTrade?.p ?? 0
       const changePct = prevClose > 0 ? ((todayLast - prevClose) / prevClose) * 100 : 0
 
-      // 1.5× volume surge + any positive move = momentum entry (was 2×/0.3%)
-      // Lower threshold = catches more early-stage surges before they get crowded
-      if (surgeMult >= 1.5 && changePct > 0.1) {
+      // 2.0× volume surge + meaningful positive move — filters noise
+      if (surgeMult >= 2.0 && changePct > 0.5) {
         results.push({ symbol: sym, surgeMult, changePct })
       }
     }
@@ -119,6 +116,18 @@ export async function GET(req: Request) {
 
   const { data: engineRow } = await db.from('tb_context').select('value').eq('key', 'engine_alpaca').single()
   if (engineRow?.value === 'stopped') return NextResponse.json({ ok: true, skipped: 'engine_stopped' })
+
+  // Daily MOMENTUM_SURGE cap — prevent churn filling all slots with low-quality entries
+  const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
+  const { data: todaySurges } = await db.from('tb_trades')
+    .select('id')
+    .eq('broker', 'alpaca_paper').eq('strategy', 'MOMENTUM_SURGE').eq('action', 'BUY')
+    .gte('created_at', todayStart)
+  const surgeCountToday = todaySurges?.length ?? 0
+  const MAX_SURGE_DAY = 8   // max 8 momentum surge entries per day
+  if (surgeCountToday >= MAX_SURGE_DAY) {
+    return NextResponse.json({ ok: true, skipped: 'surge_daily_cap', count: surgeCountToday })
+  }
 
   // Read AI-vetted candidate queue
   const { data: queueRow } = await db.from('tb_settings').select('value').eq('key', 'fast_entry_queue').single()
