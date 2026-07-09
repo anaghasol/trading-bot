@@ -99,20 +99,19 @@ describe('evaluateOptionsExit', () => {
     expect(result.reason).toBe('OPT_TARGET')
   })
 
-  it('holds at +99% (not yet at full target)', () => {
+  it('holds at +49% (not yet at full target)', () => {
     const result = evaluateOptionsExit(
-      { symbol: 'COIN260724C00300000', quantity: 2, pnl_pct: 99, option_expiry: future30d },
-      false, NOW
+      { symbol: 'COIN260724C00300000', quantity: 2, pnl_pct: 49, option_expiry: future30d },
+      true, NOW  // partial already done
     )
-    // Should trigger partial at +80% if partial not done
-    expect(result.action).toBe('PARTIAL_CLOSE')
-    expect(result.reason).toBe('PARTIAL_1')
+    // partial already done, not yet at full target → hold
+    expect(result.action).toBe('HOLD')
   })
 
   // ── Partial exit ──────────────────────────────────────────────────────────
-  it('triggers PARTIAL_CLOSE at +80%', () => {
+  it('triggers PARTIAL_CLOSE at +30%', () => {
     const result = evaluateOptionsExit(
-      { symbol: 'NVDA260815C00900000', quantity: 4, pnl_pct: 80, option_expiry: future30d },
+      { symbol: 'NVDA260815C00900000', quantity: 4, pnl_pct: 30, option_expiry: future30d },
       false, NOW
     )
     expect(result.action).toBe('PARTIAL_CLOSE')
@@ -122,7 +121,7 @@ describe('evaluateOptionsExit', () => {
 
   it('PARTIAL_CLOSE qty is at least 1 for single-contract positions', () => {
     const result = evaluateOptionsExit(
-      { symbol: 'NVDA260815C00900000', quantity: 1, pnl_pct: 85, option_expiry: future30d },
+      { symbol: 'NVDA260815C00900000', quantity: 1, pnl_pct: 35, option_expiry: future30d },
       false, NOW
     )
     expect(result.action).toBe('PARTIAL_CLOSE')
@@ -131,15 +130,15 @@ describe('evaluateOptionsExit', () => {
 
   it('skips partial if already done', () => {
     const result = evaluateOptionsExit(
-      { symbol: 'NVDA260815C00900000', quantity: 2, pnl_pct: 85, option_expiry: future30d },
+      { symbol: 'NVDA260815C00900000', quantity: 2, pnl_pct: 35, option_expiry: future30d },
       true, NOW  // partial already done
     )
     expect(result.action).toBe('HOLD')
   })
 
-  it('holds at +79% (partial not triggered yet)', () => {
+  it('holds at +29% (partial not triggered yet)', () => {
     const result = evaluateOptionsExit(
-      { symbol: 'NVDA260815C00900000', quantity: 4, pnl_pct: 79, option_expiry: future30d },
+      { symbol: 'NVDA260815C00900000', quantity: 4, pnl_pct: 29, option_expiry: future30d },
       false, NOW
     )
     expect(result.action).toBe('HOLD')

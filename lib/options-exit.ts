@@ -70,13 +70,13 @@ export function evaluateOptionsExit(
     return { action: 'FULL_CLOSE', reason: 'OPT_STOP' }
   }
 
-  // Full target: premium up ≥100%
-  if (premPct >= 100) {
+  // Full target: premium up ≥50% — standard options management rule
+  if (premPct >= 50) {
     return { action: 'FULL_CLOSE', reason: 'OPT_TARGET' }
   }
 
-  // Partial exit at +80% (only once)
-  if (premPct >= 80 && !partialAlreadyDone) {
+  // Partial exit at +30% — lock half the position, let rest run
+  if (premPct >= 30 && !partialAlreadyDone) {
     const partialQty = Math.max(1, Math.floor(Math.abs(pos.quantity) * 0.5))
     return { action: 'PARTIAL_CLOSE', reason: 'PARTIAL_1', partialQty }
   }
