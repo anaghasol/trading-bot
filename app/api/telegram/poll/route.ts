@@ -586,14 +586,22 @@ export async function GET(req: Request) {
         }
       }
 
-      // Guard 2: SELL — only execute if we actually hold the position (never naked short)
+      // Guard 2: SELL — verify we actually hold the position in Alpaca (not just tb_trades)
+      // tb_trades can have stale OPEN records from positions already closed by monitor/stop crons.
       if (signal.action === 'SELL') {
-        const { data: openTrade } = await db.from('tb_trades')
-          .select('id, quantity').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1).single()
-        if (!openTrade) {
-          await tgSend(`📌 *Skipped SELL ${signal.symbol}* (${ch.name}) — not held, no short selling`)
-          return { id: msg.id, type: 'skip', reason: 'not_held' }
+        const livePositions = await Alpaca.getPositions()
+        const livePos = livePositions.find((p) => p.symbol === signal.symbol && p.quantity > 0)
+        if (!livePos) {
+          await tgSend(`📌 *Skipped SELL ${signal.symbol}* (${ch.name}) — not held in Alpaca, no short selling`)
+          return { id: msg.id, type: 'skip', reason: 'not_held_live' }
         }
+        // Execute as a full position close using the actual held quantity
+        const closeOrder = await Alpaca.closePosition(signal.symbol)
+        const status = closeOrder.status === 'PLACED' ? 'CLOSED' : 'FAILED'
+        await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString(), reason: `TG SELL: ${ch.name} (conf=${signal.confidence}%)` })
+          .eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper')
+        await tgSend(`${status === 'CLOSED' ? '✅' : '❌'} *${ch.name} → SELL ${livePos.quantity} ${signal.symbol}* — ${status}`)
+        return { id: msg.id, type: 'sell', symbol: signal.symbol, status }
       }
 
       // Guard 3: block after market hours
@@ -633,11 +641,7 @@ export async function GET(req: Request) {
           return { id: msg.id, type: 'skip', reason: 'options_expiry_too_close' }
         }
 
-        // Never short options from TG — SELL signals are ignored (no naked puts/calls)
-        if (signal.action === 'SELL') {
-          await tgSend(`📌 *Options SELL skipped* — ${displayLabel} (${ch.name})\nBot does not short options from TG signals.`)
-          return { id: msg.id, type: 'skip', reason: 'options_sell_blocked' }
-        }
+
 
         // Options exposure cap: read from LIVE Alpaca positions to avoid race-condition where
         // two parallel messages both see 0% in tb_trades and both enter before either is committed.
