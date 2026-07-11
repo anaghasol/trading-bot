@@ -168,12 +168,19 @@ export async function GET(req: Request) {
     const openEquity = await getPositions()
     const openSyms = new Set(openEquity.map((p) => p.symbol))
 
+    // Already-entered options positions — one per underlying maximum to avoid concentration
+    const { data: openOptTrades } = await db.from('tb_trades')
+      .select('symbol').eq('broker', 'alpaca_paper').eq('status', 'OPEN')
+      .in('strategy', ['BULL_PUT_SPREAD', 'OPTION', 'WHEEL_CSP', 'WHEEL_CC'])
+    const openOptSyms = new Set((openOptTrades ?? []).map((r: { symbol: string }) => r.symbol))
+
     // ── 4. Build + execute spreads ───────────────────────────────────────────
     let slotsLeft = MAX_SPREADS - openOptionCount
 
     for (const setup of candidates) {
       if (slotsLeft <= 0) break
       if (openSyms.has(setup.symbol)) continue  // already long equity — skip
+      if (openOptSyms.has(setup.symbol)) { actions.push(`${setup.symbol}: already have open option position — skip`); continue }
 
       const chain  = await getPutChain(setup.symbol, setup.price)
       const spread = buildBullPutSpread(setup.symbol, setup.price, chain, accountEquity, 0.02, setup.hv30 ?? 40)

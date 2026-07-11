@@ -264,7 +264,19 @@ async function monitorBroker(
       const dteDays   = expiry ? (new Date(expiry).getTime() - Date.now()) / 86_400_000 : 999
 
       // Aggressive paper: -10% premium stop (live keeps -25% to allow normal options movement)
+      // Dollar cap: force exit if unrealized loss > $400 on any single option (gaps can blow past % stop)
       const optStopPct = broker === 'alpaca_paper' ? -10 : -25
+      if (broker === 'alpaca_paper' && pos.unrealized_pnl < -400) {
+        const sellOrder = await AlpacaBroker.closePosition(rawSymbol)
+        if (sellOrder.status === 'PLACED') {
+          closed++
+          runningPnl += pos.unrealized_pnl
+          if (meta?.id) await db.from('tb_trades').update({ status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl, pnl_pct: premPct, closed_at: new Date().toISOString() }).eq('id', meta.id)
+          await db.from('tb_alerts').insert({ type: 'STOP_LOSS', symbol: pos.symbol, broker, message: `[paper] OPT DOLLAR-STOP ${pos.symbol} | ${pnlStr} (> -$400 cap)` })
+          statuses.push(`${pos.symbol}: OPT DOLLAR-STOP ${pnlStr}`)
+        }
+        continue
+      }
       const allOptPositions: OptionsPosition[] = positions
         .filter((p) => p.asset_type === 'OPTION')
         .map((p) => ({ symbol: p.symbol, quantity: p.quantity, pnl_pct: p.pnl_pct ?? 0 }))

@@ -233,8 +233,8 @@ export function buildBullPutSpread(
     if (netCredit <= 0) continue
 
     const creditPct = netCredit / spreadWidth
-    // Require ≥ 10% credit (lowered from 25% — Alpaca stale close_price makes 25% unreachable)
-    if (creditPct < 0.10) continue
+    // Require ≥ 20% credit — spreads below this have terrible risk/reward (risking $4 to make $0.40)
+    if (creditPct < 0.20) continue
 
     const maxLossPerContract   = (spreadWidth - netCredit) * 100
     const maxProfitPerContract = netCredit * 100

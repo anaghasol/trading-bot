@@ -579,12 +579,12 @@ async function runScan(
     for (const item of rankedPre) {
       const rs = research.get(item.rec.symbol)
       const rsScore = rs?.score ?? 0
-      // Widened: RS ≥ 4 (was 5), aiHesitant < 70 (was 65), ema ≥ 2 (was 3), cap 8 (was 4)
-      const isRunner      = item.supercycle || rsScore >= 4  // outperforming SPY
+      // DipRunner: RS ≥ 5, ema ≥ 3 — raised from 4/2 to cut false signals (JXN-type losses)
+      const isRunner      = item.supercycle || rsScore >= 5  // outperforming SPY
       const aiHesitant    = item.rec.confidence < 70         // AI uncertain = likely dipping
-      const hasStructure  = (item.rec.ema_score ?? 0) >= 2   // minimal mechanical structure
-      const boost         = item.supercycle ? 28 : 22        // slightly bigger boost too
-      if (isRunner && aiHesitant && hasStructure && dipRunnerCount < 8) {
+      const hasStructure  = (item.rec.ema_score ?? 0) >= 3   // solid mechanical structure required
+      const boost         = item.supercycle ? 25 : 18        // reduced boost — less artificial confidence
+      if (isRunner && aiHesitant && hasStructure && dipRunnerCount < 6) {
         const oldConf = item.rec.confidence
         item.rec.confidence = Math.min(85, item.rec.confidence + boost)
         item.rec.hold_mode  = 'trend'
@@ -606,8 +606,11 @@ async function runScan(
         // No research data = treat as score 0 (fails threshold) — don't let data
         // outages open the gate. Only skip filter if stock is already above AI gate.
         if (!rs && x.rec.confidence < dynamicMinConf) return false
-        if (rs && rs.rs_vs_spy < 1.4) return false   // raised 1.3 → 1.4 after 19% WR
+        if (rs && rs.rs_vs_spy < 1.5) return false   // raised 1.4 → 1.5 — JXN-type low-RS breakouts leaking in
         if (rs && rs.score < 7.0) return false        // raised 6.5 → 7.0 after PF=0.05
+        // BREAKOUT in paper needs same quality bar as Schwab — weak breakouts are costly
+        if (x.rec.setup === 'BREAKOUT' && (x.rec.ema_score ?? 0) < 7) return false
+        if (x.rec.setup === 'BREAKOUT' && x.rec.confidence < 72) return false
       }
 
       // ── AI gate (all brokers) ──────────────────────────────────────────────
