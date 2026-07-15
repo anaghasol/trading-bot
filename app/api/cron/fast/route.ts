@@ -114,8 +114,8 @@ export async function GET(req: Request) {
   const profile = PROFILES.alpaca_paper
   const broker  = 'alpaca_paper'
 
-  const { data: engineRow } = await db.from('tb_context').select('value').eq('key', 'engine_alpaca').single()
-  if (engineRow?.value === 'stopped') return NextResponse.json({ ok: true, skipped: 'engine_stopped' })
+  const { data: engineRow } = await db.from('tb_engine_status').select('status').eq('broker', 'alpaca_paper').single()
+  if (engineRow?.status === 'stopped') return NextResponse.json({ ok: true, skipped: 'engine_stopped' })
 
   // Daily MOMENTUM_SURGE cap — prevent churn filling all slots with low-quality entries
   const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'

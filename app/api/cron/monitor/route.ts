@@ -32,10 +32,11 @@ function extractStopOrderId(reason: string): string | null {
 }
 
 async function getEngineStatus(db: ReturnType<typeof createServiceClient>) {
-  const { data } = await db.from('tb_context').select('key, value').in('key', ['engine_schwab', 'engine_alpaca'])
+  const { data } = await db.from('tb_engine_status').select('broker, status')
+  const map = Object.fromEntries((data ?? []).map((r: { broker: string; status: string }) => [r.broker, r.status]))
   return {
-    schwab:       data?.find((r) => r.key === 'engine_schwab')?.value  ?? 'running',
-    alpaca_paper: data?.find((r) => r.key === 'engine_alpaca')?.value  ?? 'running',
+    schwab:       map['schwab']       ?? 'running',
+    alpaca_paper: map['alpaca_paper'] ?? 'running',
   }
 }
 

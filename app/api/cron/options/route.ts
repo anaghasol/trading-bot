@@ -45,6 +45,11 @@ export async function GET(req: Request) {
     await db.from('tb_cron_log').insert({ job: 'options', status: 'skipped', message: 'market_closed' })
     return NextResponse.json({ status: 'skipped', reason: 'market_closed' })
   }
+  const { data: engineRow } = await db.from('tb_engine_status').select('status').eq('broker', 'alpaca_paper').single()
+  if (engineRow?.status === 'stopped') {
+    await db.from('tb_cron_log').insert({ job: 'options', status: 'skipped', message: 'engine_stopped' })
+    return NextResponse.json({ status: 'skipped', reason: 'engine_stopped' })
+  }
   const actions: string[] = []
   let newSpreads = 0
   let closedSpreads = 0

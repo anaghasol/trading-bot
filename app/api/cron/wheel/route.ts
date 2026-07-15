@@ -96,7 +96,10 @@ export async function GET(req: Request) {
   if (!authorized(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   if (!isMarketOpen()) return NextResponse.json({ status: 'skipped', reason: 'market_closed' })
 
-  const db      = createServiceClient()
+  const db = createServiceClient()
+  const { data: engineRow } = await db.from('tb_engine_status').select('status').eq('broker', 'alpaca_paper').single()
+  if (engineRow?.status === 'stopped') return NextResponse.json({ status: 'skipped', reason: 'engine_stopped' })
+
   const actions: string[] = []
   let   newCSPs = 0, closedCSPs = 0, newCCs = 0, closedCCs = 0
 
