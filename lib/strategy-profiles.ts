@@ -47,14 +47,14 @@ export const PROFILES: Record<StrategyProfile['key'], StrategyProfile> = {
     key: 'alpaca_paper',
     label: 'Alpaca · Paper (Quality Mode)',
     vibe: 'aggressive',
-    risk_pct: 0.03,             // 3% per trade (recovery mode auto-reduces to 2% / 1.5%)
-    max_positions: 20,          // 20 max (recovery mode caps at 15 / 10)
+    risk_pct: 0.02,             // 2% per trade (reduced from 3% — fewer concentrated losses)
+    max_positions: 8,           // 8 max — 20 created correlated 130%-leveraged portfolio
     min_confidence: 42,         // raised 36→42: observed 19% WR at 36% — floor must reflect reality.
                                 // EOD tuner raises from this floor; cold-start resets here, not to 36.
     allow_day_trades: true,
     initial_stop_pct: 0.025,    // 2.5% stop — auto-tuner hit 1% which is too tight for noise; reset
     trail_pct: 0.05,            // 5% trailing — give winners more room (avg win was only $52)
-    daily_loss_stop_pct: 0.15,  // −15% daily breaker (tighter than before — protect capital)
+    daily_loss_stop_pct: 0.07,  // −7% daily breaker (15% was way too loose — halts after 1 bad session)
     max_hold_days: 3,           // 3-day max — if it hasn't moved, move on
     scan_universe: 'wide',
   },

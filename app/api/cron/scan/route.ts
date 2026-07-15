@@ -169,8 +169,8 @@ async function runScan(
   // reduce risk per trade and max positions to preserve remaining capital.
   // Goal: stop the bleeding first, then compound back — not gamble out of the hole.
   const PAPER_START_BALANCE = 100_000
-  const recoveryMode = !isSchwab && equity < PAPER_START_BALANCE * 0.85  // below $85K
-  const deepRecovery = !isSchwab && equity < PAPER_START_BALANCE * 0.75  // below $75K
+  const recoveryMode = !isSchwab && equity < PAPER_START_BALANCE * 0.92  // below $92K (catch drawdowns early)
+  const deepRecovery = !isSchwab && equity < PAPER_START_BALANCE * 0.82  // below $82K
   if (recoveryMode) {
     const drawdownPct = ((PAPER_START_BALANCE - equity) / PAPER_START_BALANCE * 100).toFixed(1)
     const mode = deepRecovery ? 'DEEP RECOVERY' : 'RECOVERY'
@@ -217,7 +217,7 @@ async function runScan(
     return { trades_made: 0, message: `[${broker}] Daily loss limit hit (realized today: $${dailyPnl.toFixed(2)})` }
   }
   if (!isSchwab) {
-    const paperLossPct = deepRecovery ? 0.06 : recoveryMode ? 0.08 : 0.10
+    const paperLossPct = deepRecovery ? 0.04 : recoveryMode ? 0.06 : 0.07
     if (dailyPnl / equity <= -paperLossPct) {
       return { trades_made: 0, message: `[${broker}] Paper daily loss breaker: ${(dailyPnl / equity * 100).toFixed(1)}% (limit −${(paperLossPct * 100).toFixed(0)}%)` }
     }
@@ -283,7 +283,7 @@ async function runScan(
   // in one scan run don't collectively bypass the cap.
   // Paper: 80% max deployed — keeps 20% dry powder for high-score setups.
   // Live (Schwab): 70% max — real money stays conservative.
-  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.97  // paper: 97% — near-full deployment with tiny buffer
+  const MAX_EXPOSURE = isSchwab ? 0.70 : 0.60  // paper: 60% max — prevent margin usage; 97% caused 130% leverage
   const totalMarketValue = positions.reduce((s, p) => s + Math.abs(p.market_value ?? p.current_price * p.quantity), 0)
 
   // Options exposure cap: don't let options consume more than 20% (paper) / 10% (live) of equity.
@@ -382,27 +382,27 @@ async function runScan(
   if (!aboveSma || vix > 28) {
     marketTier    = 'BAD'
     dynamicMinConf = isSchwab ? Math.max(baseConf + 12, 65) : baseConf + 6
-    dynamicMaxPos  = isSchwab ? Math.min(baseMax, 6) : Math.min(baseMax, 12)  // paper: cap at 12 in BAD
+    dynamicMaxPos  = isSchwab ? Math.min(baseMax, 6) : Math.min(baseMax, 4)   // paper: cap at 4 in BAD
   } else if (vix > 22) {
     marketTier    = 'TOUGH'
     dynamicMinConf = isSchwab ? baseConf + 5 : baseConf + 2
-    dynamicMaxPos  = isSchwab ? baseMax : Math.min(baseMax, 18)  // paper: cap at 18 in TOUGH
+    dynamicMaxPos  = isSchwab ? baseMax : Math.min(baseMax, 6)   // paper: cap at 6 in TOUGH
   } else {
     marketTier    = 'GOOD'
     dynamicMinConf = baseConf
-    dynamicMaxPos  = isSchwab ? baseMax : Math.min(baseMax, 25)  // paper: cap at 25 in GOOD
+    dynamicMaxPos  = isSchwab ? baseMax : Math.min(baseMax, 8)   // paper: cap at 8 in GOOD (was 25 — allowed 130% leverage)
   }
 
   // Recovery mode overrides: tighter caps protect remaining capital during drawdown
   if (recoveryMode && !isSchwab) {
     if (deepRecovery) {
-      // Below $75K: max 10 positions, gate +6pp, protect everything
-      dynamicMaxPos  = Math.min(dynamicMaxPos, 10)
-      dynamicMinConf = Math.min(85, dynamicMinConf + 6)
+      // Below $82K: max 3 positions, gate +8pp — heavy protection
+      dynamicMaxPos  = Math.min(dynamicMaxPos, 3)
+      dynamicMinConf = Math.min(90, dynamicMinConf + 8)
     } else {
-      // Below $85K: max 15 positions, gate +3pp — still active but more selective
-      dynamicMaxPos  = Math.min(dynamicMaxPos, 15)
-      dynamicMinConf = Math.min(85, dynamicMinConf + 3)
+      // Below $92K: max 5 positions, gate +4pp — selective recovery
+      dynamicMaxPos  = Math.min(dynamicMaxPos, 5)
+      dynamicMinConf = Math.min(85, dynamicMinConf + 4)
     }
     console.log(`[${broker}] Recovery caps applied: maxPos=${dynamicMaxPos} gate=${dynamicMinConf}%`)
   }
