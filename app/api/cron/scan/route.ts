@@ -210,17 +210,20 @@ async function runScan(
     .eq('status', 'CLOSED')
     .gte('closed_at', todayStart)
     .or(isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper')
-  const dailyPnl = (todayClosedRows ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
+  const realizedPnl   = (todayClosedRows ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
+  // Include unrealized losses — open positions bleeding -$16K were invisible to realized-only breaker
+  const unrealizedPnl = positions.filter((p) => p.asset_type !== 'OPTION').reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0)
+  const dailyPnl      = realizedPnl + unrealizedPnl
 
   // Daily-loss breaker: Schwab uses standard risk.ts threshold.
-  // Paper uses tighter mode-aware threshold: -6% deep recovery, -8% recovery, -10% normal.
+  // Paper uses tighter mode-aware threshold: -4% deep recovery, -6% recovery, -7% normal.
   if (isSchwab && isDailyLossExceeded(dailyPnl, equity)) {
     return { trades_made: 0, message: `[${broker}] Daily loss limit hit (realized today: $${dailyPnl.toFixed(2)})` }
   }
   if (!isSchwab) {
     const paperLossPct = deepRecovery ? 0.04 : recoveryMode ? 0.06 : 0.07
     if (dailyPnl / equity <= -paperLossPct) {
-      return { trades_made: 0, message: `[${broker}] Paper daily loss breaker: ${(dailyPnl / equity * 100).toFixed(1)}% (limit −${(paperLossPct * 100).toFixed(0)}%)` }
+      return { trades_made: 0, message: `[${broker}] Paper daily loss breaker: ${(dailyPnl / equity * 100).toFixed(1)}% (limit −${(paperLossPct * 100).toFixed(0)}%) [realized $${realizedPnl.toFixed(0)} + unrealized $${unrealizedPnl.toFixed(0)}]` }
     }
   }
 

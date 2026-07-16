@@ -144,8 +144,8 @@ export async function GET(req: Request) {
   const totalValue = positions.reduce((s, p) => s + Math.abs(p.market_value), 0)
   let   exposure   = totalValue / equity
 
-  const MAX_EXP = 0.95   // deploy up to 95% of capital — use it all
-  const MAX_POS = profile.max_positions  // 40
+  const MAX_EXP = 0.60   // 60% cap — matches scan cron; 95% was packing to margin on top of scan's positions
+  const MAX_POS = profile.max_positions
 
   if (positions.length >= MAX_POS) return NextResponse.json({ ok: true, skipped: 'max_positions', count: positions.length })
   if (exposure >= MAX_EXP)         return NextResponse.json({ ok: true, skipped: 'exposure_cap', pct: (exposure * 100).toFixed(1) })

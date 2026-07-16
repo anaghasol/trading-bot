@@ -878,9 +878,9 @@ export default function DashboardPage() {
             const liveBreaker = deepRecovery ? 8 : recovery ? 12 : profile.daily_loss_stop_pct * 100
             const liveGate    = deepRecovery ? Math.min(85, profile.min_confidence + 6) : recovery ? Math.min(85, profile.min_confidence + 3) : profile.min_confidence
 
-            // Recovery roadmap milestones
-            const m1 = PAPER_START * 0.75  // $75K — exit deep recovery
-            const m2 = PAPER_START * 0.85  // $85K — exit recovery mode
+            // Recovery roadmap milestones (must match scan/route.ts thresholds)
+            const m1 = PAPER_START * 0.82  // $82K — exit deep recovery
+            const m2 = PAPER_START * 0.92  // $92K — exit recovery mode
             const m3 = PAPER_START         // $100K — full normal mode
             const nextTarget = acctValue < m1 ? m1 : acctValue < m2 ? m2 : acctValue < m3 ? m3 : null
             const rangeStart = acctValue < m1 ? 0 : acctValue < m2 ? m1 : acctValue < m3 ? m2 : m2
@@ -918,8 +918,8 @@ export default function DashboardPage() {
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       {[
                         { label: 'Now', val: acctValue, color: bannerBorder, done: true },
-                        { label: '$75K', val: 75000, subtitle: 'Exit deep recovery', color: acctValue >= 75000 ? 'var(--green)' : acctValue < 75000 ? bannerBorder : 'var(--fg-3)', done: acctValue >= 75000 },
-                        { label: '$85K', val: 85000, subtitle: 'Normal sizing returns', color: acctValue >= 85000 ? 'var(--green)' : 'var(--fg-3)', done: acctValue >= 85000 },
+                        { label: '$82K', val: 82000, subtitle: 'Exit deep recovery', color: acctValue >= 82000 ? 'var(--green)' : acctValue < 82000 ? bannerBorder : 'var(--fg-3)', done: acctValue >= 82000 },
+                        { label: '$92K', val: 92000, subtitle: 'Normal sizing returns', color: acctValue >= 92000 ? 'var(--green)' : 'var(--fg-3)', done: acctValue >= 92000 },
                         { label: '$100K', val: 100000, subtitle: 'Full reset', color: acctValue >= 100000 ? 'var(--green)' : 'var(--fg-3)', done: acctValue >= 100000 },
                         { label: '$25K Schwab', val: null, subtitle: 'PDT unlocked', color: 'var(--green)', done: false },
                       ].map((m, i, arr) => (
@@ -947,8 +947,8 @@ export default function DashboardPage() {
                     </div>
                     {/* What unlocks at next milestone */}
                     <div style={{ fontSize: '0.7rem', color: 'var(--fg-2)', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                      {deepRecovery && <span>At <b style={{ color: 'var(--amber)' }}>$75K</b>: risk → 2.0%, max positions → 15</span>}
-                      {(deepRecovery || recovery) && <span>At <b style={{ color: 'var(--green)' }}>$85K</b>: full 3.0% risk restored, 25 positions</span>}
+                      {deepRecovery && <span>At <b style={{ color: 'var(--amber)' }}>$82K</b>: exits deep recovery → max 5 positions</span>}
+                      {(deepRecovery || recovery) && <span>At <b style={{ color: 'var(--green)' }}>$92K</b>: full 2.0% risk restored, 8 positions</span>}
                       <span style={{ color: 'var(--fg-3)' }}>Mode exits automatically when equity crosses each threshold</span>
                     </div>
                   </div>
