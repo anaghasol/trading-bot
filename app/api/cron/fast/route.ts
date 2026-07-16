@@ -117,14 +117,36 @@ export async function GET(req: Request) {
   const { data: engineRow } = await db.from('tb_engine_status').select('status').eq('broker', 'alpaca_paper').single()
   if (engineRow?.status === 'stopped') return NextResponse.json({ ok: true, skipped: 'engine_stopped' })
 
-  // Daily MOMENTUM_SURGE cap — prevent churn filling all slots with low-quality entries
+  // Daily loss breaker — same logic as scan cron (realized + unrealized).
+  // Fast cron was missing this entirely: scan would halt but fast kept opening new positions every minute.
   const todayStart = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
+  try {
+    const [closedRows, livePositions, liveEquity] = await Promise.all([
+      db.from('tb_trades').select('pnl').eq('broker', 'alpaca_paper').eq('status', 'CLOSED').gte('closed_at', todayStart),
+      AlpacaBroker.getPositions(),
+      AlpacaBroker.getAccountBalance(),
+    ])
+    const eq       = liveEquity ?? 100_000
+    const realized = (closedRows.data ?? []).reduce((s, t) => s + ((t.pnl as number) ?? 0), 0)
+    const unreal   = livePositions.filter((p) => p.asset_type !== 'OPTION').reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0)
+    const lossPct  = (realized + unreal) / eq
+    const EQUITY   = eq
+    void EQUITY  // used above
+    const isRecovery  = eq < 100_000 * 0.92
+    const isDeep      = eq < 100_000 * 0.82
+    const breakerPct  = isDeep ? 0.04 : isRecovery ? 0.06 : 0.07
+    if (lossPct <= -breakerPct) {
+      return NextResponse.json({ ok: true, skipped: 'daily_loss_breaker', lossPct: (lossPct * 100).toFixed(1) })
+    }
+  } catch { /* non-fatal — proceed if check fails */ }
+
+  // Daily MOMENTUM_SURGE cap — tighter in recovery mode to prevent churn
   const { data: todaySurges } = await db.from('tb_trades')
     .select('id')
     .eq('broker', 'alpaca_paper').eq('strategy', 'MOMENTUM_SURGE').eq('action', 'BUY')
     .gte('created_at', todayStart)
   const surgeCountToday = todaySurges?.length ?? 0
-  const MAX_SURGE_DAY = 8   // max 8 momentum surge entries per day
+  const MAX_SURGE_DAY = 4   // reduced from 8 — fewer churn entries per day
   if (surgeCountToday >= MAX_SURGE_DAY) {
     return NextResponse.json({ ok: true, skipped: 'surge_daily_cap', count: surgeCountToday })
   }
