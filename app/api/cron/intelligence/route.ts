@@ -28,6 +28,7 @@ import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase-server'
 import { groqTextComplete } from '@/lib/groq-text'
 import { isMarketOpen } from '@/lib/risk'
+import { getAccountBalance } from '@/lib/alpaca'
 
 function authorized(req: Request) {
   const s = process.env.CRON_SECRET
@@ -44,7 +45,7 @@ export async function GET(req: Request) {
 
   // ── Gather metrics ────────────────────────────────────────────────────────────
 
-  const [closedTodayRes, closed7dRes, openRes, equityRes] = await Promise.all([
+  const [closedTodayRes, closed7dRes, openRes, liveEquity] = await Promise.all([
     db.from('tb_trades').select('symbol,pnl,pnl_pct,reason,closed_at')
       .eq('broker', 'alpaca_paper').eq('status', 'CLOSED').gte('closed_at', today)
       .order('closed_at', { ascending: false }),
@@ -53,13 +54,16 @@ export async function GET(req: Request) {
       .order('closed_at', { ascending: false }).limit(50),
     db.from('tb_trades').select('symbol,quantity,entry_price,reason,created_at')
       .eq('broker', 'alpaca_paper').eq('status', 'OPEN'),
-    db.from('tb_settings').select('value').eq('key', 'alpaca_equity').single(),
+    getAccountBalance().catch(() => null),
   ])
 
   const closedToday = closedTodayRes.data ?? []
   const closed7d    = closed7dRes.data    ?? []
   const openTrades  = openRes.data        ?? []
-  const equity      = parseFloat(equityRes.data?.value ?? '68000')
+  // Use live Alpaca equity — settings key was stale ($100K since account reset)
+  const equity = liveEquity ?? 76_000
+  // Write back for monitoring / dashboard reads
+  void db.from('tb_settings').upsert({ key: 'alpaca_equity', value: equity.toFixed(0) })
 
   // Win rate over last 7 days
   const wins   = closed7d.filter(t => ((t.pnl as number) ?? 0) > 0)
@@ -130,9 +134,9 @@ PERFORMANCE (last 7 days, ${closed7d.length} closed trades):
 
 SYSTEM CONTEXT:
 - Scan fires every 10 min, monitor every 2 min
-- Deep recovery mode: equity < $75K (current: ${equity < 75000 ? 'YES' : 'NO'})
-- Recovery mode: equity < $85K (current: ${equity < 85000 ? 'YES' : 'NO'})
-- Daily breaker: -8% deep recovery / -10% recovery / -12% normal
+- Deep recovery mode: equity < $82K (current: ${equity < 82000 ? 'YES — max 3 positions' : 'NO'})
+- Recovery mode: equity < $92K (current: ${equity < 92000 ? 'YES — max 5 positions' : 'NO'})
+- Daily breaker: -4% deep recovery / -6% recovery / -7% normal (halts ALL new entries)
 
 Based on this, output a trading stance as STRICT JSON (no markdown, no explanation outside JSON):
 {
@@ -171,6 +175,20 @@ Rules:
       message: `[intelligence] Groq parse failed: ${result.text.slice(0, 150)}`,
     })
     return NextResponse.json({ ok: false, reason: 'parse_failed', raw: result.text.slice(0, 200) })
+  }
+
+  // Server-side sanity check: Groq small models sometimes hallucinate "aggressive"
+  // even when win rate and profit factor are terrible. Enforce the rules ourselves.
+  const winRateNum = parseFloat(winRate as string) || 0
+  const pfNum = parseFloat(profitFactor as string) || 0
+  if (stance.stance === 'aggressive' && (winRateNum < 50 || pfNum < 0.8)) {
+    stance.stance = 'neutral'
+    stance.reasoning = `[auto-corrected] win rate ${winRateNum}% / PF ${pfNum.toFixed(2)} too low for aggressive`
+  }
+  // Deep recovery: cap at cautious — aggressive stance while account is down >18% is too risky
+  if (equity < 82000 && stance.stance === 'aggressive') {
+    stance.stance = 'cautious'
+    stance.reasoning = `[auto-corrected] deep recovery at $${equity.toFixed(0)} — capped to cautious`
   }
 
   const payload = {
