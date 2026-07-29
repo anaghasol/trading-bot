@@ -687,7 +687,13 @@ export async function GET(req: Request) {
         return { id: msg.id, type: 'skip_invalid_symbol', symbol: signal.symbol }
       }
       const livePrice = liveQuote.price ?? signal.entry_price
-      const exposureCap = exposureCapForConfidence(signal.confidence)
+      // Deep recovery sizing: account down >18% ($82K) → cap each TG position at 5%.
+      // Normal mode: use confidence-based cap (up to 20% for 90% conf TG signals).
+      // $67K account was getting 1558-share SHLS entries = 20% of account from one TG signal.
+      const isDeepRecovery = equity < 82_000
+      const isRecovery     = equity < 92_000
+      const baseCap = exposureCapForConfidence(signal.confidence)
+      const exposureCap = isDeepRecovery ? Math.min(baseCap, 0.05) : isRecovery ? Math.min(baseCap, 0.08) : baseCap
       const sizing = livePrice
         ? calculatePositionSize(equity, livePrice, profile.initial_stop_pct, profile.risk_pct, exposureCap)
         : { qty: 10 }

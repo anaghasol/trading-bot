@@ -72,8 +72,33 @@ export async function GET(req: Request) {
 
       const journaledSymbols = new Set((openTrades ?? []).map((t) => t.symbol as string))
 
+      // Zombie guard: find symbols closed in the last 90 min for this broker.
+      // Pattern: monitor marks CLOSED but broker sell didn't clear → health keeps re-journaling
+      // → monitor fires stop-loss again → loop. SWBI was losing $4 every 30 min from this.
+      const zombieCutoff = new Date(Date.now() - 90 * 60_000).toISOString()
+      const { data: recentlyClosed } = await db.from('tb_trades')
+        .select('symbol')
+        .eq('status', 'CLOSED')
+        .gte('closed_at', zombieCutoff)
+        .or(isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper')
+      const zombieSymbols = new Set((recentlyClosed ?? []).map((t) => t.symbol as string))
+
       for (const pos of positions) {
         if (journaledSymbols.has(pos.symbol)) continue
+
+        // Zombie detection: if this symbol was CLOSED in the last 90 min but still
+        // appears as a live position, the broker sell didn't clear. Re-journaling would
+        // restart the stop-loss loop. Alert instead and let admin/close-cron handle it.
+        if (zombieSymbols.has(pos.symbol)) {
+          const msg = `⚠️ *[health] ZOMBIE position: ${pos.symbol} (${broker})*\nClosed in tb_trades <90m ago but still live at broker — sell may have failed. Manual close needed.`
+          await sendTG(msg)
+          await db.from('tb_alerts').insert({
+            type: 'WARN', symbol: pos.symbol, broker,
+            message: `[health] ZOMBIE: ${pos.symbol} closed in tb_trades but still at broker — skipping re-journal to break loop`,
+          })
+          issues.push(`[${broker}] ZOMBIE ${pos.symbol}: closed <90m ago but still live — manual close needed`)
+          continue
+        }
 
         // Position exists at broker but has no journal entry — auto-create one
         const entryPrice = pos.avg_cost > 0 ? pos.avg_cost : pos.current_price
