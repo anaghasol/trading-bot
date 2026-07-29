@@ -730,6 +730,7 @@ export async function GET(req: Request) {
           quantity: qty, entry_price: livePrice ?? 0,
           target_price: signal.target ?? null, confidence: signal.confidence,
           status: 'OPEN', order_id: order.order_id ?? null,
+          strategy: 'TG_SIGNAL',   // explicit label so health cron doesn't re-journal as RECOVERED
           // tg_trade=1 → monitor/close/health follow signal's SL only, not internal rules
           reason: `TG: ${ch.name} | stop=$${stopPrice ?? 0} | hold_mode=swing | tg_trade=1`,
         })
@@ -759,6 +760,7 @@ export async function GET(req: Request) {
                 quantity: schwabQty, entry_price: livePrice ?? 0,
                 target_price: signal.target ?? null, confidence: signal.confidence,
                 status: 'OPEN', order_id: schwabOrder.order_id ?? null,
+                strategy: 'TG_SIGNAL',
                 reason: `TG: ${ch.name} (live) | stop=$${schwabStop ?? 0} | hold_mode=swing | tg_trade=1`,
               })
               if (schwabInsertErr) console.error(`[TG] schwab tb_trades insert failed for ${signal.symbol}: ${schwabInsertErr.message}`)

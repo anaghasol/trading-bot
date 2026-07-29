@@ -50,6 +50,17 @@ export async function GET(req: Request) {
     await db.from('tb_cron_log').insert({ job: 'options', status: 'skipped', message: 'engine_stopped' })
     return NextResponse.json({ status: 'skipped', reason: 'engine_stopped' })
   }
+
+  // OPTIONS DISABLED: 49 trades, 4% win rate, -$24,236 in July alone.
+  // Bot was buying put options on bull market stocks (AMD, META, PANW) as they went UP.
+  // Disabled until options strategy is proven on paper with correct direction logic.
+  // Re-enable via: tb_settings key 'options_enabled' = 'true'
+  const { data: optFlag } = await db.from('tb_settings').select('value').eq('key', 'options_enabled').single()
+  if (optFlag?.value !== 'true') {
+    await db.from('tb_cron_log').insert({ job: 'options', status: 'skipped', message: 'options_disabled: -$24,236 in July (4% WR) — re-enable via tb_settings options_enabled=true' })
+    return NextResponse.json({ status: 'skipped', reason: 'options_disabled', note: 'Lost $24K in July. Enable via settings when strategy is proven.' })
+  }
+
   const actions: string[] = []
   let newSpreads = 0
   let closedSpreads = 0

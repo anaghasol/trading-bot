@@ -140,14 +140,24 @@ export async function GET(req: Request) {
     }
   } catch { /* non-fatal — proceed if check fails */ }
 
-  // Daily MOMENTUM_SURGE cap — tighter in recovery mode to prevent churn
+  // MOMENTUM_SURGE: disabled in recovery + deep recovery.
+  // 216 trades at 37% WR = -$1,347 in July. Pure churn — small losers outweigh small winners.
+  // Only re-enable in normal mode (equity ≥ $92K) where we can afford the noise.
+  const surgeEquity = await AlpacaBroker.getAccountBalance().then((b) => b ?? 100_000)
+  const surgeInRecovery = surgeEquity < 92_000
+  if (surgeInRecovery) {
+    // Skip the entire surge pass — only run AI-vetted queue entries below
+    void db.from('tb_cron_log').insert({ job: 'fast', status: 'skipped', message: `surge_disabled_recovery equity=$${surgeEquity.toFixed(0)}` })
+  }
+
+  // Daily MOMENTUM_SURGE cap (only relevant in normal mode above $92K)
   const { data: todaySurges } = await db.from('tb_trades')
     .select('id')
     .eq('broker', 'alpaca_paper').eq('strategy', 'MOMENTUM_SURGE').eq('action', 'BUY')
     .gte('created_at', todayStart)
   const surgeCountToday = todaySurges?.length ?? 0
-  const MAX_SURGE_DAY = 4   // reduced from 8 — fewer churn entries per day
-  if (surgeCountToday >= MAX_SURGE_DAY) {
+  const MAX_SURGE_DAY = 4
+  if (!surgeInRecovery && surgeCountToday >= MAX_SURGE_DAY) {
     return NextResponse.json({ ok: true, skipped: 'surge_daily_cap', count: surgeCountToday })
   }
 
@@ -226,11 +236,13 @@ export async function GET(req: Request) {
     if (entered.length + positions.length >= MAX_POS || exposure >= MAX_EXP) break
   }
 
-  // Pass 2: Volume surge (real-time movers — enter any remaining slots)
+  // Pass 2: Volume surge — disabled in recovery (< $92K). 37% WR / -$1,347 in July.
   const surges = await surgePromise
-  for (const surge of surges) {
-    if (entered.length + positions.length >= MAX_POS || exposure >= MAX_EXP) break
-    await tryEnter(surge.symbol, `SURGE×${surge.surgeMult.toFixed(1)}`, 60, 'MOMENTUM_SURGE')
+  if (!surgeInRecovery) {
+    for (const surge of surges) {
+      if (entered.length + positions.length >= MAX_POS || exposure >= MAX_EXP) break
+      await tryEnter(surge.symbol, `SURGE×${surge.surgeMult.toFixed(1)}`, 60, 'MOMENTUM_SURGE')
+    }
   }
 
   // Remove entered symbols from queue
