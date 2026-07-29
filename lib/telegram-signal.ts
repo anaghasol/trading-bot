@@ -14,7 +14,7 @@ import { groqTextComplete } from './groq-text'
 
 // Thin wrapper: dual-key + multi-model fallback from groq-text.ts
 async function groqClassify(prompt: string, maxTokens = 800): Promise<string> {
-  const result = await groqTextComplete(prompt, maxTokens)
+  const result = await groqTextComplete(prompt, maxTokens, 'tg-signal-classify')
   if (!result) throw new Error('All Groq keys and models exhausted')
   return result.text
 }

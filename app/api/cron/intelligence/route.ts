@@ -157,7 +157,7 @@ Rules:
 - focus_symbols should be today's winners still showing momentum
 - Keep reasoning under 120 chars`
 
-  const result = await groqTextComplete(prompt, 400)
+  const result = await groqTextComplete(prompt, 400, 'intelligence-cron')
   if (!result) {
     return NextResponse.json({ ok: false, reason: 'groq_unavailable' })
   }
