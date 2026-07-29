@@ -6,52 +6,20 @@
  *   type: 'learn'   → insight/analysis → save to learning log for future AI context
  *   type: 'ignore'  → noise, promos, greetings → skip
  *
- * Uses Groq (free) for all text classification — llama-3.3-70b-versatile.
+ * Uses Groq (free) for all text classification — dual-key fallback via groq-text.ts.
  * Claude is NOT used here; it's only used for image OCR in the poll route.
  */
 
-const GROQ_KEY = process.env.GROQ_API_KEY ?? ''
+import { groqTextComplete } from './groq-text'
 
-// Free Groq model fallback chain — try in order on 429/503
-const GROQ_MODELS = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-70b-versatile',
-  'mixtral-8x7b-32768',
-  'llama-3.1-8b-instant',
-  'gemma2-9b-it',
-]
-
+// Thin wrapper: dual-key + multi-model fallback from groq-text.ts
 async function groqClassify(prompt: string, maxTokens = 800): Promise<string> {
-  if (!GROQ_KEY) throw new Error('GROQ_API_KEY not set')
-  let lastErr: Error = new Error('No models tried')
-  for (const model of GROQ_MODELS) {
-    try {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          temperature: 0.1,
-          max_tokens: maxTokens,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: AbortSignal.timeout(30_000),
-      })
-      if (res.status === 429 || res.status === 503) {
-        lastErr = new Error(`Groq ${model} HTTP ${res.status}`)
-        continue   // try next model
-      }
-      if (!res.ok) throw new Error(`Groq ${model} HTTP ${res.status}`)
-      const data = await res.json() as { choices: { message: { content: string } }[] }
-      return data.choices[0]?.message?.content?.trim() ?? ''
-    } catch (e) {
-      lastErr = e instanceof Error ? e : new Error(String(e))
-    }
-  }
-  throw lastErr
+  const result = await groqTextComplete(prompt, maxTokens)
+  if (!result) throw new Error('All Groq keys and models exhausted')
+  return result.text
 }
 
-const TRADE_KEYWORDS = /\b(buy|sell|long|short|entry|sl|stop.?loss|target|t1|t2|t3|breakout|support|resistance|earnings|hold|exit|watchlist|alert|position|setup|hit|stopped|closed)\b/i
+const TRADE_KEYWORDS = /\b(buy|buying|buys|sell|selling|sells|long|short|entry|entries|sl|stop.?loss|target|t1|t2|t3|breakout|support|resistance|earnings|hold|holding|trim|trimming|partial|exit|watchlist|alert|position|setup|hit|stopped|closed|trade[\s\-]?id)\b/i
 const HAS_TICKER    = /\b[A-Z]{2,5}\b/
 const HAS_PRICE     = /\$[\d,]+(\.\d+)?|\d+\.?\d*\s*%/
 
@@ -230,6 +198,15 @@ export async function parseSignalThread(
 
 export async function parseSignal(text: string, channelName = 'Trading Channel', signalStyle = ''): Promise<ParsedSignal> {
   try {
+    // US Equities channel: skip complex options commentary before hitting Groq
+    if (channelName.includes('US Equities') && isOptionsSignal(text)) {
+      return {
+        type: 'learn',
+        summary: `Options/spread commentary (US Equities, skipped): ${text.slice(0, 100)}`,
+        symbols: [], sentiment: 'neutral', sector: null, watch_zone: null, actionable: false, raw: text,
+      }
+    }
+
     const channelContext = signalStyle
       ? `\nCHANNEL STYLE: ${signalStyle}\n`
       : ''
@@ -252,13 +229,23 @@ STEP 2 — SINGLE-LEG OPTIONS (explicit call or put with a stock ticker, strike 
 → SKIP if: options exit / "closing my call" / "took profit on puts" → type:learn
 
 STEP 3 — STOCK trade?
-→ Explicit: stock ticker + BUY/SELL + price/market + stop loss → type:trade
+→ Explicit: stock ticker + BUY/SELL/BUYING/SELLING + price/market + stop loss → type:trade
 → e.g. "Buy SPIR at 20 SL 18.5", "Enter COIN market SL 245"
+→ SF Trades (Pavan) exact format: "Trade Id : 3728, 07/10: Buying CRDO at 215 With SL of 200 Which has max risk of 1.50% for purchase type as: Trade"
+  → ALWAYS type:trade — extract symbol=CRDO, entry_price=215, stop_loss=200, confidence=90
+  → Any message with "Trade Id" + ticker + "With SL" is an explicit entry — never type:learn
+→ "buying NBIS at 280 for a trade with 260 as Stop" → type:trade, entry_price=280, stop_loss=260
 → No stop loss = type:learn (not confident enough to execute)
 → Index mentions (SPX, NDX, RUT, VIX) alone = type:learn, trade ETF proxy only if explicit BUY
 
+STEP 3b — HOLD / TRIM signals (CRITICAL — these are position management, NOT new entries):
+→ "holding [tickers] for more time" / "holding [ticker] till [target]" / "staying in [ticker]" → type:learn
+→ "trimming [ticker]" / "trimmed [X]%" / "booking partial profits" / "exiting half" / "took partial gains" → type:exit, reason=ADVISOR_EXIT
+→ NEVER classify hold or trim messages as type:trade with action=BUY
+
 STEP 4 — EXIT?
 → Explicit close/exit of a stock position we hold → type:exit
+→ "TP hit", "target hit", "stop hit", "SL hit" on a ticker → type:exit
 → NOT for options P&L updates or spread closings
 
 STEP 5 — LEARN/IGNORE

@@ -105,7 +105,7 @@ const CHANNELS: ChannelCfg[] = [
     watermarkKey:    'tg_last_trade_id_sf_pavan',
     source:          'sf_pavan',
     tradeEnabled:    true,    // HIGHEST PRIORITY — curated paid signals, execute always
-    schwabEnabled:   false,   // paper-only for now — observe pattern before risking real money
+    schwabEnabled:   true,    // SF Trades relay = top priority; execute on Schwab live (conf=90 clears 78% gate, 1.5% risk/trade)
     skipSpamFilter:  true,    // trusted paid channel — never spam-filter
     signalStyle:     `Pavan Sailesh's SF Essential Trades — exclusive paid US equity alerts.
 
@@ -141,7 +141,7 @@ Always extract ticker + direction. 'Trade Id' messages are ALWAYS BUY signals (c
     tradeEnabled:    true,
     schwabEnabled:   true,    // US Equities: execute on Schwab live when confidence >= gate
     skipSpamFilter:  true,    // curated channel — skip generic spam regex, trust every message
-    signalStyle:     'US equity trading signals. Format: "Buy TICKER at PRICE SL PRICE target PRICE" or "Watch TICKER near PRICE" or momentum callouts like "INTC AMD moving — entry near X". Also posts earnings previews, watchlists, and "X% up today" momentum alerts. Act on explicit BUY/SELL entries; learn from watchlist and momentum callouts.',
+    signalStyle:     'US equity trading signals. Format: "Buy TICKER at PRICE SL PRICE target PRICE" or "Watch TICKER near PRICE" or momentum callouts like "INTC AMD moving — entry near X". Also posts earnings previews, watchlists, and "X% up today" momentum alerts. Act on explicit BUY/SELL entries only — confidence must be ≥80 to execute. Learn from watchlist, momentum callouts, and any options/SPX/iron fly commentary (type:learn, never type:trade).',
     relayEnabled:    true,   // forward every raw message to relay group as-is
   },
   {
