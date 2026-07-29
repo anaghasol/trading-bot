@@ -146,13 +146,11 @@ async function classifyChunk(
 
 ${numbered}
 
-Per-message classification rules:
-- type:trade = explicit buy/sell entry with ticker, price AND stop loss
-  Examples: "buying IBM at 275 with 250 as stop" / "Trade Id : XXXXX: Buying CRDO at 215 With SL of 200" / "buying NBIS at 280 for a trade with 260 as Stop"
-  → ALWAYS type:trade when message says "buying X at Y with Z as stop" or has "Trade Id" + ticker + SL
-- type:exit = "trimming", "TP hit", "book profits", "partial gains", "stop hit", exit instruction
-- type:learn = market commentary, performance updates, Q&A, watchlist mentions, no entry price
-- type:ignore = greetings, admin, very short noise, member questions with no signal
+Read each message as a human trader would. Classify by intent:
+- type:trade = trader is entering a NEW stock position with a defined stop loss (phrasing can vary — any clear entry intent with a risk level)
+- type:exit = trader is closing, trimming, booking profits, or a stop/target was hit
+- type:learn = position updates, holding/watching commentary, market views, context without a new entry
+- type:ignore = greetings, admin, noise with no trading intent
 
 Return ONLY a JSON array with exactly ${chunk.length} objects:
 [{"msg_index":${offset + 1},"type":"trade","symbol":"IBM","action":"BUY","entry_price":275,"stop_loss":250,"target":null,"confidence":90}, ...]
@@ -229,19 +227,16 @@ STEP 2 — SINGLE-LEG OPTIONS (explicit call or put with a stock ticker, strike 
 → SKIP if: options exit / "closing my call" / "took profit on puts" → type:learn
 
 STEP 3 — STOCK trade?
-→ Explicit: stock ticker + BUY/SELL/BUYING/SELLING + price/market + stop loss → type:trade
-→ e.g. "Buy SPIR at 20 SL 18.5", "Enter COIN market SL 245"
-→ SF Trades (Pavan) exact format: "Trade Id : 3728, 07/10: Buying CRDO at 215 With SL of 200 Which has max risk of 1.50% for purchase type as: Trade"
-  → ALWAYS type:trade — extract symbol=CRDO, entry_price=215, stop_loss=200, confidence=90
-  → Any message with "Trade Id" + ticker + "With SL" is an explicit entry — never type:learn
-→ "buying NBIS at 280 for a trade with 260 as Stop" → type:trade, entry_price=280, stop_loss=260
-→ No stop loss = type:learn (not confident enough to execute)
-→ Index mentions (SPX, NDX, RUT, VIX) alone = type:learn, trade ETF proxy only if explicit BUY
+→ Read for intent: is the trader entering a new stock position with a defined stop loss?
+→ The phrasing can be anything — "buying X at Y", "entering X", "long X near Y stop Z", "added X at Y risk Z"
+→ If there is a clear ticker + entry intent + stop loss: type:trade, confidence=90
+→ No stop loss stated: type:learn (not enough info to size the trade safely)
+→ Index mentions (SPX, NDX, RUT, VIX) alone: type:learn unless the message says to buy an ETF
 
-STEP 3b — HOLD / TRIM signals (CRITICAL — these are position management, NOT new entries):
-→ "holding [tickers] for more time" / "holding [ticker] till [target]" / "staying in [ticker]" → type:learn
-→ "trimming [ticker]" / "trimmed [X]%" / "booking partial profits" / "exiting half" / "took partial gains" → type:exit, reason=ADVISOR_EXIT
-→ NEVER classify hold or trim messages as type:trade with action=BUY
+STEP 3b — POSITION MANAGEMENT (NOT new entries):
+→ "holding X", "staying in X", "watching X hold support" → type:learn
+→ "trimming X", "booking partial profits on X", "exiting half", "cutting position" → type:exit, reason=ADVISOR_EXIT
+→ A trader managing an existing trade is NOT opening a new one — never type:trade for these
 
 STEP 4 — EXIT?
 → Explicit close/exit of a stock position we hold → type:exit

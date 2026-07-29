@@ -107,18 +107,15 @@ const CHANNELS: ChannelCfg[] = [
     tradeEnabled:    true,    // HIGHEST PRIORITY — curated paid signals, execute always
     schwabEnabled:   true,    // SF Trades relay = top priority; execute on Schwab live (conf=90 clears 78% gate, 1.5% risk/trade)
     skipSpamFilter:  true,    // trusted paid channel — never spam-filter
-    signalStyle:     `Pavan Sailesh's SF Essential Trades — exclusive paid US equity alerts.
+    signalStyle:     `Paid US equity alerts from an expert trader. Read each message as a human trader would — understand what the trader intends, regardless of how it is phrased.
 
-Primary entry format:
-  "Trade Id : XXXXX, MM/DD: Buying TICKER at PRICE With SL of PRICE Which has max risk of X.XX% for purchase type as: Trade."
-  → Extract: action=BUY, symbol=TICKER, entry_price=PRICE, stop_loss=SL, confidence=90
+A message is a BUY trade signal if the trader is entering or has entered a stock position with a defined risk (stop loss). The phrasing can vary widely — "buying X", "entering X at Y", "added X", "long X near Y with Z as stop", or any similar intent. Always extract: ticker, entry price, stop loss. Confidence = 90 when a stop is defined.
 
-Follow-up / update messages (same Trade Id):
-  "TICKER is an early trade cmp is PRICE... keep a buy order or alert below PRICE"  → classify as learn
-  "TICKER TP hit" / "TICKER booked" / "book profits on TICKER" / "TICKER stop hit"  → classify as exit
-  "ALAB 450$ now. My profit shares are up almost 400%..."  → learn (context)
+A message is an EXIT signal if the trader says to close, trim, book profits, or a stop/target was hit on a stock they're in.
 
-Always extract ticker + direction. 'Trade Id' messages are ALWAYS BUY signals (confidence=90) unless message says sell/trim/exit. Never classify a Trade Id message as ignore.`,
+A message is LEARN if the trader is giving context, updates on an existing position, sector views, or saying "holding" / "watching" without opening a new trade.
+
+Trust your reading of the message — don't look for specific keywords or formats.`,
     relayEnabled:    false,   // poll-sf handles relay separately — no duplication here
   }] : []),
   // ── Public SF Essential Trades (macro context, learn only) ───────────────────
@@ -332,7 +329,10 @@ export async function GET(req: Request) {
         }
       }
 
-      if (!isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
+      // Trusted channels (skipSpamFilter=true): send everything to Groq — don't keyword-gate.
+      // Pattern matching misses signals that don't use exact buy/sell words (e.g. "entering X at Y").
+      // Untrusted channels: still pre-filter to save Groq calls on obvious noise.
+      if (!ch.skipSpamFilter && !isWorthClassifying(text)) return { id: msg.id, type: 'ignore' }
 
       // Spam gate — only apply to untrusted/muted channels.
       // Active trade channels (@OptionT1, @JimmyLeshTrades) are curated — never spam-filter them.
