@@ -9,12 +9,11 @@
 // All free Groq text models, ordered best → fastest
 const GROQ_TEXT_CHAIN = [
   { model: 'llama-3.3-70b-versatile',          label: 'Groq/Llama3.3-70B'    },
-  { model: 'llama3-70b-8192',                   label: 'Groq/Llama3-70B'      },
   { model: 'qwen-qwq-32b',                      label: 'Groq/QwQ-32B'         },
   { model: 'deepseek-r1-distill-llama-70b',     label: 'Groq/DeepSeek-R1-70B' },
-  { model: 'gemma2-9b-it',                      label: 'Groq/Gemma2-9B'       },
+  { model: 'openai/gpt-oss-120b',               label: 'Groq/GPT-OSS-120B'    },
   { model: 'llama-3.2-3b-preview',              label: 'Groq/Llama3.2-3B'     },
-  { model: 'llama-3.1-8b-instant',              label: 'Groq/Llama3.1-8B'     },
+  { model: 'openai/gpt-oss-20b',              label: 'Groq/GPT-OSS-20B'     },
 ]
 
 function getGroqKeys(): string[] {
@@ -99,7 +98,7 @@ export async function groqFast(
         method: 'POST',
         headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'llama-3.1-8b-instant',
+          model: 'openai/gpt-oss-20b',
           max_tokens: maxTokens,
           messages: [{ role: 'user', content: prompt }],
         }),
@@ -109,7 +108,7 @@ export async function groqFast(
       if (!res.ok) continue
       const data = await res.json() as { choices?: { message?: { content?: string } }[] }
       const text = data.choices?.[0]?.message?.content?.trim()
-      if (text) return { text, model: 'Groq/Llama3.1-8B-fast' }
+      if (text) return { text, model: 'Groq/GPT-OSS-20B-fast' }
     } catch { /* try next key */ }
   }
 

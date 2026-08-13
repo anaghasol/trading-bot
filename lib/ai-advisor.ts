@@ -30,12 +30,13 @@ const GROQ_KEY  = process.env.GROQ_API_KEY    // PRIMARY — free 4-model ensemb
 
 // Groq sequential fallback chain — best quality first, drops to next on 429/503.
 // Each model has a separate rate-limit quota so they don't all fail together.
-// llama-3.1-8b-instant is tiny/fast and almost never hits rate limits.
+// openai/gpt-oss-20b replaced llama-3.1-8b-instant (Groq decommission 2026-08-16).
+// NOTE: gpt-oss-20b is a reasoning model — it returns EMPTY output under small
+// max_tokens budgets. Only use it where max_tokens >= ~1000.
 const GROQ_CHAIN = [
   { model: 'llama-3.3-70b-versatile', label: 'Groq/Llama3.3-70B' },  // best quality
-  { model: 'llama3-70b-8192',          label: 'Groq/Llama3-70B'   },  // older 70B, separate quota
-  { model: 'gemma2-9b-it',             label: 'Groq/Gemma2-9B'    },  // Google model, different pool
-  { model: 'llama-3.1-8b-instant',     label: 'Groq/Llama3.1-8B'  },  // smallest, almost never rate-limits
+  { model: 'openai/gpt-oss-120b',      label: 'Groq/GPT-OSS-120B' },  // replaced gemma2-9b-it (decommissioned)
+  { model: 'openai/gpt-oss-20b',     label: 'Groq/GPT-OSS-20B'  },  // replaced llama-3.1-8b (decommissioned 2026-08-16)
 ]
 
 const isPaperBroker = (broker: string) => broker === 'alpaca_paper'
@@ -224,8 +225,8 @@ async function askOpenAI(
 // Chain order (user-specified):
 //   1. llama-3.3-70b-versatile  — default, best quality
 //   2. llama3-70b-8192          — if throttled, separate quota
-//   3. gemma2-9b-it             — fast, different pool (Google model)
-//   4. llama-3.1-8b-instant     — smallest, almost never rate-limits
+//   3. openai/gpt-oss-120b      — replaced gemma2-9b-it (already decommissioned)
+//   4. openai/gpt-oss-20b       — replaced llama-3.1-8b (decommissioned 2026-08-16)
 
 async function tryGroqModel(
   model: string,

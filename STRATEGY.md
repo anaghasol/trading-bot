@@ -44,8 +44,8 @@
 │                                                     │
 │  1st try: llama-3.3-70b-versatile  (best quality)  │
 │  → 429/503: llama3-70b-8192        (separate quota) │
-│  → 429/503: gemma2-9b-it           (Google pool)   │
-│  → 429/503: llama-3.1-8b-instant   (never limits)  │
+│  → 429/503: openai/gpt-oss-120b    (OpenAI pool)   │
+│  → 429/503: openai/gpt-oss-20b     (never limits)  │
 │  → all fail: Claude Sonnet         (paid, rare)     │
 │                                                     │
 │  Each setup gets: symbol, confidence 0-100%,        │
