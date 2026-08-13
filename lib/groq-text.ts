@@ -8,12 +8,10 @@
 
 // All free Groq text models, ordered best → fastest
 const GROQ_TEXT_CHAIN = [
-  { model: 'llama-3.3-70b-versatile',          label: 'Groq/Llama3.3-70B'    },
-  { model: 'qwen-qwq-32b',                      label: 'Groq/QwQ-32B'         },
-  { model: 'deepseek-r1-distill-llama-70b',     label: 'Groq/DeepSeek-R1-70B' },
+  { model: 'llama-3.3-70b-versatile',           label: 'Groq/Llama3.3-70B'    },
   { model: 'openai/gpt-oss-120b',               label: 'Groq/GPT-OSS-120B'    },
-  { model: 'llama-3.2-3b-preview',              label: 'Groq/Llama3.2-3B'     },
-  { model: 'openai/gpt-oss-20b',              label: 'Groq/GPT-OSS-20B'     },
+  { model: 'openai/gpt-oss-20b',                label: 'Groq/GPT-OSS-20B'     },
+  { model: 'allam-2-7b',                        label: 'Groq/Allam-2-7B'      },
 ]
 
 function getGroqKeys(): string[] {
