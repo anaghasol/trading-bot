@@ -18,9 +18,14 @@ function authorized(req: Request) {
   return !s || req.headers.get('authorization') === `Bearer ${s}`
 }
 
+// staleMin: a poller runs every minute, the auditor every 20.
 const POLLERS = [
-  { label: '3-channel TG poller (US Equities / SF Essential / Jimmy)', pingKey: 'tg_cron_ping',    alertKey: 'tg_watchdog_alerted_at' },
-  { label: 'SF Trades exclusive poller (Pavan)',                        pingKey: 'tg_sf_cron_ping', alertKey: 'tg_sf_watchdog_alerted_at' },
+  { label: '3-channel TG poller (US Equities / SF Essential / Jimmy)', pingKey: 'tg_cron_ping',    alertKey: 'tg_watchdog_alerted_at',          staleMin: 5  },
+  { label: 'SF Trades exclusive poller (Pavan)',                        pingKey: 'tg_sf_cron_ping', alertKey: 'tg_sf_watchdog_alerted_at',       staleMin: 5  },
+  // Watches the watcher: relay-audit is the only check that compares relay
+  // CONTENT against source. A ping-only poller can look healthy while relaying
+  // into the wrong topic — which is precisely how Aug 2026 went unnoticed.
+  { label: 'Relay content auditor (source→relay reconciliation)',       pingKey: 'relay_audit_last', alertKey: 'relay_audit_watchdog_alerted_at', staleMin: 60 },
 ] as const
 
 export async function GET(req: Request) {
@@ -40,7 +45,7 @@ export async function GET(req: Request) {
     const lastAlert = alertRow.data?.value ? new Date(alertRow.data.value).getTime() : 0
     const silentMin = lastPing > 0 ? Math.round((now - lastPing) / 60_000) : null
 
-    const isDown = lastPing === 0 || (silentMin ?? 999) > 5
+    const isDown = lastPing === 0 || (silentMin ?? 999) > p.staleMin
     const canAlert = now - lastAlert > 30 * 60_000   // alert at most once per 30 min
 
     if (isDown && canAlert) {
