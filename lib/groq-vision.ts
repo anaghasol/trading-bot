@@ -3,7 +3,7 @@
  *
  * Tier 1 — OpenRouter (OPENROUTER_API_KEY): openrouter/auto → qwen/qwen3.7-flash
  *           Groq dropped all vision models in Aug 2026.
- * Tier 2 — Gemini direct (GEMINI_API_KEY): gemini-2.0-flash-exp → gemini-1.5-flash (free)
+ * Tier 2 — Gemini direct (GEMINI_API_KEY): gemini-3.1-flash-lite → -preview → 3-flash-preview
  *
  * Fires TG alert if all providers exhaust (rate-limited 30 min).
  */
@@ -67,7 +67,10 @@ async function tryGeminiVision(dataUrl: string, prompt: string): Promise<string 
   if (!match) return null
   const [, mimeType, base64Data] = match
 
-  for (const model of ['gemini-3-flash-preview', 'gemini-3.1-flash-lite', 'gemini-3.1-flash-lite-preview']) {
+  // flash-lite first: it spends 0 tokens on internal thinking and answers in ~1-3s.
+  // gemini-3-flash-preview DOES think, is the most 503-prone, and goes last.
+  // Only 3.x ids work — gemini-1.5/2.0/2.5 now return "no longer available to new users".
+  for (const model of ['gemini-3.1-flash-lite', 'gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview']) {
     try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
@@ -81,7 +84,11 @@ async function tryGeminiVision(dataUrl: string, prompt: string): Promise<string 
                 { text: prompt },
               ],
             }],
-            generationConfig: { maxOutputTokens: 150 },
+            // Thinking tokens count against maxOutputTokens and thinkingBudget:0 is
+            // rejected with INVALID_ARGUMENT, so the budget can only be out-sized.
+            // At 150 a thinking model spends the whole allowance on thoughts and
+            // returns an EMPTY string with finishReason MAX_TOKENS.
+            generationConfig: { temperature: 0, maxOutputTokens: 2000 },
           }),
           signal: AbortSignal.timeout(20_000),
         }
@@ -89,7 +96,10 @@ async function tryGeminiVision(dataUrl: string, prompt: string): Promise<string 
       if (res.status === 429 || res.status === 503) continue
       if (!res.ok) continue
       const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
-      const out = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? 'NONE'
+      // Join every part — a thinking model can emit thoughts before the answer,
+      // so parts[0] alone is not reliably the response.
+      const out = (data.candidates?.[0]?.content?.parts ?? [])
+        .map((p) => p.text ?? '').join('').trim() || 'NONE'
       if (out !== 'NONE' && out.includes('TICKER')) {
         console.log(`[IMG_OCR][Gemini:${model}] ${out}`)
         return out
