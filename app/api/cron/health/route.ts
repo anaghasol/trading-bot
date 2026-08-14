@@ -250,7 +250,74 @@ export async function GET(req: Request) {
     issues.push(`TG watchdog check failed: ${String(e).slice(0, 80)}`)
   }
 
-  // ── 6. LOG + SMS ───────────────────────────────────────────────────────────
+  // ── 6. AI provider quick-health check ────────────────────────────────────
+  // Fires every health run (30 min). Tests each live provider with a 1-token probe.
+  // Result stored in tb_settings so dashboard can show current AI status.
+  try {
+    const aiProbe = 'Reply with the single word: OK'
+    const providerResults: string[] = []
+
+    // Groq probe
+    const groqKeys = [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2].filter(Boolean) as string[]
+    let groqOk = false
+    for (const key of groqKeys) {
+      try {
+        const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'llama-3.3-70b-versatile', max_tokens: 3, messages: [{ role: 'user', content: aiProbe }] }),
+          signal: AbortSignal.timeout(8_000),
+        })
+        if (r.ok) { groqOk = true; break }
+      } catch { /* skip */ }
+    }
+    providerResults.push(`Groq:${groqOk ? '✓' : '✗'}`)
+
+    // OpenRouter probe
+    const orKey = process.env.OPENROUTER_API_KEY
+    let orOk = false
+    if (orKey) {
+      try {
+        const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${orKey}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://mytrade.app' },
+          body: JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct:free', max_tokens: 3, messages: [{ role: 'user', content: aiProbe }] }),
+          signal: AbortSignal.timeout(10_000),
+        })
+        if (r.ok) orOk = true
+      } catch { /* skip */ }
+    }
+    providerResults.push(`OR:${orKey ? (orOk ? '✓' : '✗') : 'no-key'}`)
+
+    // Gemini probe
+    const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_AI_API_KEY
+    let geminiOk = false
+    if (geminiKey) {
+      try {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: aiProbe }] }], generationConfig: { maxOutputTokens: 3 } }),
+          signal: AbortSignal.timeout(10_000),
+        })
+        if (r.ok) geminiOk = true
+      } catch { /* skip */ }
+    }
+    providerResults.push(`Gemini:${geminiKey ? (geminiOk ? '✓' : '✗') : 'no-key'}`)
+
+    const aiStatus = providerResults.join(' | ')
+    await db.from('tb_settings').upsert({ key: 'ai_provider_health', value: aiStatus })
+
+    if (!groqOk && !orOk && !geminiOk) {
+      issues.push(`ALL AI providers down: ${aiStatus}`)
+    } else if (!groqOk) {
+      issues.push(`Groq exhausted — fallback active: ${aiStatus}`)
+    }
+  } catch (e) {
+    issues.push(`AI health check failed: ${String(e).slice(0, 60)}`)
+  }
+
+  // ── 7. LOG + SMS ───────────────────────────────────────────────────────────
   const summary = [
     healed.length ? `Healed: ${healed.join('; ')}` : null,
     issues.length ? `Issues: ${issues.join('; ')}` : null,

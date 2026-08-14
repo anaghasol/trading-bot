@@ -81,10 +81,11 @@ async function tryOpenRouter(prompt: string, maxTokens: number): Promise<{ text:
 
 // ── Tier 3: Google Gemini (free direct API) ───────────────────────────────────
 
+// Confirmed working + fast free Gemini models (tested Aug 2026 — 3.7/3.6 timeout on reasoning)
 const GEMINI_MODELS = [
-  'gemini-2.0-flash-exp',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-flash-lite-preview',
 ]
 
 async function tryGemini(prompt: string, maxTokens: number): Promise<{ text: string; model: string } | null> {

@@ -67,7 +67,7 @@ async function tryGeminiVision(dataUrl: string, prompt: string): Promise<string 
   if (!match) return null
   const [, mimeType, base64Data] = match
 
-  for (const model of ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-flash-8b']) {
+  for (const model of ['gemini-3-flash-preview', 'gemini-3.1-flash-lite', 'gemini-3.1-flash-lite-preview']) {
     try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
