@@ -113,7 +113,30 @@ export async function GET(req: Request) {
 
   if (newMsgs.length === 0) {
     await client.disconnect().catch(() => {})
-    return NextResponse.json({ ok: true, channel: 'SF Trades', new: 0, checked: messages.length })
+    // Detect stuck watermark: all fetched messages are older than watermark
+    // This means the bot stopped relaying — alert once per 2 hours
+    const latestInChannel = messages.reduce((max, m) => Math.max(max, m.id), 0)
+    if (latestInChannel > 0 && latestInChannel <= lastId) {
+      const { data: alertedRow } = await db.from('tb_settings').select('value').eq('key', 'tg_sf_stuck_alerted_at').single()
+      const lastAlerted = alertedRow?.value ? new Date(alertedRow.value).getTime() : 0
+      if (Date.now() - lastAlerted > 2 * 60 * 60_000 && BOT_TOKEN) {
+        await db.from('tb_settings').upsert({ key: 'tg_sf_stuck_alerted_at', value: new Date().toISOString() })
+        const GROUP_ID_LOCAL = parseInt(process.env.TELEGRAM_ALLOWED_CHAT_ID ?? '0')
+        if (GROUP_ID_LOCAL) {
+          await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: GROUP_ID_LOCAL,
+              text: `⚠️ *SF Trades Relay — Watermark Stuck*\n\nLatest message in channel: #${latestInChannel}\nWatermark: #${lastId}\n\nChannel has no new messages beyond the watermark — relay may be frozen.\n\nRun: /api/telegram/sf-status?secret=... to diagnose.\nAdd ?reset_watermark=1 to unstick.`,
+              parse_mode: 'Markdown',
+            }),
+            signal: AbortSignal.timeout(5_000),
+          }).catch(() => {})
+        }
+      }
+    }
+    return NextResponse.json({ ok: true, channel: 'SF Trades', new: 0, checked: messages.length, latest_in_channel: latestInChannel, watermark: lastId })
   }
 
   // Discover Pavan's forum topics on first run, cache in Supabase
