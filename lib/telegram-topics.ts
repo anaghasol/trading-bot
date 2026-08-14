@@ -63,27 +63,65 @@ async function createRelayTopic(name: string): Promise<number | null> {
 }
 
 /**
+ * Canonical Pavan topic → relay thread. The two groups are fixed, so this is the
+ * source of truth: if tg_mirror_topic_map is ever wiped, the relay resumes into
+ * the original threads instead of creating a duplicate set (which silently
+ * stranded 4 days of messages in Aug 2026).
+ */
+const KNOWN_TOPIC_MAP: Record<number, number> = {
+  3:     89,  // SF Essential Trades( Buy /Sell Alerts)
+  2:     90,  // SF Essential Discussion forum
+  3767:  91,  // Updates on Holdings
+  11541: 92,  // Education
+  2080:  93,  // Weekly Webinar Videos
+  1:     94,  // New Joiners
+  10600: 95,  // Feedback & Suggestions
+  9852:  96,  // Referral links
+}
+
+/** Strip punctuation/parentheticals so "SF Essential Trades( Buy /Sell)" matches "SF Essential Trades". */
+function normTitle(s: string): string {
+  return s.toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9]/g, '')
+}
+
+/** Existing relay topics, injected by the caller (Bot API cannot list forum topics). */
+export type RelayTopic = { id: number; title: string }
+
+/**
  * Get relay thread ID for a given Pavan topic (name + ID).
- * Creates the relay topic if it doesn't exist yet.
- * Returns null if relay chat not configured or creation fails.
+ * Resolution order: cached map → canonical map → name match against existing
+ * relay topics → create. Creating is the last resort so a lost cache never
+ * forks the relay into duplicate topics.
  */
 export async function getOrCreateMirrorThread(
   pavanTopicId: number,
   pavanTopicName: string,
-  db: DB
+  db: DB,
+  relayTopics: RelayTopic[] = [],
 ): Promise<number | null> {
   if (!BOT_TOKEN || !RELAY_CHAT) return null
 
   const map = await loadTopicMap(db)
   if (map[pavanTopicId]) return map[pavanTopicId]
 
-  // Create a matching topic in our relay group
-  const newThreadId = await createRelayTopic(pavanTopicName)
-  if (!newThreadId) return null
+  let threadId = KNOWN_TOPIC_MAP[pavanTopicId] ?? null
 
-  map[pavanTopicId] = newThreadId
+  if (!threadId && relayTopics.length) {
+    const want = normTitle(pavanTopicName)
+    const hits = relayTopics.filter(t => {
+      const got = normTitle(t.title)
+      return got === want || got.startsWith(want) || want.startsWith(got)
+    })
+    // Lowest id wins — the earliest-created topic is the canonical one.
+    if (hits.length) threadId = Math.min(...hits.map(t => t.id))
+  }
+
+  const resolved = threadId ?? await createRelayTopic(pavanTopicName)
+  if (!resolved) return null
+
+  map[pavanTopicId] = resolved
   await saveTopicMap(map, db)
-  return newThreadId
+  return resolved
 }
 
 // ── Format helper ────────────────────────────────────────────────────────────

@@ -139,6 +139,16 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, channel: 'SF Trades', new: 0, checked: messages.length, latest_in_channel: latestInChannel, watermark: lastId })
   }
 
+  const listForumTopics = async (chatId: string | number): Promise<Array<{ id: number; title: string }>> => {
+    const { Api } = await import('telegram')
+    const entity = await client!.getInputEntity(chatId)
+    const result = await client!.invoke(new Api.channels.GetForumTopics({
+      channel: entity as unknown as import('telegram').Api.InputChannel,
+      limit: 100, offsetId: 0, offsetDate: 0, offsetTopic: 0, q: '',
+    })) as { topics: Array<{ id: number; title: string }> }
+    return result.topics.map(t => ({ id: t.id, title: t.title }))
+  }
+
   // Discover Pavan's forum topics on first run, cache in Supabase
   let pavanTopics: Record<number, string> = {}
   try {
@@ -146,16 +156,18 @@ export async function GET(req: Request) {
     if (topicCache?.value) {
       pavanTopics = JSON.parse(topicCache.value)
     } else {
-      const { Api } = await import('telegram')
-      const entity = await client.getInputEntity(SF_CHANNEL_ID)
-      const result = await client.invoke(new Api.channels.GetForumTopics({
-        channel: entity as unknown as import('telegram').Api.InputChannel,
-        limit: 100, offsetId: 0, offsetDate: 0, offsetTopic: 0, q: '',
-      })) as { topics: Array<{ id: number; title: string }> }
-      result.topics.forEach(t => { pavanTopics[t.id] = t.title })
+      const topics = await listForumTopics(SF_CHANNEL_ID)
+      topics.forEach(t => { pavanTopics[t.id] = t.title })
       await db.from('tb_settings').upsert({ key: 'pavan_topics_json', value: JSON.stringify(pavanTopics) })
     }
   } catch { /* non-fatal — defaults to thread 89 */ }
+
+  // Existing relay topics — lets getOrCreateMirrorThread reuse a topic by name
+  // instead of forking a duplicate when the cached map is missing an entry.
+  let relayTopics: Array<{ id: number; title: string }> = []
+  if (RELAY_CHAT) {
+    try { relayTopics = await listForumTopics(parseInt(RELAY_CHAT)) } catch { /* non-fatal */ }
+  }
 
   const results: { id: number; type: string }[] = []
   let maxDeliveredId = lastId  // only advance watermark for confirmed deliveries
@@ -179,7 +191,7 @@ export async function GET(req: Request) {
     const srcTopicName = (srcTopicId && pavanTopics[srcTopicId]) ? pavanTopics[srcTopicId] : 'SF Essential Trades'
 
     const relayThreadId = srcTopicId
-      ? await getOrCreateMirrorThread(srcTopicId, srcTopicName, db)
+      ? await getOrCreateMirrorThread(srcTopicId, srcTopicName, db, relayTopics)
       : 89  // default: "SF Essential Trades( Buy /Sell Alerts)"
 
     // Download image and forward as-is — no OCR, pure mirror
