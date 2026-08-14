@@ -1,22 +1,106 @@
 /**
- * Groq vision OCR — free-tier image trade-signal extraction.
- * Dual-key fallback: tries key 1 → key 2 per model.
- * Models: llama-4-scout → llama-4-maverick → llama-3.2-90b-vision-preview
- * Fires TG alert if all keys × all models exhaust.
+ * Vision OCR for image trade-signal extraction — multi-provider, never exhausts.
+ *
+ * Tier 1 — OpenRouter (OPENROUTER_API_KEY): openrouter/auto → qwen/qwen3.7-flash
+ *           Groq dropped all vision models in Aug 2026.
+ * Tier 2 — Gemini direct (GEMINI_API_KEY): gemini-2.0-flash-exp → gemini-1.5-flash (free)
+ *
+ * Fires TG alert if all providers exhaust (rate-limited 30 min).
  */
-const GROQ_VISION_MODELS = [
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'llama-3.2-90b-vision-preview',
-  'llama-3.2-11b-vision-preview',
+
+// ── Tier 1: OpenRouter vision ─────────────────────────────────────────────────
+
+const OR_VISION_MODELS = [
+  'openrouter/auto',
+  'qwen/qwen3.7-flash',
+  'google/gemini-2.0-flash-exp:free',
+  'meta-llama/llama-4-scout:free',
 ]
 
-function getGroqKeys(): string[] {
-  const keys: string[] = []
-  if (process.env.GROQ_API_KEY)   keys.push(process.env.GROQ_API_KEY)
-  if (process.env.GROQ_API_KEY_2) keys.push(process.env.GROQ_API_KEY_2)
-  return keys
+async function tryORVision(dataUrl: string, prompt: string): Promise<string | null> {
+  const key = process.env.OPENROUTER_API_KEY
+  if (!key) return null
+  for (const model of OR_VISION_MODELS) {
+    try {
+      const gr = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://mytrade.app',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 150,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: dataUrl } },
+              { type: 'text', text: prompt },
+            ],
+          }],
+        }),
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (gr.status === 429 || gr.status === 503) continue
+      if (!gr.ok) continue
+      const gd = await gr.json() as { choices?: { message?: { content?: string } }[] }
+      const out = gd.choices?.[0]?.message?.content?.trim() ?? 'NONE'
+      if (out !== 'NONE' && out.includes('TICKER')) {
+        console.log(`[IMG_OCR][OR:${model.split('/').pop()}] ${out}`)
+        return out
+      }
+      return null  // clean NONE response — no ticker found
+    } catch { /* timeout / network — try next model */ }
+  }
+  return null
 }
+
+// ── Tier 2: Gemini vision (free direct API) ───────────────────────────────────
+
+async function tryGeminiVision(dataUrl: string, prompt: string): Promise<string | null> {
+  const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_AI_API_KEY
+  if (!key) return null
+
+  // Extract base64 and mime from data URL
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  const [, mimeType, base64Data] = match
+
+  for (const model of ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-flash-8b']) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inline_data: { mime_type: mimeType, data: base64Data } },
+                { text: prompt },
+              ],
+            }],
+            generationConfig: { maxOutputTokens: 150 },
+          }),
+          signal: AbortSignal.timeout(20_000),
+        }
+      )
+      if (res.status === 429 || res.status === 503) continue
+      if (!res.ok) continue
+      const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+      const out = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? 'NONE'
+      if (out !== 'NONE' && out.includes('TICKER')) {
+        console.log(`[IMG_OCR][Gemini:${model}] ${out}`)
+        return out
+      }
+      return null
+    } catch { /* try next */ }
+  }
+  return null
+}
+
+// ── Exhaust alert ─────────────────────────────────────────────────────────────
 
 let lastVisionExhaustMs = 0
 async function alertVisionExhausted() {
@@ -31,51 +115,22 @@ async function alertVisionExhausted() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: chatId,
-      text: `⚠️ *Groq Vision Exhausted*\n\nAll keys × all vision models failed for image OCR.\nSignal images will be skipped until quota resets (< 1 hour).`,
+      text: `⚠️ *Vision OCR Exhausted*\n\nOpenRouter + Gemini both failed for image trade signals.\nSignal images will be skipped until keys/quota recover.\n\nCheck OPENROUTER_API_KEY and GEMINI_API_KEY in Vercel.`,
       parse_mode: 'Markdown',
     }),
     signal: AbortSignal.timeout(5_000),
   }).catch(() => {})
 }
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
 export async function groqVisionExtract(dataUrl: string, prompt: string): Promise<string | null> {
-  const keys = getGroqKeys()
-  if (keys.length === 0) return null
-
-  for (const model of GROQ_VISION_MODELS) {
-    for (const key of keys) {
-      try {
-        const gr = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model,
-            max_tokens: 150,
-            messages: [{
-              role: 'user',
-              content: [
-                { type: 'image_url', image_url: { url: dataUrl } },
-                { type: 'text', text: prompt },
-              ],
-            }],
-          }),
-          signal: AbortSignal.timeout(15_000),
-        })
-        if (gr.status === 429 || gr.status === 503) continue  // exhausted — try next key
-        if (!gr.ok) continue
-        const gd = await gr.json() as { choices?: { message?: { content?: string } }[] }
-        const out = gd.choices?.[0]?.message?.content?.trim() ?? 'NONE'
-        if (out !== 'NONE' && out.includes('TICKER')) {
-          console.log(`[IMG_OCR][groq:${model.split('/').pop()}] ${out}`)
-          return out
-        }
-        return null  // model responded cleanly with NONE — no need to retry other models
-      } catch { /* timeout / network — try next key */ }
-    }
+  const result = await tryORVision(dataUrl, prompt) ?? await tryGeminiVision(dataUrl, prompt)
+  if (result === undefined) {
+    void alertVisionExhausted()
+    return null
   }
-
-  void alertVisionExhausted()
-  return null
+  return result
 }
 
 /** Downloads Telegram media via GramJS and returns a base64 data URL, or null if not an image / too large. */

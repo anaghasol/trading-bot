@@ -1,17 +1,21 @@
 /**
- * Groq text completion — dual-key + full free-model fallback chain.
+ * AI text completion — multi-provider fallback chain. Never exhausts.
  *
- * Fallback order: for each model, try key 1 → key 2.
- * If both keys 429/503 on a model, move to the next model.
- * When ALL models × ALL keys are exhausted → TG alert fires (rate-limited 30 min).
+ * Tier 1 — Groq (fastest, free): llama-3.3-70b → gpt-oss-120b → gpt-oss-20b → allam-2-7b
+ *           Try GROQ_API_KEY then GROQ_API_KEY_2 per model.
+ * Tier 2 — OpenRouter free (OPENROUTER_API_KEY): Llama3.3 → Gemini-2.0 → Qwen2.5 → Mistral
+ * Tier 3 — Gemini direct (GEMINI_API_KEY): gemini-2.0-flash-exp → gemini-1.5-flash (truly free)
+ *
+ * When ALL tiers fail → TG alert fires (rate-limited 30 min).
  */
 
-// All free Groq text models, ordered best → fastest
-const GROQ_TEXT_CHAIN = [
-  { model: 'llama-3.3-70b-versatile',           label: 'Groq/Llama3.3-70B'    },
-  { model: 'openai/gpt-oss-120b',               label: 'Groq/GPT-OSS-120B'    },
-  { model: 'openai/gpt-oss-20b',                label: 'Groq/GPT-OSS-20B'     },
-  { model: 'allam-2-7b',                        label: 'Groq/Allam-2-7B'      },
+// ── Tier 1: Groq ──────────────────────────────────────────────────────────────
+
+const GROQ_CHAIN = [
+  { model: 'llama-3.3-70b-versatile', label: 'Groq/Llama3.3-70B'   },
+  { model: 'openai/gpt-oss-120b',     label: 'Groq/GPT-OSS-120B'   },
+  { model: 'openai/gpt-oss-20b',      label: 'Groq/GPT-OSS-20B'    },
+  { model: 'allam-2-7b',              label: 'Groq/Allam-2-7B'      },
 ]
 
 function getGroqKeys(): string[] {
@@ -21,18 +25,112 @@ function getGroqKeys(): string[] {
   return keys
 }
 
-// Rate-limit exhaustion alert to once per 30 min (module-level; resets on cold start)
+async function tryGroq(prompt: string, maxTokens: number): Promise<{ text: string; model: string } | null> {
+  const keys = getGroqKeys()
+  if (keys.length === 0) return null
+  for (const { model, label } of GROQ_CHAIN) {
+    for (const key of keys) {
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
+          signal: AbortSignal.timeout(15_000),
+        })
+        if (res.status === 429 || res.status === 503) continue
+        if (!res.ok) continue
+        const data = await res.json() as { choices?: { message?: { content?: string } }[] }
+        const text = data.choices?.[0]?.message?.content?.trim()
+        if (text) return { text, model: label }
+      } catch { /* timeout / network */ }
+    }
+  }
+  return null
+}
+
+// ── Tier 2: OpenRouter free models ───────────────────────────────────────────
+
+const OR_FREE_CHAIN = [
+  { model: 'meta-llama/llama-3.3-70b-instruct:free', label: 'OR/Llama3.3-70B'     },
+  { model: 'google/gemini-2.0-flash-exp:free',        label: 'OR/Gemini-2.0-Flash' },
+  { model: 'qwen/qwen-2.5-72b-instruct:free',         label: 'OR/Qwen2.5-72B'      },
+  { model: 'mistralai/mistral-7b-instruct:free',      label: 'OR/Mistral-7B'       },
+  { model: 'deepseek/deepseek-chat:free',             label: 'OR/DeepSeek-Chat'    },
+]
+
+async function tryOpenRouter(prompt: string, maxTokens: number): Promise<{ text: string; model: string } | null> {
+  const key = process.env.OPENROUTER_API_KEY
+  if (!key) return null
+  for (const { model, label } of OR_FREE_CHAIN) {
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://mytrade.app' },
+        body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (res.status === 429 || res.status === 503) continue
+      if (!res.ok) continue
+      const data = await res.json() as { choices?: { message?: { content?: string } }[] }
+      const text = data.choices?.[0]?.message?.content?.trim()
+      if (text) return { text, model: label }
+    } catch { /* timeout / network */ }
+  }
+  return null
+}
+
+// ── Tier 3: Google Gemini (free direct API) ───────────────────────────────────
+
+const GEMINI_MODELS = [
+  'gemini-2.0-flash-exp',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+]
+
+async function tryGemini(prompt: string, maxTokens: number): Promise<{ text: string; model: string } | null> {
+  const key = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_AI_API_KEY
+  if (!key) return null
+  for (const model of GEMINI_MODELS) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { maxOutputTokens: maxTokens },
+          }),
+          signal: AbortSignal.timeout(20_000),
+        }
+      )
+      if (res.status === 429 || res.status === 503) continue
+      if (!res.ok) continue
+      const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+      if (text) return { text, model: `Gemini/${model}` }
+    } catch { /* timeout / network */ }
+  }
+  return null
+}
+
+// ── Exhaust alert ─────────────────────────────────────────────────────────────
+
 let lastExhaustAlertMs = 0
 
-async function alertGroqExhausted(context: string) {
+async function alertAllExhausted(context: string) {
   const now = Date.now()
   if (now - lastExhaustAlertMs < 30 * 60_000) return
   lastExhaustAlertMs = now
   const token  = process.env.TELEGRAM_BOT_TOKEN
   const chatId = process.env.TELEGRAM_ALLOWED_CHAT_ID
   if (!token || !chatId) return
-  const keyCount = getGroqKeys().length
-  const msg = `⚠️ *Groq API Exhausted*\n\nAll ${keyCount} key(s) × ${GROQ_TEXT_CHAIN.length} models failed.\nContext: \`${context}\`\n\nAI signal classification is paused until quota resets (usually < 1 hour).\n\nAdd a 3rd key: \`GROQ_API_KEY_3\` in Vercel env vars, or wait for reset.`
+  const tiers = [
+    getGroqKeys().length > 0 ? `Groq (${getGroqKeys().length} keys × ${GROQ_CHAIN.length} models)` : null,
+    process.env.OPENROUTER_API_KEY ? `OpenRouter (${OR_FREE_CHAIN.length} free models)` : null,
+    (process.env.GEMINI_API_KEY ?? process.env.GOOGLE_AI_API_KEY) ? `Gemini (${GEMINI_MODELS.length} models)` : null,
+  ].filter(Boolean).join(' → ')
+  const msg = `🚨 *All AI Providers Exhausted*\n\nTried: ${tiers || 'none configured'}\nContext: \`${context}\`\n\nAI classification paused. Add GEMINI_API_KEY or OPENROUTER_API_KEY if not set. Quota usually resets in < 1 hour.`
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -41,65 +139,38 @@ async function alertGroqExhausted(context: string) {
   }).catch(() => {})
 }
 
-/** Sends a single-turn prompt through the Groq dual-key + model fallback chain.
- *  Returns trimmed text or null if all keys × all models fail (fires TG alert on null). */
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/** Multi-provider text completion: Groq → OpenRouter → Gemini.
+ *  Returns null only if every configured provider fails (fires TG alert). */
 export async function groqTextComplete(
   prompt: string,
   maxTokens = 600,
   context = 'groq-text',
 ): Promise<{ text: string; model: string } | null> {
-  const keys = getGroqKeys()
-  if (keys.length === 0) {
-    void alertGroqExhausted('no-keys-configured')
-    return null
-  }
+  const result =
+    await tryGroq(prompt, maxTokens) ??
+    await tryOpenRouter(prompt, maxTokens) ??
+    await tryGemini(prompt, maxTokens)
 
-  for (const { model, label } of GROQ_TEXT_CHAIN) {
-    for (const key of keys) {
-      try {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model,
-            max_tokens: maxTokens,
-            messages: [{ role: 'user', content: prompt }],
-          }),
-          signal: AbortSignal.timeout(15_000),
-        })
-        if (res.status === 429 || res.status === 503) continue  // exhausted — try next key
-        if (!res.ok) continue
-        const data = await res.json() as { choices?: { message?: { content?: string } }[] }
-        const text = data.choices?.[0]?.message?.content?.trim()
-        if (text) return { text, model: label }
-      } catch { /* timeout / network — try next key */ }
-    }
-  }
-
-  void alertGroqExhausted(context)
-  return null
+  if (!result) void alertAllExhausted(context)
+  return result
 }
 
-/** Forces the fastest model (8B instant) — for latency-sensitive paths.
- *  Falls back to the full chain if 8B is also rate-limited. */
+/** Fast path: tries the smallest/fastest model first, falls back to full chain. */
 export async function groqFast(
   prompt: string,
   maxTokens = 400,
   context = 'groq-fast',
 ): Promise<{ text: string; model: string } | null> {
   const keys = getGroqKeys()
-  if (keys.length === 0) return null
-
+  // Try the fastest Groq model first
   for (const key of keys) {
     try {
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'openai/gpt-oss-20b',
-          max_tokens: maxTokens,
-          messages: [{ role: 'user', content: prompt }],
-        }),
+        body: JSON.stringify({ model: 'openai/gpt-oss-20b', max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] }),
         signal: AbortSignal.timeout(8_000),
       })
       if (res.status === 429 || res.status === 503) continue
@@ -107,9 +178,8 @@ export async function groqFast(
       const data = await res.json() as { choices?: { message?: { content?: string } }[] }
       const text = data.choices?.[0]?.message?.content?.trim()
       if (text) return { text, model: 'Groq/GPT-OSS-20B-fast' }
-    } catch { /* try next key */ }
+    } catch { /* try next */ }
   }
-
-  // All fast keys exhausted — fall back to full chain (will alert if that also fails)
+  // Fell through — use full multi-provider chain
   return groqTextComplete(prompt, maxTokens, context)
 }
