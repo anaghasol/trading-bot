@@ -1,7 +1,8 @@
 /**
  * AI text completion — multi-provider fallback chain. Never exhausts.
  *
- * Tier 1 — Groq (fastest, free): llama-3.3-70b → gpt-oss-120b → gpt-oss-20b → allam-2-7b
+ * Tier 1 — Groq (fastest, free): gpt-oss-120b → gpt-oss-20b → allam-2-7b
+ *   llama-3.3-70b-versatile was Groq's best free model until they retired it 2026-08-17.
  *           Try GROQ_API_KEY then GROQ_API_KEY_2 per model.
  * Tier 2 — OpenRouter free (OPENROUTER_API_KEY): Llama3.3 → Gemini-2.0 → Qwen2.5 → Mistral
  * Tier 3 — Gemini direct (GEMINI_API_KEY): gemini-2.0-flash-exp → gemini-1.5-flash (truly free)
@@ -12,7 +13,6 @@
 // ── Tier 1: Groq ──────────────────────────────────────────────────────────────
 
 const GROQ_CHAIN = [
-  { model: 'llama-3.3-70b-versatile', label: 'Groq/Llama3.3-70B'   },
   { model: 'openai/gpt-oss-120b',     label: 'Groq/GPT-OSS-120B'   },
   { model: 'openai/gpt-oss-20b',      label: 'Groq/GPT-OSS-20B'    },
   { model: 'allam-2-7b',              label: 'Groq/Allam-2-7B'      },
@@ -50,12 +50,19 @@ async function tryGroq(prompt: string, maxTokens: number): Promise<{ text: strin
 
 // ── Tier 2: OpenRouter free models ───────────────────────────────────────────
 
+// Verified live 2026-08-17. The previous chain was ENTIRELY dead — all five ids
+// ('meta-llama/llama-3.3-70b-instruct:free', 'google/gemini-2.0-flash-exp:free',
+// 'qwen/qwen-2.5-72b-instruct:free', 'mistralai/mistral-7b-instruct:free',
+// 'deepseek/deepseek-chat:free') 404 with either "unavailable for free" or
+// "no endpoints found", so tier 2 had silently stopped existing.
+// gemma-4-26b leads: it is the only free model that stays clean at max_tokens:3
+// as well as at generation budgets. The rest emit a reasoning preamble under
+// tight budgets, which is fine here only because callers pass real budgets.
 const OR_FREE_CHAIN = [
-  { model: 'meta-llama/llama-3.3-70b-instruct:free', label: 'OR/Llama3.3-70B'     },
-  { model: 'google/gemini-2.0-flash-exp:free',        label: 'OR/Gemini-2.0-Flash' },
-  { model: 'qwen/qwen-2.5-72b-instruct:free',         label: 'OR/Qwen2.5-72B'      },
-  { model: 'mistralai/mistral-7b-instruct:free',      label: 'OR/Mistral-7B'       },
-  { model: 'deepseek/deepseek-chat:free',             label: 'OR/DeepSeek-Chat'    },
+  { model: 'google/gemma-4-26b-a4b-it:free',          label: 'OR/Gemma-4-26B'      },
+  { model: 'openrouter/free',                          label: 'OR/Auto-Free'        },
+  { model: 'nvidia/nemotron-3-super-120b-a12b:free',   label: 'OR/Nemotron-Super'   },
+  { model: 'nvidia/nemotron-3-ultra-550b-a55b:free',   label: 'OR/Nemotron-Ultra'   },
 ]
 
 async function tryOpenRouter(prompt: string, maxTokens: number): Promise<{ text: string; model: string } | null> {

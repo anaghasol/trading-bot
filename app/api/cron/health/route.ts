@@ -265,7 +265,7 @@ export async function GET(req: Request) {
         const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: 'llama-3.3-70b-versatile', max_tokens: 3, messages: [{ role: 'user', content: aiProbe }] }),
+          body: JSON.stringify({ model: 'allam-2-7b', max_tokens: 3, messages: [{ role: 'user', content: aiProbe }] }),
           signal: AbortSignal.timeout(8_000),
         })
         if (r.ok) { groqOk = true; break }
@@ -281,7 +281,7 @@ export async function GET(req: Request) {
         const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${orKey}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://mytrade.app' },
-          body: JSON.stringify({ model: 'meta-llama/llama-3.3-70b-instruct:free', max_tokens: 3, messages: [{ role: 'user', content: aiProbe }] }),
+          body: JSON.stringify({ model: 'google/gemma-4-26b-a4b-it:free', max_tokens: 3, messages: [{ role: 'user', content: aiProbe }] }),
           signal: AbortSignal.timeout(10_000),
         })
         if (r.ok) orOk = true

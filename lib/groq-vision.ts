@@ -13,8 +13,7 @@
 const OR_VISION_MODELS = [
   'openrouter/auto',
   'qwen/qwen3.7-flash',
-  'google/gemini-2.0-flash-exp:free',
-  'meta-llama/llama-4-scout:free',
+  'google/gemma-4-31b-it:free',
 ]
 
 async function tryORVision(dataUrl: string, prompt: string): Promise<string | null> {

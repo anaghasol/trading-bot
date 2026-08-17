@@ -34,7 +34,7 @@ const GROQ_KEY  = process.env.GROQ_API_KEY    // PRIMARY — free 4-model ensemb
 // NOTE: gpt-oss-20b is a reasoning model — it returns EMPTY output under small
 // max_tokens budgets. Only use it where max_tokens >= ~1000.
 const GROQ_CHAIN = [
-  { model: 'llama-3.3-70b-versatile', label: 'Groq/Llama3.3-70B' },  // best quality
+  { model: 'allam-2-7b', label: 'Groq/Allam-2-7B' },  // only free Groq model safe at any max_tokens
   { model: 'openai/gpt-oss-120b',      label: 'Groq/GPT-OSS-120B' },  // replaced gemma2-9b-it (decommissioned)
   { model: 'openai/gpt-oss-20b',     label: 'Groq/GPT-OSS-20B'  },  // replaced llama-3.1-8b (decommissioned 2026-08-16)
 ]
@@ -223,7 +223,7 @@ async function askOpenAI(
 // Never blocks the scan: 20s timeout per attempt, chain exits on first success.
 //
 // Chain order (user-specified):
-//   1. llama-3.3-70b-versatile  — default, best quality
+//   1. allam-2-7b               — default (llama-3.3-70b-versatile retired 2026-08-17)
 //   2. llama3-70b-8192          — if throttled, separate quota
 //   3. openai/gpt-oss-120b      — replaced gemma2-9b-it (already decommissioned)
 //   4. openai/gpt-oss-20b       — replaced llama-3.1-8b (decommissioned 2026-08-16)
