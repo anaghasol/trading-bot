@@ -671,9 +671,9 @@ export async function GET(req: Request) {
           await db.from('tb_trades').insert({
             symbol: displayLabel, broker: 'alpaca_paper', action: 'BUY',
             quantity: contracts, entry_price: premiumPerShare,
-            status: 'OPEN', order_id: order.order_id ?? null,
+            status: 'OPEN',
             confidence: signal.confidence, strategy: 'OPTION',
-            reason: `raw_symbol=${signal.symbol} | option_expiry=${expiry} | stop=25%prem | TG: ${ch.name}`,
+            reason: `raw_symbol=${signal.symbol} | option_expiry=${expiry} | stop=25%prem | TG: ${ch.name} | order=${order.order_id ?? 'n/a'}`,
           })
           await tgSend(`📈 *Options BUY* (${ch.name})\n${displayLabel} · ${contracts} contract${contracts > 1 ? 's' : ''} @ est $${premiumPerShare}/sh\nExpiry: ${expiry} · DTE: ${Math.floor(dteDays)}d\nStop: -25% premium | Target: +80%/+100%`)
         }
@@ -728,13 +728,20 @@ export async function GET(req: Request) {
         const { error: insertErr } = await db.from('tb_trades').insert({
           symbol: signal.symbol, broker: 'alpaca_paper', action: 'BUY',
           quantity: qty, entry_price: livePrice ?? 0,
-          target_price: signal.target ?? null, confidence: signal.confidence,
-          status: 'OPEN', order_id: order.order_id ?? null,
+          confidence: signal.confidence,
+          status: 'OPEN',
           strategy: 'TG_SIGNAL',   // explicit label so health cron doesn't re-journal as RECOVERED
           // tg_trade=1 → monitor/close/health follow signal's SL only, not internal rules
-          reason: `TG: ${ch.name} | stop=$${stopPrice ?? 0} | hold_mode=swing | tg_trade=1`,
+          reason: `TG: ${ch.name} | stop=$${stopPrice ?? 0}${signal.target ? ` | target=$${signal.target}` : ''} | hold_mode=swing | tg_trade=1 | order=${order.order_id ?? 'n/a'}`,
         })
-        if (insertErr) console.error(`[TG] tb_trades insert failed for ${signal.symbol}: ${insertErr.message}`)
+        // A failed insert means the broker holds a position with NO journal row.
+        // health-cron then re-journals it as RECOVERED, losing tg_trade=1 and the
+        // signal's stop — so the trade silently falls back to internal exit rules.
+        // This went unnoticed for months (order_id/target_price columns never existed).
+        if (insertErr) {
+          console.error(`[TG] tb_trades insert failed for ${signal.symbol}: ${insertErr.message}`)
+          await tgSend(`🔴 *Journal write FAILED* — ${signal.symbol} (alpaca_paper)\n\nOrder was PLACED at the broker but tb_trades insert failed:\n\`${insertErr.message}\`\n\nPosition is UNTRACKED — it will be re-journaled as RECOVERED and lose its signal stop.`)
+        }
       }
 
       // ── SCHWAB LIVE (only if channel has schwabEnabled=true) ─────────────────
@@ -758,12 +765,15 @@ export async function GET(req: Request) {
               const { error: schwabInsertErr } = await db.from('tb_trades').insert({
                 symbol: signal.symbol, broker: 'schwab', action: 'BUY',
                 quantity: schwabQty, entry_price: livePrice ?? 0,
-                target_price: signal.target ?? null, confidence: signal.confidence,
-                status: 'OPEN', order_id: schwabOrder.order_id ?? null,
+                confidence: signal.confidence,
+                status: 'OPEN',
                 strategy: 'TG_SIGNAL',
-                reason: `TG: ${ch.name} (live) | stop=$${schwabStop ?? 0} | hold_mode=swing | tg_trade=1`,
+                reason: `TG: ${ch.name} (live) | stop=$${schwabStop ?? 0}${signal.target ? ` | target=$${signal.target}` : ''} | hold_mode=swing | tg_trade=1 | order=${schwabOrder.order_id ?? 'n/a'}`,
               })
-              if (schwabInsertErr) console.error(`[TG] schwab tb_trades insert failed for ${signal.symbol}: ${schwabInsertErr.message}`)
+              if (schwabInsertErr) {
+                console.error(`[TG] schwab tb_trades insert failed for ${signal.symbol}: ${schwabInsertErr.message}`)
+                await tgSend(`🔴 *Journal write FAILED (LIVE $)* — ${signal.symbol} (schwab)\n\nReal-money order PLACED but tb_trades insert failed:\n\`${schwabInsertErr.message}\`\n\nPosition is UNTRACKED at Schwab.`)
+              }
               schwabNote = `\n💰 *Schwab LIVE: BUY ${schwabQty} ${signal.symbol}* · $${((livePrice ?? 0) * schwabQty).toFixed(0)}`
             }
           } else {

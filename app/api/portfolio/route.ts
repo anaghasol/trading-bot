@@ -15,7 +15,7 @@ export async function GET() {
   const [alpacaPos, schwabPos, { data: openTrades }] = await Promise.all([
     AlpacaPositions().catch(() => []),
     SchwabPositions().catch(() => []),
-    db.from('tb_trades').select('symbol, broker, reason, confidence, stop_loss, target_price').eq('status', 'OPEN'),
+    db.from('tb_trades').select('symbol, broker, reason, confidence').eq('status', 'OPEN'),
   ])
 
   // Build source lookup: symbol+broker → sf_trades | ai_scan
@@ -25,7 +25,14 @@ export async function GET() {
   }
   const metaMap = new Map<string, { confidence: number; stop_loss: number | null; target_price: number | null }>()
   for (const t of openTrades ?? []) {
-    metaMap.set(`${t.symbol}:${t.broker}`, { confidence: t.confidence, stop_loss: t.stop_loss, target_price: t.target_price })
+    // stop/target are encoded in `reason` (no dedicated columns on tb_trades)
+    const stopHit   = String(t.reason ?? '').match(/stop=\$?([\d.]+)/)
+    const targetHit = String(t.reason ?? '').match(/target=\$?([\d.]+)/)
+    metaMap.set(`${t.symbol}:${t.broker}`, {
+      confidence:   t.confidence,
+      stop_loss:    stopHit   ? Number(stopHit[1])   : null,
+      target_price: targetHit ? Number(targetHit[1]) : null,
+    })
   }
 
   const positions = [

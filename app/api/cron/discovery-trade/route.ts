@@ -129,8 +129,7 @@ async function runLTSleeve(
       status:      'OPEN',
       broker,
       strategy:    'DISCOVERY_LT',
-      reason:      `hold_mode=trend stop=$${stopPrice.toFixed(2)} | Stage1 score=${c.sndk_score} | ${c.sector} | ${topHighlight}`,
-      order_id:    order.order_id ?? null,
+      reason:      `hold_mode=trend stop=$${stopPrice.toFixed(2)} | Stage1 score=${c.sndk_score} | ${c.sector} | ${topHighlight} | order=${order.order_id ?? 'n/a'}`,
     })
 
     await db.from('tb_alerts').insert({
