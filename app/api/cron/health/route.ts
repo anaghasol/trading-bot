@@ -317,7 +317,63 @@ export async function GET(req: Request) {
     issues.push(`AI health check failed: ${String(e).slice(0, 60)}`)
   }
 
-  // ── 7. LOG + SMS ───────────────────────────────────────────────────────────
+  // ── 7. TG SIGNAL PIPELINE INTEGRITY ────────────────────────────────────────
+  // Every check above is a liveness ping. For months all of them stayed GREEN
+  // while 100% of TG signal journal writes failed: tb_trades had no order_id /
+  // target_price column, PostgREST rejected each insert, and the error was only
+  // console.error'd. Orders reached the broker; the journal row never appeared;
+  // health-cron re-journaled the orphan as RECOVERED, dropping tg_trade=1 — so
+  // the signal lost its own stop and got exited by internal rules instead.
+  //
+  // This check compares OUTCOMES, not pings: if the pollers placed TG buys but
+  // no TG_SIGNAL rows exist to match, the pipeline is broken no matter how many
+  // green dots are showing.
+  try {
+    const dayAgo = new Date(Date.now() - 24 * 3600_000).toISOString()
+
+    const [{ data: tgBuyAlerts }, { count: tgRows }] = await Promise.all([
+      db.from('tb_alerts').select('message').eq('type', 'BUY').gte('created_at', dayAgo),
+      db.from('tb_trades').select('*', { count: 'exact', head: true })
+        .eq('strategy', 'TG_SIGNAL').gte('created_at', dayAgo),
+    ])
+
+    // BUY alerts whose message came from a Telegram channel poller
+    const tgBuys = (tgBuyAlerts ?? []).filter((a) =>
+      /SF Trades|SF Essential|sf_essential|US Equities|Jimmy/i.test(String(a.message ?? ''))
+    ).length
+
+    if (tgBuys > 0 && (tgRows ?? 0) === 0) {
+      issues.push(
+        `TG JOURNAL BROKEN: ${tgBuys} TG buy order(s) placed in 24h but 0 TG_SIGNAL rows written — ` +
+        `positions are untracked and will lose their signal stop. Check tb_trades insert errors.`
+      )
+    } else if (tgBuys > 0 && (tgRows ?? 0) < tgBuys / 2) {
+      issues.push(`TG JOURNAL PARTIAL: ${tgBuys} TG buys but only ${tgRows} TG_SIGNAL rows in 24h`)
+    }
+
+    // Schema self-test — the exact insert shape the pollers use must be accepted.
+    const probe = {
+      symbol: '__HEALTHCHECK__', broker: 'alpaca_paper', action: 'BUY',
+      quantity: 1, entry_price: 1, target_price: 2, stop_loss: 0.5,
+      order_id: 'healthcheck', confidence: 90, status: 'OPEN',
+      strategy: 'TG_SIGNAL', reason: 'health probe | tg_trade=1',
+    }
+    const { error: probeErr } = await db.from('tb_trades').insert(probe)
+    if (probeErr) {
+      issues.push(`TG SCHEMA BROKEN: tb_trades rejects the signal insert shape — ${probeErr.message.slice(0, 90)}`)
+    } else {
+      await db.from('tb_trades').delete().eq('symbol', '__HEALTHCHECK__')
+    }
+
+    await db.from('tb_settings').upsert({
+      key: 'tg_pipeline_health',
+      value: `buys24h=${tgBuys} rows24h=${tgRows ?? 0} schema=${probeErr ? 'BROKEN' : 'ok'}`,
+    })
+  } catch (e) {
+    issues.push(`TG pipeline integrity check failed: ${String(e).slice(0, 70)}`)
+  }
+
+  // ── 8. LOG + SMS ───────────────────────────────────────────────────────────
   const summary = [
     healed.length ? `Healed: ${healed.join('; ')}` : null,
     issues.length ? `Issues: ${issues.join('; ')}` : null,

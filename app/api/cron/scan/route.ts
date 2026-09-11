@@ -306,8 +306,28 @@ async function runScan(
     let runningMV = totalMarketValue
     const rotated: string[] = []
 
+    // Telegram signal trades are NEVER rotation fodder. Rotation exists to free
+    // capacity for mechanical scanner picks — selling a paid signal to fund an
+    // internal pick is backwards. Pavan's AA (a stated multi-year hold) was
+    // rotated out at -0.7% ten minutes after entry on 2026-09-08 because this
+    // filter did not exist. Signal trades exit on their OWN stop, nothing else.
+    const { data: openTgTrades } = await db
+      .from('tb_trades')
+      .select('symbol, reason')
+      .eq('status', 'OPEN')
+      .eq('broker', broker)
+    const protectedSymbols = new Set(
+      (openTgTrades ?? [])
+        .filter((t) => String(t.reason ?? '').includes('tg_trade=1'))
+        .map((t) => t.symbol as string)
+    )
+    if (protectedSymbols.size) {
+      console.log(`[${broker}] rotation-protected TG signal positions: ${Array.from(protectedSymbols).join(', ')}`)
+    }
+
     const loserCandidates = [...positions]
       .filter((p) => p.pnl_pct < rotateThreshold && p.asset_type !== 'OPTION')
+      .filter((p) => !protectedSymbols.has(p.symbol))
       .sort((a, b) => a.pnl_pct - b.pnl_pct)
 
     for (const loser of loserCandidates) {

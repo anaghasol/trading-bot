@@ -703,6 +703,23 @@ export async function GET(req: Request) {
       const displaySym = signal.symbol
       console.log(`[TG][${ch.name}] ${signal.action} ${qty} ${displaySym} @ ${livePrice ? `$${livePrice}` : 'market'} SL${signal.stop_loss ?? 'auto'} conf=${signal.confidence}%${afterHoursTag}`)
 
+      // Duplicate-entry guard. The Schwab path below already checks this; the paper
+      // path did not, so the same Pavan message arriving through two routes double-bought:
+      // 2026-09-08 HIMX took 879 shares via /telegram/ingest at 16:49 and another 219
+      // via this poller at 16:50. Same signal, two positions, twice the risk.
+      if (signal.action === 'BUY') {
+        const heldAlready = await Alpaca.getPositions()
+          .then(ps => ps.some(p => p.symbol === signal.symbol))
+          .catch(() => false)
+        if (heldAlready) {
+          await db.from('tb_alerts').insert({
+            type: 'INFO', symbol: signal.symbol,
+            message: `[DEDUP] ${ch.name} → BUY ${signal.symbol} skipped — already holding on alpaca_paper`,
+          })
+          return { id: msg.id, type: 'skip_already_held', symbol: signal.symbol }
+        }
+      }
+
       const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
       const stopPrice = signal.stop_loss ?? (livePrice ? Math.round(livePrice * (1 - profile.initial_stop_pct) * 100) / 100 : null)
 

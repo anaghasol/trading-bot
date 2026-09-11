@@ -1,0 +1,4 @@
+-- Placeholder: this migration was applied directly to the remote database before
+-- migrations were tracked in this repo. Its contents are already live.
+-- The file exists only so `supabase db push` sees a matching local/remote history.
+-- Never executed again — push skips versions already in the remote history table.
