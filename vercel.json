@@ -79,6 +79,10 @@
     {
       "path": "/api/cron/relay-audit",
       "schedule": "*/20 * * * *"
+    },
+    {
+      "path": "/api/telegram/pavan-archive",
+      "schedule": "30 2 * * *"
     }
   ]
 }
