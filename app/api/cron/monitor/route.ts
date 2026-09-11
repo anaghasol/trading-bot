@@ -419,8 +419,39 @@ async function monitorBroker(
       }
     }
 
+    // ── TG CATASTROPHE BACKSTOP ────────────────────────────────────────────
+    // The comment below used to claim the emergency hard stop still applied to
+    // TG trades, but the `continue` runs BEFORE that check — so it never did.
+    // A TG trade skips every internal exit and relies entirely on the broker-side
+    // stop order; when that order silently fails to place, the position had no
+    // protection at all and could ride to zero.
+    //
+    // This threshold is deliberately far wider than any stop Pavan gives
+    // (his run roughly -6% to -13%), so it never front-runs his own exit —
+    // it only fires when his stop demonstrably failed to execute.
+    const TG_CATASTROPHE_PCT = meta.hold_mode === 'trend' ? -25 : -20
+    if (meta.isTgTrade && pos.pnl_pct < TG_CATASTROPHE_PCT) {
+      const order = broker === 'alpaca_paper'
+        ? await AlpacaBroker.closePosition(pos.symbol)
+        : await api.placeOrder(pos.symbol, Math.abs(pos.quantity), 'SELL')
+      if (order.status === 'PLACED') {
+        closed++
+        runningPnl += pos.unrealized_pnl
+        if (meta.id) await db.from('tb_trades').update({
+          status: 'CLOSED', exit_price: pos.current_price, pnl: pos.unrealized_pnl,
+          pnl_pct: pos.pnl_pct, closed_at: new Date().toISOString(),
+        }).eq('id', meta.id)
+        void db.from('tb_alerts').insert({
+          type: 'STOP_LOSS', symbol: pos.symbol, broker,
+          message: `[TG CATASTROPHE] ${pos.symbol} at ${pos.pnl_pct.toFixed(1)}% — past ${TG_CATASTROPHE_PCT}%, channel stop never executed`,
+        })
+        statuses.push(`${pos.symbol}: TG CATASTROPHE ${pos.pnl_pct.toFixed(1)}% — broker stop appears to have failed`)
+        continue
+      }
+    }
+
     // TG trades follow channel exit signals ONLY — skip ALL our trailing/time exits.
-    // Only the emergency hard stop (-8%/-5%) and the Alpaca stop order are in effect.
+    // The broker stop order and the catastrophe backstop above are the only exits.
     if (meta.isTgTrade) {
       statuses.push(`${pos.symbol}: TG trade ${pos.pnl_pct >= 0 ? '+' : ''}${pos.pnl_pct.toFixed(1)}% — awaiting channel exit signal`)
       continue

@@ -22,6 +22,7 @@ import { addIntention, parseZonePrices } from '@/lib/tg-intentions'
 import { resolveOptionToOCC } from '@/lib/options'
 import * as Alpaca from '@/lib/alpaca'
 import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
+import { parsePavan, holdModeFor } from '@/lib/pavan-parse'
 import * as Schwab from '@/lib/schwab'
 import { createServiceClient } from '@/lib/supabase-server'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
@@ -703,6 +704,13 @@ export async function GET(req: Request) {
       const displaySym = signal.symbol
       console.log(`[TG][${ch.name}] ${signal.action} ${qty} ${displaySym} @ ${livePrice ? `$${livePrice}` : 'market'} SL${signal.stop_loss ?? 'auto'} conf=${signal.confidence}%${afterHoursTag}`)
 
+      // Pavan marks 90% of his calls "purchase type as: Investment" — multi-year
+      // theses with a wide stop, not swings. Journaling them as hold_mode=swing
+      // applied day-trade exit logic to positions meant to be held for years.
+      // Read it off his own wording rather than the LLM: it is an exact phrase.
+      const pavanMeta = parsePavan(text)
+      const holdMode  = holdModeFor(pavanMeta.purchase_type)
+
       // Duplicate-entry guard. The Schwab path below already checks this; the paper
       // path did not, so the same Pavan message arriving through two routes double-bought:
       // 2026-09-08 HIMX took 879 shares via /telegram/ingest at 16:49 and another 219
@@ -739,7 +747,18 @@ export async function GET(req: Request) {
         })
 
         if (stopPrice && !afterHours) {
-          await placeStopOrder(signal.symbol, qty, stopPrice).catch(() => {})
+          // A TG trade skips every internal trailing/time exit, so this broker-side
+          // stop is its ONLY protection. Swallowing the failure left positions
+          // completely unguarded — surface it loudly instead.
+          const stopOk = await placeStopOrder(signal.symbol, qty, stopPrice)
+            .then(() => true).catch(() => false)
+          if (!stopOk) {
+            await tgSend(`🔴 *STOP ORDER FAILED* — ${signal.symbol} (alpaca_paper)\n\nPosition is OPEN with NO broker stop, and TG trades skip internal exits.\nIntended stop: $${stopPrice}\n\nPlace it manually or close the position.`)
+            await db.from('tb_alerts').insert({
+              type: 'WARN', symbol: signal.symbol,
+              message: `[TG] stop order FAILED for ${signal.symbol} @ $${stopPrice} — position unguarded`,
+            })
+          }
         }
 
         const { error: insertErr } = await db.from('tb_trades').insert({
@@ -749,7 +768,7 @@ export async function GET(req: Request) {
           status: 'OPEN',
           strategy: 'TG_SIGNAL',   // explicit label so health cron doesn't re-journal as RECOVERED
           // tg_trade=1 → monitor/close/health follow signal's SL only, not internal rules
-          reason: `TG: ${ch.name} | stop=$${stopPrice ?? 0}${signal.target ? ` | target=$${signal.target}` : ''} | hold_mode=swing | tg_trade=1 | order=${order.order_id ?? 'n/a'}`,
+          reason: `TG: ${ch.name} | stop=$${stopPrice ?? 0}${signal.target ? ` | target=$${signal.target}` : ''} | hold_mode=${holdMode} | tg_trade=1${pavanMeta.purchase_type ? ` | purchase_type=${pavanMeta.purchase_type}` : ''}${pavanMeta.trade_id ? ` | trade_id=${pavanMeta.trade_id}` : ''} | order=${order.order_id ?? 'n/a'}`,
         })
         // A failed insert means the broker holds a position with NO journal row.
         // health-cron then re-journals it as RECOVERED, losing tg_trade=1 and the
@@ -785,7 +804,7 @@ export async function GET(req: Request) {
                 confidence: signal.confidence,
                 status: 'OPEN',
                 strategy: 'TG_SIGNAL',
-                reason: `TG: ${ch.name} (live) | stop=$${schwabStop ?? 0}${signal.target ? ` | target=$${signal.target}` : ''} | hold_mode=swing | tg_trade=1 | order=${schwabOrder.order_id ?? 'n/a'}`,
+                reason: `TG: ${ch.name} (live) | stop=$${schwabStop ?? 0}${signal.target ? ` | target=$${signal.target}` : ''} | hold_mode=${holdMode} | tg_trade=1${pavanMeta.purchase_type ? ` | purchase_type=${pavanMeta.purchase_type}` : ''}${pavanMeta.trade_id ? ` | trade_id=${pavanMeta.trade_id}` : ''} | order=${schwabOrder.order_id ?? 'n/a'}`,
               })
               if (schwabInsertErr) {
                 console.error(`[TG] schwab tb_trades insert failed for ${signal.symbol}: ${schwabInsertErr.message}`)
