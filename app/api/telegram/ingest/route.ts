@@ -8,6 +8,7 @@ import { NextResponse } from 'next/server'
 import { parseSignal } from '@/lib/telegram-signal'
 import * as Alpaca from '@/lib/alpaca'
 import { createServiceClient } from '@/lib/supabase-server'
+import { claimSignalExecution, markSignalExecution } from '@/lib/signal-dedupe'
 import { alertTradeEntered } from '@/lib/notify'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
@@ -51,7 +52,14 @@ export async function POST(req: Request) {
       const { data: openTrade } = await db.from('tb_trades')
         .select('id, quantity').eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper').limit(1).single()
       if (openTrade) {
+        // DEDUP: shared cross-path claim — the Vercel poller may be processing
+        // the same message concurrently. Loser skips.
+        const exitClaim = { source: source ?? 'unknown', msgId: msg_id, symbol: signal.symbol, action: 'SELL' as const, broker: 'alpaca_paper' as const }
+        if (!(await claimSignalExecution(db, exitClaim, `ingest:${source ?? 'unknown'}`))) {
+          return NextResponse.json({ ok: true, type: 'exit_duplicate', signal })
+        }
         const sellOrder = await Alpaca.placeOrder(signal.symbol, openTrade.quantity, 'SELL', 'MARKET')
+        await markSignalExecution(db, exitClaim, sellOrder.status === 'PLACED' ? 'PLACED' : 'FAILED', (sellOrder as { order_id?: string }).order_id ?? null)
         if (sellOrder.status === 'PLACED') await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString() }).eq('id', openTrade.id)
         await notify(`🚨 *Advisor Exit: ${signal.symbol}*\n${signal.summary}\nStatus: ${sellOrder.status}`)
       }
@@ -72,7 +80,14 @@ export async function POST(req: Request) {
     const qty = sizing.qty
     const entryPrice = livePrice
 
+    // DEDUP: shared cross-path claim — the Vercel poller may be processing the
+    // same message concurrently. Loser skips. (This path had NO dedupe at all.)
+    const tradeClaim = { source: source ?? 'unknown', msgId: msg_id, symbol: signal.symbol, action: signal.action as string, broker: 'alpaca_paper' as const }
+    if (!(await claimSignalExecution(db, tradeClaim, `ingest:${source ?? 'unknown'}`))) {
+      return NextResponse.json({ ok: true, type: 'trade_duplicate', signal })
+    }
     const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
+    await markSignalExecution(db, tradeClaim, order.status === 'PLACED' ? 'PLACED' : 'FAILED', (order as { order_id?: string }).order_id ?? null)
 
     await db.from('tb_alerts').insert({
       type: signal.action,

@@ -26,13 +26,15 @@ import { getSleeveAllocation, sleeveForSetup, sleeveSizing } from '@/lib/sleeves
 import { getActiveIntentions, markActed } from '@/lib/tg-intentions'
 import { batchResearch, applyResearchBoost } from '@/lib/research-score'
 import { getRuntimeConfig } from '@/lib/runtime-config'
+import { cronAuthorized } from '@/lib/cron-auth'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
 
 function authorized(req: Request) {
-  const s = process.env.CRON_SECRET
-  return !s || req.headers.get('authorization') === `Bearer ${s}`
+  // Fail-closed shared check (lib/cron-auth). Was `!s || ...` — allowed
+  // unauthenticated access whenever CRON_SECRET was unset.
+  return cronAuthorized(req)
 }
 
 async function getEngineStatus(db: ReturnType<typeof createServiceClient>) {

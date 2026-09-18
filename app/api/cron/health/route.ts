@@ -18,6 +18,8 @@ import * as SchwabBroker from '@/lib/schwab'
 import { getSchwabAuthStatus } from '@/lib/schwab'
 import { sendHealthAlert } from '@/lib/notify'
 import { createServiceClient } from '@/lib/supabase-server'
+import { cronAuthorized as authorized } from '@/lib/cron-auth'
+import { getZombieSet, saveZombieSet, zombieId } from '@/lib/zombie'
 
 async function sendTG(text: string) {
   const bot  = process.env.TELEGRAM_BOT_TOKEN
@@ -34,11 +36,6 @@ async function sendTG(text: string) {
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-function authorized(req: Request) {
-  const s = process.env.CRON_SECRET
-  return !s || req.headers.get('authorization') === `Bearer ${s}`
-}
-
 function etHour() {
   return parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }))
 }
@@ -52,15 +49,48 @@ export async function GET(req: Request) {
   const today   = new Date().toISOString().split('T')[0]
   const now     = new Date()
 
+  // Manual-review escape hatch for zombie-blocked symbols:
+  // GET /api/cron/health?clear_zombie=SAN  (cron auth required)
+  // Removes the persistent block so the symbol can be journaled/entered again.
+  const clearZombie = new URL(req.url).searchParams.get('clear_zombie')?.trim().toUpperCase()
+  if (clearZombie) {
+    const set = await getZombieSet(db)
+    const removed = Object.keys(set).filter((k) => k.split(':').slice(1).join(':') === clearZombie)
+    for (const k of removed) delete set[k]
+    await saveZombieSet(db, set)
+    await db.from('tb_alerts').insert({
+      type: 'INFO', symbol: clearZombie,
+      message: `[health] ZOMBIE block manually cleared for ${clearZombie} (${removed.length} entr${removed.length === 1 ? 'y' : 'ies'}) — journaling/re-entry allowed again`,
+    })
+    return NextResponse.json({ ok: true, cleared_zombie: clearZombie, removed })
+  }
+
   // ── 1. UNJOURNALED POSITIONS ───────────────────────────────────────────────
   // For each broker, find live positions with no open tb_trades entry.
   // Auto-insert a minimal journal row so the monitor can manage stops/exits.
+  //
+  // ZOMBIE handling (persistent — see lib/zombie.ts): a symbol that keeps being
+  // auto-journaled as RECOVERED and closed while persisting at the broker is
+  // promoted to the zombie set and NEVER re-journaled until manually reviewed
+  // (clear via ?clear_zombie=SYMBOL). The old 90-min guard alone let the loop
+  // simply wait it out — SAN: ~6 loss-sells on 2026-09-18, cycle since 2026-09-03.
+  let zombieSet = await getZombieSet(db)
+  let zombieDirty = false
+  const liveByBroker: Record<string, Set<string>> = {}
+  const fetchOkByBroker: Record<string, boolean> = {}
+
   for (const broker of ['schwab', 'alpaca_paper'] as const) {
     const isSchwab = broker === 'schwab'
     try {
-      const positions = isSchwab
-        ? await SchwabBroker.getPositions().catch(() => [] as Awaited<ReturnType<typeof SchwabBroker.getPositions>>)
-        : await AlpacaBroker.getPositions().catch(() => [] as Awaited<ReturnType<typeof AlpacaBroker.getPositions>>)
+      let positions: Awaited<ReturnType<typeof SchwabBroker.getPositions>> | Awaited<ReturnType<typeof AlpacaBroker.getPositions>> = []
+      try {
+        positions = isSchwab ? await SchwabBroker.getPositions() : await AlpacaBroker.getPositions()
+        fetchOkByBroker[broker] = true
+      } catch {
+        fetchOkByBroker[broker] = false
+        issues.push(`[${broker}] Position fetch failed — zombie self-heal skipped for this broker`)
+      }
+      liveByBroker[broker] = new Set(positions.map((p) => String(p.symbol).toUpperCase()))
 
       if (positions.length === 0) continue
 
@@ -86,9 +116,30 @@ export async function GET(req: Request) {
       for (const pos of positions) {
         if (journaledSymbols.has(pos.symbol)) continue
 
-        // Zombie detection: if this symbol was CLOSED in the last 90 min but still
-        // appears as a live position, the broker sell didn't clear. Re-journaling would
-        // restart the stop-loss loop. Alert instead and let admin/close-cron handle it.
+        const zid = zombieId(broker, pos.symbol)
+
+        // (a) PERSISTENT zombie block — never re-journal until manually reviewed.
+        // This is the durable fix: the 90-min guard below let the loop wait it out
+        // (SAN: closed 15:02 → re-journaled 17:00 → sold 17:02, ~6 loss-sells/day).
+        if (zid in zombieSet) {
+          const entry = zombieSet[zid]
+          const lastAlert = entry.last_alert_at ? new Date(entry.last_alert_at).getTime() : 0
+          if (Date.now() - lastAlert > 24 * 3600_000) {
+            entry.last_alert_at = new Date().toISOString()
+            zombieDirty = true
+            const msg = `🧟 *[health] ZOMBIE blocked: ${pos.symbol} (${broker})*\nClosed ${entry.closes}x as RECOVERED but still live at broker — NOT re-journaling. Manual close needed; clear with /api/cron/health?clear_zombie=${pos.symbol}`
+            await sendTG(msg)
+            await db.from('tb_alerts').insert({
+              type: 'WARN', symbol: pos.symbol, broker,
+              message: `[health] ZOMBIE blocked: ${pos.symbol} — skipping re-journal (manual review required)`,
+            })
+          }
+          issues.push(`[${broker}] ZOMBIE ${pos.symbol}: blocked from re-journal (manual review required)`)
+          continue
+        }
+
+        // (b) 90-min guard (kept): closed <90m ago but still live at broker —
+        // the sell likely failed to clear. Skip and alert; no re-journal yet.
         if (zombieSymbols.has(pos.symbol)) {
           const msg = `⚠️ *[health] ZOMBIE position: ${pos.symbol} (${broker})*\nClosed in tb_trades <90m ago but still live at broker — sell may have failed. Manual close needed.`
           await sendTG(msg)
@@ -97,6 +148,35 @@ export async function GET(req: Request) {
             message: `[health] ZOMBIE: ${pos.symbol} closed in tb_trades but still at broker — skipping re-journal to break loop`,
           })
           issues.push(`[${broker}] ZOMBIE ${pos.symbol}: closed <90m ago but still live — manual close needed`)
+          continue
+        }
+
+        // (c) Promotion: 2+ RECOVERED closes in 7d while still live at the broker
+        // with no open journal → persistent zombie. Blocked from here on.
+        const weekAgo = new Date(Date.now() - 7 * 24 * 3600_000).toISOString()
+        const { count: recoveredCloses } = await db.from('tb_trades')
+          .select('*', { count: 'exact', head: true })
+          .eq('symbol', pos.symbol)
+          .eq('status', 'CLOSED')
+          .eq('strategy', 'RECOVERED')
+          .gte('closed_at', weekAgo)
+          .or(isSchwab ? 'broker.eq.schwab,broker.is.null' : 'broker.eq.alpaca_paper')
+        if ((recoveredCloses ?? 0) >= 2) {
+          zombieSet[zid] = {
+            first_seen: new Date().toISOString(),
+            closes: recoveredCloses ?? 0,
+            last_close_at: new Date().toISOString(),
+            reason: `auto-journaled RECOVERED and closed ${recoveredCloses}x in 7d but still live at broker`,
+            last_alert_at: new Date().toISOString(),
+          }
+          zombieDirty = true
+          const msg = `🧟 *[health] ZOMBIE promoted: ${pos.symbol} (${broker})*\nAuto-journaled as RECOVERED and closed ${recoveredCloses}x in 7d, yet still live at broker. Re-journaling and re-entry are now BLOCKED until manual review: /api/cron/health?clear_zombie=${pos.symbol}`
+          await sendTG(msg)
+          await db.from('tb_alerts').insert({
+            type: 'WARN', symbol: pos.symbol, broker,
+            message: `[health] ZOMBIE promoted: ${pos.symbol} — blocked from re-journal/re-entry until manual review`,
+          })
+          issues.push(`[${broker}] ZOMBIE ${pos.symbol}: promoted to blocked set (manual review required)`)
           continue
         }
 
@@ -138,6 +218,24 @@ export async function GET(req: Request) {
     } catch (e) {
       issues.push(`[${broker}] Position check failed: ${String(e)}`)
     }
+  }
+
+  // Zombie self-heal: drop entries whose broker position actually disappeared.
+  // Only evaluated for brokers whose position fetch succeeded — an API failure
+  // must never unblock a zombie.
+  const prunedZombies: string[] = []
+  for (const zid of Object.keys(zombieSet)) {
+    const sep = zid.indexOf(':')
+    const zb = zid.slice(0, sep)
+    const zsym = zid.slice(sep + 1)
+    if (fetchOkByBroker[zb] && !liveByBroker[zb]?.has(zsym)) {
+      delete zombieSet[zid]
+      prunedZombies.push(zid)
+    }
+  }
+  if (zombieDirty || prunedZombies.length > 0) {
+    await saveZombieSet(db, zombieSet)
+    if (prunedZombies.length > 0) healed.push(`Zombie self-healed (position gone at broker): ${prunedZombies.join(', ')}`)
   }
 
   // ── 2. CRON FREQUENCY CHECK ────────────────────────────────────────────────

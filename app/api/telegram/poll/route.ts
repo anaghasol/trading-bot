@@ -25,6 +25,9 @@ import { placeStopOrder, getAccountBalance } from '@/lib/alpaca'
 import { parsePavan, holdModeFor } from '@/lib/pavan-parse'
 import * as Schwab from '@/lib/schwab'
 import { createServiceClient } from '@/lib/supabase-server'
+import { claimSignalExecution, markSignalExecution } from '@/lib/signal-dedupe'
+import { cronAuthorized } from '@/lib/cron-auth'
+import { isZombie } from '@/lib/zombie'
 import { calculatePositionSize, exposureCapForConfidence } from '@/lib/risk'
 import { PROFILES } from '@/lib/strategy-profiles'
 import { groqVisionExtract, tgMediaToDataUrl } from '@/lib/groq-vision'
@@ -215,9 +218,10 @@ export async function GET(req: Request) {
   // This lets the dashboard distinguish "cron down" from "cron running but TG session issue".
   await db.from('tb_settings').upsert({ key: 'tg_cron_ping', value: new Date().toISOString() }).then(() => {}, () => {})
 
-  const { searchParams } = new URL(req.url)
-  const secret = searchParams.get('secret') ?? req.headers.get('authorization')?.replace('Bearer ', '')
-  if (secret !== process.env.CRON_SECRET) {
+  // Shared fail-closed cron auth (was: `secret !== process.env.CRON_SECRET`,
+  // which failed open when CRON_SECRET was unset). Heartbeat above stays first
+  // so the dashboard can distinguish "cron down" from "auth rejected".
+  if (!cronAuthorized(req)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
@@ -410,9 +414,17 @@ export async function GET(req: Request) {
 
         if (openTrade) {
           const broker = openTrade.broker as string
+          // DEDUP: shared cross-path claim — the Mac ingest path may be
+          // processing the same message concurrently. Loser skips.
+          const exitBroker = (broker === 'schwab' ? 'schwab' : 'alpaca_paper') as 'schwab' | 'alpaca_paper'
+          const exitClaim = { source: ch.source, msgId: msg.id, symbol: signal.symbol, action: 'SELL' as const, broker: exitBroker }
+          if (!(await claimSignalExecution(db, exitClaim, ch.name))) {
+            return { id: msg.id, type: 'exit_duplicate', symbol: signal.symbol }
+          }
           const sellOrder = broker === 'schwab'
             ? await Schwab.placeOrder(signal.symbol, openTrade.quantity, 'SELL', 'MARKET')
             : await Alpaca.placeOrder(signal.symbol, openTrade.quantity, 'SELL', 'MARKET')
+          await markSignalExecution(db, exitClaim, sellOrder.status === 'PLACED' ? 'PLACED' : 'FAILED', (sellOrder as { order_id?: string }).order_id ?? null)
 
           if (sellOrder.status === 'PLACED') {
             await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString(), reason: `TG exit: ${signal.reason}` }).eq('id', openTrade.id)
@@ -597,7 +609,13 @@ export async function GET(req: Request) {
           return { id: msg.id, type: 'skip', reason: 'not_held_live' }
         }
         // Execute as a full position close using the actual held quantity
+        // DEDUP: shared cross-path claim — same message via Mac ingest path would double-sell.
+        const sellClaim = { source: ch.source, msgId: msg.id, symbol: signal.symbol, action: 'SELL' as const, broker: 'alpaca_paper' as const }
+        if (!(await claimSignalExecution(db, sellClaim, ch.name))) {
+          return { id: msg.id, type: 'sell_duplicate', symbol: signal.symbol }
+        }
         const closeOrder = await Alpaca.closePosition(signal.symbol)
+        await markSignalExecution(db, sellClaim, closeOrder.status === 'PLACED' ? 'PLACED' : 'FAILED', (closeOrder as { order_id?: string }).order_id ?? null)
         const status = closeOrder.status === 'PLACED' ? 'CLOSED' : 'FAILED'
         await db.from('tb_trades').update({ status: 'CLOSED', closed_at: new Date().toISOString(), reason: `TG SELL: ${ch.name} (conf=${signal.confidence}%)` })
           .eq('symbol', signal.symbol).eq('status', 'OPEN').eq('broker', 'alpaca_paper')
@@ -661,7 +679,13 @@ export async function GET(req: Request) {
         const maxRiskDollars  = equity * 0.02            // was 0.03 — tighter options sizing
         const contracts       = Math.max(1, Math.floor(maxRiskDollars / (premiumPerShare * 100)))
 
+        // DEDUP: shared cross-path claim on the resolved OCC symbol.
+        const optClaim = { source: ch.source, msgId: msg.id, symbol: signal.symbol, action: String(signal.action), broker: 'alpaca_paper' as const }
+        if (!(await claimSignalExecution(db, optClaim, ch.name))) {
+          return { id: msg.id, type: 'options_duplicate', symbol: displayLabel }
+        }
         const order = await Alpaca.placeOrder(signal.symbol, contracts, signal.action, 'MARKET')
+        await markSignalExecution(db, optClaim, order.status === 'PLACED' ? 'PLACED' : 'FAILED', (order as { order_id?: string }).order_id ?? null)
 
         await db.from('tb_alerts').insert({
           type: signal.action, symbol: signal.symbol,
@@ -728,7 +752,14 @@ export async function GET(req: Request) {
         }
       }
 
+      // DEDUP: shared cross-path claim — the money fix. Concurrent/overlapping
+      // runs processing the same message: exactly one wins, the rest skip.
+      const buyClaim = { source: ch.source, msgId: msg.id, symbol: signal.symbol, action: String(signal.action), broker: 'alpaca_paper' as const }
+      if (!(await claimSignalExecution(db, buyClaim, ch.name))) {
+        return { id: msg.id, type: 'trade_duplicate', symbol: signal.symbol }
+      }
       const order = await Alpaca.placeOrder(signal.symbol, qty, signal.action, 'MARKET')
+      await markSignalExecution(db, buyClaim, order.status === 'PLACED' ? 'PLACED' : 'FAILED', (order as { order_id?: string }).order_id ?? null)
       const stopPrice = signal.stop_loss ?? (livePrice ? Math.round(livePrice * (1 - profile.initial_stop_pct) * 100) / 100 : null)
 
       console.log(`[TG][${ch.name}] ${displaySym} order → ${order.status}`)
@@ -789,14 +820,26 @@ export async function GET(req: Request) {
           const schwabEquity = schwabBalance ?? 2000
           const alreadyOpen = schwabPositions.some(p => p.symbol === signal.symbol)
           const atMaxPositions = schwabPositions.length >= schwabProfile.max_positions
+          // ZOMBIE guard (Bug 2): never re-enter a broker-persisted zombie until
+          // manually reviewed (clear via /api/cron/health?clear_zombie=SYMBOL).
+          const zombied = await isZombie(db, 'schwab', signal.symbol)
 
-          if (!alreadyOpen && !atMaxPositions) {
+          if (!alreadyOpen && !atMaxPositions && !zombied) {
             const schwabQty = livePrice
               ? calculatePositionSize(schwabEquity, livePrice, schwabProfile.initial_stop_pct, schwabProfile.risk_pct, 0.25).qty
               : 1
-            const schwabOrder = await Schwab.placeOrder(signal.symbol, schwabQty, 'BUY', 'MARKET')
+            // DEDUP: shared cross-path claim — the same signal arriving via
+            // overlapping runs fired 2x on Schwab (RKLB 2026-09-17). Loser skips.
+            const schwabClaim = { source: ch.source, msgId: msg.id, symbol: signal.symbol, action: 'BUY' as const, broker: 'schwab' as const }
+            const schwabClaimWon = await claimSignalExecution(db, schwabClaim, ch.name)
+            const schwabOrder = schwabClaimWon ? await Schwab.placeOrder(signal.symbol, schwabQty, 'BUY', 'MARKET') : null
+            if (!schwabClaimWon) {
+              schwabNote = `\n📌 Schwab: duplicate suppressed — already executed for this signal`
+            } else {
+              await markSignalExecution(db, schwabClaim, schwabOrder!.status === 'PLACED' ? 'PLACED' : 'FAILED', (schwabOrder as unknown as { order_id?: string | null }).order_id ?? null)
+            }
 
-            if (schwabOrder.status === 'PLACED') {
+            if (schwabOrder && schwabOrder.status === 'PLACED') {
               const schwabStop = stopPrice ?? (livePrice ? Math.round(livePrice * (1 - schwabProfile.initial_stop_pct) * 100) / 100 : null)
               const { error: schwabInsertErr } = await db.from('tb_trades').insert({
                 symbol: signal.symbol, broker: 'schwab', action: 'BUY',
@@ -813,7 +856,11 @@ export async function GET(req: Request) {
               schwabNote = `\n💰 *Schwab LIVE: BUY ${schwabQty} ${signal.symbol}* · $${((livePrice ?? 0) * schwabQty).toFixed(0)}`
             }
           } else {
-            schwabNote = alreadyOpen ? `\n📌 Schwab: already holding ${signal.symbol}` : `\n📌 Schwab: at max ${schwabProfile.max_positions} positions`
+            schwabNote = alreadyOpen
+              ? `\n📌 Schwab: already holding ${signal.symbol}`
+              : zombied
+                ? `\n🧟 Schwab: ${signal.symbol} is ZOMBIE-blocked — manual review required`
+                : `\n📌 Schwab: at max ${schwabProfile.max_positions} positions`
           }
         } catch { /* Schwab failures never block paper trade */ }
       }
