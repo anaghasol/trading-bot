@@ -29,6 +29,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/telegram/sai-mirror",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/tg-watchdog",
       "schedule": "*/5 * * * *"
     },
